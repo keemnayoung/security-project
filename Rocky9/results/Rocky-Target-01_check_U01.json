@@ -1,0 +1,12 @@
+{
+    "check_id": "U-01",
+    "category": "계정관리",
+    "title": "root 계정 원격 접속 제한",
+    "importance": "상",
+    "status": "FAIL",
+    "evidence": "현재 설정값: yes (취약 - 원격 root 접속 허용)",
+    "guide": "sshd_config 파일에서 PermitRootLogin을 no로 설정하여 root 원격 접속을 차단하세요.",
+    "target_file": "/etc/ssh/sshd_config",
+    "file_hash": "4863d11b9d09213dca52151f501d9ed0c65de44f56d2dbbd29ad9cb670618c74",
+    "check_date": "2026-02-06 10:33:37"
+}

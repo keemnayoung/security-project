@@ -1,0 +1,12 @@
+{
+    "check_id": "U-08",
+    "category": "계정관리",
+    "title": "관리자 그룹에 최소한의 계정 포함",
+    "importance": "중",
+    "status": "PASS",
+    "evidence": "양호: 관리자 그룹에 root 계정만 존재합니다.",
+    "guide": "/etc/group 파일에서 root 그룹에 등록된 불필요한 일반 계정을 제거하세요.",
+    "target_file": "/etc/group",
+    "file_hash": "8f0cab4ab2fcdde09f4f276625b5723ac06fb6a5571cd703161bd24d707f97bc",
+    "check_date": "2026-02-06 10:33:37"
+}

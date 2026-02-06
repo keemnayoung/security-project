@@ -1,0 +1,10 @@
+{
+    "check_id": "U-06",
+    "category": "계정관리",
+    "title": "su 명령 사용 제한",
+    "importance": "상",
+    "status": "FAIL",
+    "evidence": "모든 사용자가 su 명령어를 사용할 수 있는 상태입니다.",
+    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하세요.",
+    "check_date": "2026-02-06 10:33:38"
+}

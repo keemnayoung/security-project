@@ -1,0 +1,26 @@
+- name: 보안 전수 진단 (전체 자동화)
+  hosts: target_servers
+  become: yes
+  tasks:
+    - name: 1. 모든 진단 스크립트 목록 가져오기
+      delegate_to: localhost
+      become: no
+      # 특정 폴더 안의 .sh 파일을 몽땅 리스트로 만듭니다.
+      find:
+        paths: "./scripts/unix/1_account"
+        patterns: "check_*.sh"
+      register: script_files
+
+    - name: 2. 발견된 모든 스크립트 실행
+      script: "{{ item.path }}"
+      register: diag_results
+      loop: "{{ script_files.files }}"
+
+    - name: 3. 결과 수집 (파일명 자동 매칭)
+      delegate_to: localhost
+      become: no
+      copy:
+        content: "{{ item.stdout_lines[2:] | join('\n') }}"
+        dest: "/home/manager/security_project/results/{{ inventory_hostname }}_{{ item.item.path | basename | replace('.sh', '.json') }}"
+      loop: "{{ diag_results.results }}"
+      when: item.stdout_lines | length > 2

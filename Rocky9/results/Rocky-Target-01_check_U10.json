@@ -1,0 +1,12 @@
+{
+    "check_id": "U-10",
+    "category": "계정관리",
+    "title": "동일한 UID 금지",
+    "importance": "중",
+    "status": "PASS",
+    "evidence": "양호: 중복된 UID를 사용하는 계정이 존재하지 않습니다.",
+    "guide": "/etc/passwd 파일을 확인하여 중복된 UID를 가진 계정의 UID를 usermod -u 명령으로 변경하세요.",
+    "target_file": "/etc/passwd",
+    "file_hash": "e0ea9efe8c89d99d3ec45414198c4a42e8acc17d6f48ad88323bfffaae3bd0a5",
+    "check_date": "2026-02-06 10:33:36"
+}
