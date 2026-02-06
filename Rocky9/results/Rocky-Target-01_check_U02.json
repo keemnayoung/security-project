@@ -3,8 +3,8 @@
     "category": "계정관리",
     "title": "패스워드 복잡성 및 유효기간 설정",
     "importance": "상",
-    "status": "FAIL",
-    "evidence": "minlen 미흡(현재:기본값, 기준:8); minclass 미흡(현재:기본값, 기준:3)",
+    "status": "PASS",
+    "evidence": "KISA 권고 복잡성 및 유효기간 기준을 모두 충족합니다.",
     "guide": "pwquality.conf(minlen=8, minclass=3) 및 login.defs(PASS_MAX_DAYS=90) 설정을 적용하세요.",
-    "check_date": "2026-02-06 10:33:38"
+    "check_date": "2026-02-07 02:50:44"
 }

@@ -5,7 +5,6 @@
     - name: 1. 모든 진단 스크립트 목록 가져오기
       delegate_to: localhost
       become: no
-      # 특정 폴더 안의 .sh 파일을 몽땅 리스트로 만듭니다.
       find:
         paths: "./scripts/unix/1_account"
         patterns: "check_*.sh"
@@ -15,12 +14,20 @@
       script: "{{ item.path }}"
       register: diag_results
       loop: "{{ script_files.files }}"
+      # 'target_id'라는 글자가 파일명에 '포함'되어 있으면 무조건 실행합니다.
+      when: >
+        target_id is not defined or 
+        (target_id | string) in (item.path | basename)
 
-    - name: 3. 결과 수집 (파일명 자동 매칭)
+    - name: 3. 결과 수집 (강제 업데이트)
       delegate_to: localhost
       become: no
       copy:
-        content: "{{ item.stdout_lines[2:] | join('\n') }}"
-        dest: "/home/manager/security_project/results/{{ inventory_hostname }}_{{ item.item.path | basename | replace('.sh', '.json') }}"
+        content: "{{ item.stdout | regex_search('(?s)\\{.*\\}') }}"
+        dest: "./results/{{ inventory_hostname }}_{{ item.item.path | basename | replace('.sh', '.json') | replace('-', '') }}"
+        # [수정] 기존 파일이 있어도 무조건 새 내용으로 덮어씁니다.
+        force: yes 
       loop: "{{ diag_results.results }}"
-      when: item.stdout_lines | length > 2
+      when: 
+        - item.skipped is not defined
+        - "'{' in item.stdout"

@@ -1,0 +1,8 @@
+{
+    "check_id": "U-13",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: 암호화 알고리즘을 SHA512로 변경 완료. (기존 계정은 암호 재설정 시 적용됨)",
+    "action_date": "2026-02-07 04:01:43",
+    "check_date": "2026-02-07 04:01:43"
+}

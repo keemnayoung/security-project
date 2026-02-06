@@ -1,0 +1,8 @@
+{
+    "check_id": "U-09",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: 불필요한 그룹(emptygroup) 삭제 완료.",
+    "action_date": "2026-02-07 03:42:57",
+    "check_date": "2026-02-07 03:42:57"
+}

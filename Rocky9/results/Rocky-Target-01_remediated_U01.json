@@ -1,0 +1,14 @@
+{
+    "check_id": "U-01",
+    "category": "계정관리",
+    "title": "root 계정 원격 접속 제한",
+    "importance": "상",
+    "status": "PASS",
+    "evidence": "최종 적용값: no (양호)",
+    "guide": "sshd_config 파일에서 PermitRootLogin을 no로 설정하여 root 원격 접속을 차단하세요.",
+    "action_type": "manual",
+    "action_result": "SUCCESS",
+    "action_log": "성공: 모든 설정 파일 정리 및 root 접속 차단 확인 완료. (최종값: no)",
+    "action_date": "2026-02-07 02:40:13",
+    "check_date": "2026-02-07 02:40:13"
+}

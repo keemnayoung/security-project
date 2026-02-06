@@ -3,10 +3,9 @@
     "category": "계정관리",
     "title": "세션 종료 시간 설정",
     "importance": "하",
-    "status": "FAIL",
-    "evidence": "취약: TMOUT 설정이 존재하지 않습니다.",
+    "status": "PASS",
+    "evidence": "양호: 세션 종료 시간이 600초로 적절히 설정되어 있습니다.",
     "guide": "/etc/profile 파일에 TMOUT=600 및 export TMOUT를 설정하세요.",
-    "target_file": "/etc/profile",
-    "file_hash": "304bbca429881a74f3e8f8b1c003b29020c635b83661492accd576c99baf9f30",
-    "check_date": "2026-02-06 10:33:35"
+    "file_hash": "bb2026b35ff2a10958d82792c419f7b570d0f75e13f9c9b2ec44fc00d29768ca",
+    "check_date": "2026-02-07 03:56:51"
 }

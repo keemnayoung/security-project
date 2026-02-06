@@ -4,9 +4,7 @@
     "title": "계정이 존재하지 않는 GID 금지",
     "importance": "하",
     "status": "PASS",
-    "evidence": "양호: 모든 그룹에 소속된 계정이 존재합니다.",
-    "guide": "/etc/group 파일과 /etc/passwd 파일을 비교하여 사용자가 없는 그룹은 groupdel로 삭제하세요.",
-    "target_file": "/etc/group",
-    "file_hash": "8f0cab4ab2fcdde09f4f276625b5723ac06fb6a5571cd703161bd24d707f97bc",
-    "check_date": "2026-02-06 10:33:38"
+    "evidence": "양호: 모든 일반 그룹에 소속된 계정이 존재합니다.",
+    "file_hash": "663512d4acd8aeb1d31b1202a3b9d630e8b82f02d21ccd75533320307811de1d",
+    "check_date": "2026-02-07 03:43:22"
 }

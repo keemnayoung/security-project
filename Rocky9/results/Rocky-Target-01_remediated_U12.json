@@ -1,0 +1,8 @@
+{
+    "check_id": "U-12",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: 세션 종료 시간을 600초로 설정 완료 및 검증 성공.",
+    "action_date": "2026-02-07 03:56:27",
+    "check_date": "2026-02-07 03:56:27"
+}

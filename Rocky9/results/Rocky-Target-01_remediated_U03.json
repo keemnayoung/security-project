@@ -1,0 +1,8 @@
+{
+    "check_id": "U-03",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "조치 완료: 임계값(10회) 및 잠금시간(120초) 설정됨.",
+    "action_date": "2026-02-07 03:01:46",
+    "check_date": "2026-02-07 03:01:46"
+}

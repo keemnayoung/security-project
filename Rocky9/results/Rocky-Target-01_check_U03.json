@@ -3,8 +3,8 @@
     "category": "계정관리",
     "title": "계정 잠금 임계값 설정",
     "importance": "상",
-    "status": "FAIL",
-    "evidence": "현재 설정값: 설정없음 (취약 - 10회 이하로 설정 필요)",
+    "status": "PASS",
+    "evidence": "양호: 계정 잠금 임계값이 10회로 설정되어 있음 (기준: 10회 이하)",
     "guide": "faillock.conf 파일에서 deny=10 이하로 설정하고 unlock_time을 지정하세요.",
-    "check_date": "2026-02-06 10:33:37"
+    "check_date": "2026-02-07 03:02:11"
 }

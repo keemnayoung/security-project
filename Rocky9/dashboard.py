@@ -31,72 +31,78 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 백엔드 실행 로직  ---
+
+# --- 2. 백엔드 실행 로직 수정 ---
 def run_remediation(target, check_id, action_type):
-    """모든 하위 폴더에서 스크립트를 찾아 실행하고 결과를 업데이트함"""
-    
-    clean_id = check_id.replace("-", "")
-    
-    # glob을 사용하여 scripts 폴더 하위의 모든 곳에서 파일을 검색
-    # **는 모든 하위 디렉토리를 의미하며, recursive=True가 필수입니다.
-    search_pattern = f"./scripts/**/fix_{clean_id}.sh"
-    found_files = glob.glob(search_pattern, recursive=True)
-
-    if found_files:
-        # 찾은 파일 중 첫 번째 경로를 사용
-        script_path = found_files[0]
-    else:
-        st.error(f"스크립트 파일을 찾을 수 없습니다: fix_{clean_id}.sh")
-        return False
-
+    clean_id = check_id.replace("-", "") 
     try:
-        # 3. 스크립트 실행 (자동 조치 시 --force 인자 전달)
-        cmd = ["sudo", "bash", script_path]
-        if action_type == "auto":
-            cmd.append("--force")
-        
-        process = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if process.returncode == 0:
-            # 4. 실행 성공 시 해당 JSON 파일 업데이트
-            result_file = f"./results/{target}_{check_id}.json"
-            if os.path.exists(result_file):
-                with open(result_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                data['status'] = "PASS"
-                data['action_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                data['action_log'] = f"대시보드 조치 성공 (경로: {script_path})"
-                
-                with open(result_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=4)
-            return True
-        else:
-            st.error(f"조치 실패: {process.stderr}")
-            return False
-            
+        # STEP 1: 조치 실행 (강화된 검증 로직이 포함된 fix 스크립트 실행)
+        fix_cmd = ["ansible-playbook", "-i", "hosts", "run_fix.yml", "-e", f"target_id={clean_id}", "--limit", target]
+        with st.spinner(f"🛠️ {clean_id} 조치 적용 중..."):
+            subprocess.run(fix_cmd, capture_output=True, text=True, timeout=60)
+
+        # 5초 대기 (서비스 안정화)
+        import time
+        time.sleep(5) 
+
+        # STEP 2: 확실한 데이터 동기화를 위해 재점검 한 번 더 실행
+        # 방안 B에 따라 이 결과가 기존 파일을 덮어쓰게 됩니다.
+        audit_cmd = ["ansible-playbook", "-i", "hosts", "run_audit.yml", "-e", f"target_id={clean_id}", "--limit", target]
+        with st.spinner(f"🔍 최종 상태 검증 중..."):
+            subprocess.run(audit_cmd, capture_output=True, text=True, timeout=60)
+
+        st.success(f"✅ {clean_id} 조치 및 검증 완료!")
+        st.rerun() 
+        return True
     except Exception as e:
-        st.error(f"백엔드 오류 발생: {e}")
+        st.error(f"⚠️ 시스템 오류: {e}")
         return False
     
 # --- 3. 데이터 로드 및 엑셀 로직 ---
 def load_all_data():
     results_path = "./results"
     all_data = []
-    if os.path.exists(results_path):
-        for file in os.listdir(results_path):
-            if file.endswith(".json"):
-                try:
-                    with open(os.path.join(results_path, file), 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        data['target'] = file.split('_')[0]
-                        if 'guide' not in data: data['guide'] = "보안 가이드를 참조하세요."
-                        if 'action_type' not in data: data['action_type'] = "manual" 
-                        all_data.append(data)
-                except Exception as e: st.error(f"데이터 로드 오류: {e}")
+    
+    if not os.path.exists(results_path):
+        return pd.DataFrame()
+
+    for file in os.listdir(results_path):
+        if file.endswith(".json"):
+            try:
+                with open(os.path.join(results_path, file), 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                    # 1. 파일명에서 타겟 서버 정보 추출
+                    data['target'] = file.split('_')[0]
+                    
+                    # 2. ID 형식 통일 (U-01 -> U01) 및 우선순위 설정
+                    # 파일명에 remediated가 있으면 조치 데이터로 간주
+                    data['check_id'] = data.get('check_id', 'Unknown').replace("-", "")
+                    data['origin_score'] = 2 if 'remediated' in file else 1
+                    
+                    # 3. 누락된 필드 기본값 채우기 (nan 방지)
+                    if 'guide' not in data or not data['guide']:
+                        data['guide'] = "보안 가이드를 참조하세요."
+                    if 'evidence' not in data or not data['evidence']:
+                        data['evidence'] = "상세 점검 근거 없음"
+                    if 'category' not in data:
+                        data['category'] = "계정관리"
+                    if 'importance' not in data:
+                        data['importance'] = "상"
+
+                    all_data.append(data)
+            except Exception as e:
+                st.error(f"데이터 로드 오류 ({file}): {e}")
+
     df = pd.DataFrame(all_data)
+    
     if not df.empty:
-        df = df.sort_values(by='check_id').reset_index(drop=True)
+       # 4. 정렬 및 중복 제거
+        # check_date를 기준으로 오름차순 정렬 후, 가장 마지막(최신) 데이터만 유지
+        df = df.sort_values(by=['target', 'check_id', 'check_date'])
+        df = df.drop_duplicates(subset=['target', 'check_id'], keep='last')
+        df = df.reset_index(drop=True)
+        
     return df
 
 # --- 엑셀 ---
@@ -179,8 +185,7 @@ def to_excel(df):
 
 # --- 4. 메인 UI 및 시각화 ---
 df = load_all_data()
-
-# 1. 사이드바 구성 (일괄 조치 기능 포함)
+# 1. 사이드바 구성 
 with st.sidebar:
     st.markdown("## 🛡️ Security Ops")
     if not df.empty:
@@ -189,31 +194,9 @@ with st.sidebar:
         
         st.divider()
         
-        # --- [통합] 실무형 일괄 조치 로직 ---
-        st.markdown("### ⚡ 운영 효율화")
-        # 가용성 영향이 적은(auto) 항목 중 취약(FAIL)인 것들만 추출
-        auto_fail_items = target_df[(target_df['action_type'] == 'auto') & (target_df['status'] == 'FAIL')]
-        
-        btn_label = f"🚀 자동 조치 ({len(auto_fail_items)}건) 일괄 실행"
-        # 취약한 자동 조치 항목이 있을 때만 버튼 활성화
-        if st.button(btn_label, type="primary", use_container_width=True, disabled=len(auto_fail_items)==0):
-            success_count = 0
-            p_bar = st.progress(0)
-            p_text = st.empty()
-            
-            for idx, (_, row) in enumerate(auto_fail_items.iterrows()):
-                p_text.text(f"조치 중: {row['check_id']}")
-                if run_remediation(selected_target, row['check_id'], "auto"):
-                    success_count += 1
-                p_bar.progress((idx + 1) / len(auto_fail_items))
-            
-            p_text.empty()
-            p_bar.empty()
-            st.sidebar.success(f"✅ {success_count}개 항목 자동 조치 완료!")
-            st.rerun() 
-        
-        st.divider()
-        st.download_button("📊 엑셀 보고서 생성", to_excel(target_df), f"Report_{selected_target}.xlsx", use_container_width=True)
+       # 모든 항목 수동 조치화
+        st.markdown("### 📊 리포트 관리")
+        st.download_button("📊 엑셀 보고서 생성", to_excel(target_df.fillna("-")), f"Report_{selected_target}.xlsx", use_container_width=True)
     else: 
         st.stop()
 
@@ -267,28 +250,22 @@ for cat in sorted(target_df['category'].unique()):
             item_c1, item_c2, item_c3 = st.columns([5, 1, 1.5])
             item_c1.markdown(f"### {row['check_id']} {row['title']} (중요도: {row['importance']})")
             
-            if row['status'] == "PASS": item_c2.success("✅ 양호")
-            else: item_c2.error("🚨 취약")
-            
-            # 조치 버튼 로직
-            if row['status'] == "FAIL":
-                if row['action_type'] == "manual":
-                    if item_c3.button(f"⚠️ 승인 후 조치", key=f"btn_{row['check_id']}", use_container_width=True, type="secondary"):
-                        st.session_state[f"modal_{row['check_id']}"] = True
-                else:
-                    if item_c3.button(f"🛠️ 즉시 조치", key=f"btn_{row['check_id']}", use_container_width=True, type="primary"):
-                        with st.spinner(f"{row['check_id']} 조치 중..."):
-                            if run_remediation(selected_target, row['check_id'], "auto"):
-                                st.success("조치 성공!")
-                                st.rerun() # 결과 즉시 반영
+            if row['status'] == "PASS": 
+                item_c2.success("✅ 양호")
+                item_c3.write("") # 양호할 때는 버튼 없음
+            else: 
+                item_c2.error("🚨 취약")
+                # [수정] 모든 취약 항목은 '승인 후 조치' 버튼으로 통일
+                if item_c3.button(f"⚠️ 승인 후 조치", key=f"btn_{row['check_id']}", use_container_width=True, type="secondary"):
+                    st.session_state[f"modal_{row['check_id']}"] = True
 
-            # 수동 승인 모달 컨테이너
+            # 수동 승인 모달 컨테이너 (로직은 기존 유지)
             if st.session_state.get(f"modal_{row['check_id']}", False):
                 st.info(f"**고위험 항목 승인:** {row['title']}")
                 st.error(f"**위험 알림:** {row['guide']}")
                 m_c1, m_c2 = st.columns(2)
                 if m_c1.button("✅ 승인 및 진행", key=f"conf_{row['check_id']}"):
-                    with st.spinner("명령 실행 중..."):
+                    with st.spinner("앤서블 조치 실행 중..."):
                         if run_remediation(selected_target, row['check_id'], "manual"):
                             st.session_state[f"modal_{row['check_id']}"] = False
                             st.rerun()
@@ -299,6 +276,7 @@ for cat in sorted(target_df['category'].unique()):
             st.markdown(f"**🔍 점검 근거:** `{row['evidence']}`")
             inner_c1, inner_c2 = st.columns(2)
             with inner_c1: st.markdown(f'📍 **법적 근거** <span class="tag tag-isms">ISMS-P</span> 2.1.2', unsafe_allow_html=True)
-            with inner_c2: st.write(f"⚠️ **영향도:** {'신중 (수동)' if row['action_type'] == 'manual' else '낮음 (자동)'}")
+            # [수정] 영향도 표시 문구 통일
+            with inner_c2: st.write(f"⚠️ **영향도:** 신중 (수동 조치 필요)")
             st.warning(f"💡 **조치 가이드:** {row['guide']}")
             st.divider()

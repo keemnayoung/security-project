@@ -1,0 +1,8 @@
+{
+    "check_id": "U-11",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: 계정(daemon)의 쉘을 /sbin/nologin으로 변경 완료 및 검증 성공.",
+    "action_date": "2026-02-07 03:53:07",
+    "check_date": "2026-02-07 03:53:07"
+}

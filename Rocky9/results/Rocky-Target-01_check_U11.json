@@ -4,9 +4,8 @@
     "title": "사용자 shell 점검",
     "importance": "하",
     "status": "PASS",
-    "evidence": "양호: 모든 시스템 계정에 로그인 제한 쉘이 부여되어 있습니다.",
+    "evidence": "양호: 모든 시스템 계정에 로그인 제한 쉘(/sbin/nologin 등)이 부여되어 있습니다.",
     "guide": "로그인이 불필요한 계정에 /sbin/nologin 또는 /bin/false 쉘을 부여하세요.",
-    "target_file": "/etc/passwd",
-    "file_hash": "e0ea9efe8c89d99d3ec45414198c4a42e8acc17d6f48ad88323bfffaae3bd0a5",
-    "check_date": "2026-02-06 10:33:36"
+    "file_hash": "4871caebaea18f2db40c5c4eea083532b0190d0038c427936d5f7da7201867f5",
+    "check_date": "2026-02-07 03:53:32"
 }

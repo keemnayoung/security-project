@@ -6,7 +6,6 @@
     "status": "PASS",
     "evidence": "양호: 관리자 그룹에 root 계정만 존재합니다.",
     "guide": "/etc/group 파일에서 root 그룹에 등록된 불필요한 일반 계정을 제거하세요.",
-    "target_file": "/etc/group",
-    "file_hash": "8f0cab4ab2fcdde09f4f276625b5723ac06fb6a5571cd703161bd24d707f97bc",
-    "check_date": "2026-02-06 10:33:37"
+    "file_hash": "d230028d0671436d501439f4337d9c874741f0489bc66a4ec92a3843950ab073",
+    "check_date": "2026-02-07 03:46:43"
 }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# [진단] U-01 root 계정 원격 접속 제한
+# [점검] U-01 root 계정 원격 접속 제한
 
 # 1. 항목 정보 정의
 ID="U-01"
@@ -14,13 +14,13 @@ EVIDENCE="N/A"
 
 if [ -f "$TARGET_FILE" ]; then
     # sshd 설정값 확인
-    VAL=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
+   VAL=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
     # 원본 파일 해시 추출
     FILE_HASH=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
 
     if [[ "$VAL" == "no" ]]; then
         STATUS="PASS"
-        EVIDENCE="PermitRootLogin 설정이 'no'로 되어 있음 (양호)"
+        EVIDENCE="양호: PermitRootLogin 설정이 'no'로 되어 있음"
     else
         STATUS="FAIL"
         EVIDENCE="현재 설정값: $VAL (취약 - 원격 root 접속 허용)"
@@ -36,6 +36,7 @@ echo ""
 cat << EOF
 {
     "check_id": "$ID",
+    "action_type": "manual",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",

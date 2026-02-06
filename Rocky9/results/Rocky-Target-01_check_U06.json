@@ -3,8 +3,8 @@
     "category": "계정관리",
     "title": "su 명령 사용 제한",
     "importance": "상",
-    "status": "FAIL",
-    "evidence": "모든 사용자가 su 명령어를 사용할 수 있는 상태입니다.",
-    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하세요.",
-    "check_date": "2026-02-06 10:33:38"
+    "status": "PASS",
+    "evidence": "양호: su 사용 제한 설정이 활성화됨 (auth required pam_wheel.so use_uid)",
+    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하여 wheel 그룹으로 제한하세요.",
+    "check_date": "2026-02-07 03:27:25"
 }

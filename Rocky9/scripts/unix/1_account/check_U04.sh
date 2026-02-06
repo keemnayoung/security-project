@@ -1,29 +1,30 @@
 #!/bin/bash
-# [진단] U-04 비밀번호 파일 보호
+# [점검] U-04 비밀번호 파일 보호
 
 ID="U-04"
 CATEGORY="계정관리"
 TITLE="비밀번호 파일 보호"
 IMPORTANCE="상"
-TARGET_FILE="/etc/passwd"
+PASSWD_FILE="/etc/passwd"
+SHADOW_FILE="/etc/shadow"
 
-STATUS="FAIL"
+STATUS="PASS"
 EVIDENCE="N/A"
 
-if [ -f "$TARGET_FILE" ]; then
-    # /etc/passwd 내 두 번째 필드가 x가 아닌 계정이 있는지 확인
-    UNSHADOWED_COUNT=$(awk -F: '$2 != "x" {print $1}' $TARGET_FILE | wc -l)
-    
-    if [ "$UNSHADOWED_COUNT" -eq 0 ]; then
+# 1. /etc/passwd 내 두 번째 필드가 'x'가 아닌 계정 추출
+UNSHADOWED_USERS=$(awk -F: '$2 != "x" {print $1}' "$PASSWD_FILE" | xargs | sed 's/ /, /g')
+
+if [ -f "$PASSWD_FILE" ] && [ -f "$SHADOW_FILE" ]; then
+    if [ -z "$UNSHADOWED_USERS" ]; then
         STATUS="PASS"
-        EVIDENCE="모든 계정이 쉐도우 패스워드(x)를 사용하여 암호화 보호 중입니다."
+        EVIDENCE="양호: 모든 계정이 쉐도우 패스워드(x)를 사용하여 암호화 보호 중입니다."
     else
         STATUS="FAIL"
-        EVIDENCE="암호화되지 않은 계정 발견: ${UNSHADOWED_COUNT}건 (쉐도우 패스워드 미사용)"
+        EVIDENCE="취약: 암호화되지 않은 계정 발견 ($UNSHADOWED_USERS)"
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)을 찾을 수 없음"
+    EVIDENCE="취약: 필수 파일($PASSWD_FILE 또는 $SHADOW_FILE)이 누락되었습니다."
 fi
 
 echo ""

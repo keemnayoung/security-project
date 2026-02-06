@@ -1,2 +1,2 @@
 [target_servers]
-Rocky-Target-01 ansible_host=192.168.26.137 ansible_user=manager ansible_password=qwer1234
+Rocky-Target-01 ansible_host=192.168.26.137 ansible_user=manager ansible_ssh_pass=qwer1234 ansible_become_pass=qwer1234

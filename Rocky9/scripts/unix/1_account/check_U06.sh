@@ -1,5 +1,5 @@
 #!/bin/bash
-# [진단] U-06 su 명령 사용 제한
+# [점검] U-06 su 명령 사용 제한
 
 ID="U-06"
 CATEGORY="계정관리"
@@ -11,19 +11,21 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 
 if [ -f "$TARGET_FILE" ]; then
-    # pam_wheel.so 설정이 주석 해제되어 있는지 확인
-    CHECK_WHEEL=$(grep "pam_wheel.so" "$TARGET_FILE" | grep "auth" | grep -v "^#")
+    # 1. pam_wheel.so 설정이 주석 해제되어 활성화된 라인 확인
+    # 현업 기준: auth required pam_wheel.so use_uid 형태가 표준
+    CHECK_WHEEL=$(grep -v '^#' "$TARGET_FILE" | grep "pam_wheel.so" | grep "auth" | grep "required")
     
     if [ -n "$CHECK_WHEEL" ]; then
         STATUS="PASS"
-        EVIDENCE="su 명령어 사용이 wheel 그룹으로 제한되어 있습니다."
+        # 실제 설정된 라인을 근거로 제시
+        EVIDENCE="양호: su 사용 제한 설정이 활성화됨 ($(echo $CHECK_WHEEL | xargs))"
     else
         STATUS="FAIL"
-        EVIDENCE="모든 사용자가 su 명령어를 사용할 수 있는 상태입니다."
+        EVIDENCE="취약: pam_wheel.so 설정이 비활성화되어 모든 사용자가 su 명령을 시도할 수 있음"
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)을 찾을 수 없음"
+    EVIDENCE="취약: 설정 파일($TARGET_FILE)을 찾을 수 없음"
 fi
 
 echo ""
@@ -35,7 +37,7 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하세요.",
+    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하여 wheel 그룹으로 제한하세요.",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

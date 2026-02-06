@@ -1,0 +1,8 @@
+{
+    "check_id": "U-02",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "조치 완료: 패스워드 규정 준수 설정됨. (minlen:8, MaxDays:90)",
+    "action_date": "2026-02-07 02:50:19",
+    "check_date": "2026-02-07 02:50:19"
+}

@@ -1,0 +1,8 @@
+{
+    "check_id": "U-04",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: pwconv 실행 완료 및 모든 계정 쉐도우 패스워드 적용 확인",
+    "action_date": "2026-02-07 03:06:17",
+    "check_date": "2026-02-07 03:06:17"
+}

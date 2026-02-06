@@ -3,10 +3,9 @@
     "category": "계정관리",
     "title": "불필요한 계정 제거",
     "importance": "하",
-    "status": "FAIL",
-    "evidence": "취약: 불필요한 기본 계정 존재 (lp)",
+    "status": "PASS",
+    "evidence": "양호: 불필요한 계정이 존재하지 않습니다.",
     "guide": "/etc/passwd에서 lp, uucp 등 사용하지 않는 계정을 userdel로 삭제하세요.",
-    "target_file": "/etc/passwd",
-    "file_hash": "e0ea9efe8c89d99d3ec45414198c4a42e8acc17d6f48ad88323bfffaae3bd0a5",
-    "check_date": "2026-02-06 10:33:38"
+    "file_hash": "4871caebaea18f2db40c5c4eea083532b0190d0038c427936d5f7da7201867f5",
+    "check_date": "2026-02-07 03:35:26"
 }

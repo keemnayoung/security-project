@@ -1,0 +1,8 @@
+{
+    "check_id": "U-08",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "양호: 이미 root 그룹에 불필요한 계정이 없습니다.",
+    "action_date": "2026-02-07 03:46:19",
+    "check_date": "2026-02-07 03:46:19"
+}

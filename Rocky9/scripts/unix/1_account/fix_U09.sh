@@ -4,54 +4,63 @@
 ID="U-09"
 GROUP_FILE="/etc/group"
 PASSWD_FILE="/etc/passwd"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 ACTION_RESULT="FAIL"
+CURRENT_STATUS="FAIL"
 ACTION_LOG="N/A"
 
 if [ -f "$GROUP_FILE" ]; then
     # 1. 백업 생성
-    BACKUP_FILE="${GROUP_FILE}_bak_$(date +%Y%m%d_%H%M%S)"
-    cp -p "$GROUP_FILE" "$BACKUP_FILE"
+    cp -p "$GROUP_FILE" "${GROUP_FILE}_bak_$TIMESTAMP"
 
-    # 2. 삭제 대상 식별 (진단 로직과 동일)
+    # 2. 삭제 대상 식별 및 처리
     GID_MIN=1000
     REMOVED_GROUPS=()
     
-    mapfile -t CUSTOM_GROUPS < <(awk -F: -v min="$GID_MIN" '$3 >= min {print $1":"$3}' "$GROUP_FILE")
-
-    for entry in "${CUSTOM_GROUPS[@]}"; do
-        GNAME=$(echo "$entry" | cut -d: -f1)
-        GID=$(echo "$entry" | cut -d: -f2)
-
-        USER_EXISTS=$(awk -F: -v gid="$GID" '$4 == gid {print $1}' "$PASSWD_FILE")
-        MEMBER_EXISTS=$(grep "^$GNAME:" "$GROUP_FILE" | cut -d: -f4)
-
-        if [ -z "$USER_EXISTS" ] && [ -z "$MEMBER_EXISTS" ]; then
-            # 3. 그룹 삭제 실행
-            if groupdel "$GNAME" >/dev/null 2>&1; then
-                REMOVED_GROUPS+=("$GNAME")
+    while IFS=: read -r GNAME GPASS GID GMEM; do
+        if [[ "$GID" -ge "$GID_MIN" ]]; then
+            USER_EXISTS=$(awk -F: -v gid="$GID" '$4 == gid {print $1}' "$PASSWD_FILE")
+            if [[ -z "$USER_EXISTS" && -z "$GMEM" ]]; then
+                if groupdel "$GNAME" >/dev/null 2>&1; then
+                    REMOVED_GROUPS+=("$GNAME")
+                fi
             fi
         fi
-    done
+    done < "$GROUP_FILE"
 
-    if [ ${#REMOVED_GROUPS[@]} -gt 0 ]; then
+    # 3. 검증
+    STILL_EXISTS=0
+    while IFS=: read -r GNAME GPASS GID GMEM; do
+        if [[ "$GID" -ge "$GID_MIN" ]]; then
+            USER_EXISTS=$(awk -F: -v gid="$GID" '$4 == gid {print $1}' "$PASSWD_FILE")
+            [[ -z "$USER_EXISTS" && -z "$GMEM" ]] && ((STILL_EXISTS++))
+        fi
+    done < "$GROUP_FILE"
+
+    if [ "$STILL_EXISTS" -eq 0 ]; then
         ACTION_RESULT="SUCCESS"
-        ACTION_LOG="성공: 불필요한 그룹(${REMOVED_USERS[*]}) 삭제 완료. 백업: $BACKUP_FILE"
+        CURRENT_STATUS="PASS"
+        if [ ${#REMOVED_GROUPS[@]} -gt 0 ]; then
+            ACTION_LOG="성공: 불필요한 그룹(${REMOVED_GROUPS[*]}) 삭제 완료."
+        else
+            ACTION_LOG="양호: 삭제할 대상 그룹이 없습니다."
+        fi
     else
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="양호: 삭제할 대상 그룹이 없습니다."
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        ACTION_LOG="주의: 일부 그룹 삭제에 실패했습니다."
     fi
 else
     ACTION_LOG="오류: 대상 파일($GROUP_FILE)이 없습니다."
 fi
 
-# 4. JSON 출력
 echo ""
 cat << EOF
 {
     "check_id": "$ID",
-    "action_type": "auto",
+    "status": "$CURRENT_STATUS",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

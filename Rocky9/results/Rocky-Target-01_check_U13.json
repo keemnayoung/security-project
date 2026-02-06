@@ -4,9 +4,8 @@
     "title": "안전한 비밀번호 암호화 알고리즘 사용",
     "importance": "중",
     "status": "PASS",
-    "evidence": "양호: 설정 파일에 안전한 알고리즘(SHA512)이 정의되어 있습니다.",
+    "evidence": "양호: ENCRYPT_METHOD가 SHA512이며, 모든 계정이 안전한 알고리즘을 사용 중입니다.",
     "guide": "/etc/login.defs 파일에서 ENCRYPT_METHOD를 SHA512로 설정하세요.",
-    "target_file": "/etc/login.defs",
-    "file_hash": "4f9a42cc9d0050db5238cc1c0c8e84c37c1087e4dbb3c53a63e4634e9182e95d",
-    "check_date": "2026-02-06 10:33:37"
+    "file_hash": "e31edd19c5b47ecba4fae986e4add7c4aaaba227e1a8ba0803ed05158499fcf5",
+    "check_date": "2026-02-07 04:02:07"
 }

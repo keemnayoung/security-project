@@ -1,77 +1,70 @@
 #!/bin/bash
-# [수동 조치] U-03 계정 잠금 임계값 설정
+# [조치] U-03 계정 잠금 임계값 설정
 
 ID="U-03"
 CONF_FILE="/etc/security/faillock.conf"
-ACTION_RESULT="CANCELLED"
-ACTION_LOG="사용자에 의해 조치가 취소되었습니다."
-
-# 1. 관리자 위험 고지 및 승인 절차 (수동 조치의 핵심)
-echo "----------------------------------------------------------------------"
-echo "[경고] 계정 잠금 임계값 설정을 적용합니다."
-echo "조치 후, 설정된 횟수 이상 로그인 실패 시 해당 계정이 잠깁니다."
-echo "공격자가 관리자 계정을 고의로 잠글 수 있는 위험(DoS)을 인지하셨습니까?"
-echo "----------------------------------------------------------------------"
-read -p "정말 조치를 진행하시겠습니까? (y/n): " CONFIRM
-
-if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
-    echo ""
-    cat << EOF
-{
-    "check_id": "$ID",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
-}
-EOF
-    exit 0
-fi
-
-# 2. 백업 및 환경 준비
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ACTION_RESULT="FAIL"
+CURRENT_STATUS="FAIL"
+ACTION_LOG="N/A"
+
+# 1. 백업 및 환경 준비
 if [ -f "$CONF_FILE" ]; then
     cp -p "$CONF_FILE" "${CONF_FILE}_bak_$TIMESTAMP"
 else
-    # 파일이 없는 경우 생성 (터치)
+    mkdir -p /etc/security
     touch "$CONF_FILE"
 fi
 
-# 3. 조치 로직 수행
+# 2. 조치 로직 수행
 {
-    # Rocky/RHEL 계열에서 authselect 사용 가능 시 활성화
+    # Rocky/RHEL 9 계열 대응 (authselect 사용 시)
     if command -v authselect >/dev/null 2>&1; then
         authselect enable-feature with-faillock >/dev/null 2>&1
         authselect apply-changes >/dev/null 2>&1
     fi
 
-    # faillock.conf 설정 적용 (deny=10, unlock_time=120)
-    # 기존 설정이 주석(#) 처리되어 있어도 치환하거나 없으면 추가함
+    # faillock.conf 설정 (deny=10, unlock_time=120)
     for param in "deny" "unlock_time"; do
-        val=$([ "$param" == "deny" ] && echo "10" || echo "120")
-        if grep -q "^#\? \?${param}" "$CONF_FILE"; then
-            sed -i "s/^#\? \?${param}.*/${param} = ${val}/" "$CONF_FILE"
+        # [수정 완료] 구문 오류 제거
+        if [ "$param" == "deny" ]; then 
+            val="10" 
+        else 
+            val="120" 
+        fi 
+
+        if grep -qi "^#\?${param}" "$CONF_FILE"; then
+            sed -i "s/^#\?${param}.*/${param} = ${val}/i" "$CONF_FILE"
         else
             echo "${param} = ${val}" >> "$CONF_FILE"
         fi
     done
 
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="계정 잠금 임계값(10회) 및 잠금 시간(120초) 설정 완료 (백업: ${CONF_FILE}_bak_$TIMESTAMP)"
+    # [검증] 실제 파일에 값이 제대로 반영되었는지 확인
+    CHECK_VAL=$(grep -iv '^#' "$CONF_FILE" | grep -w "deny" | sed 's/ //g' | cut -d'=' -f2 | tail -1)
+    
+    if [ "$CHECK_VAL" == "10" ]; then
+        ACTION_RESULT="SUCCESS"
+        CURRENT_STATUS="PASS"
+        ACTION_LOG="조치 완료: 임계값(10회) 및 잠금시간(120초) 설정됨."
+    else
+        ACTION_LOG="조치 실패: 설정값이 반영되지 않았습니다."
+    fi
 } || {
-    # 실패 시 롤백 (백업 파일이 존재할 경우)
     [ -f "${CONF_FILE}_bak_$TIMESTAMP" ] && mv "${CONF_FILE}_bak_$TIMESTAMP" "$CONF_FILE"
     ACTION_RESULT="FAIL_AND_ROLLBACK"
-    ACTION_LOG="설정 적용 중 오류가 발생하여 원복했습니다."
+    ACTION_LOG="설정 도중 오류가 발생하여 원복했습니다."
 }
 
-# 4. 표준 JSON 출력
+# 3. 표준 JSON 출력
 echo ""
 cat << EOF
 {
     "check_id": "$ID",
-    "action_type": "manual",
+    "status": "$CURRENT_STATUS",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

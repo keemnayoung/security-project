@@ -1,0 +1,8 @@
+{
+    "check_id": "U-05",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "조치 대상 계정이 없습니다.",
+    "action_date": "2026-02-07 03:23:44",
+    "check_date": "2026-02-07 03:23:44"
+}

@@ -1,0 +1,8 @@
+{
+    "check_id": "U-06",
+    "status": "PASS",
+    "action_result": "SUCCESS",
+    "action_log": "성공: pam_wheel.so 설정 활성화 및 wheel 그룹 제한 적용 완료.",
+    "action_date": "2026-02-07 03:27:00",
+    "check_date": "2026-02-07 03:27:00"
+}
