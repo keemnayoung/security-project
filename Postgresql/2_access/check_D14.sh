@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-14
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 중
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 중
 # @Title       : 데이터베이스의 주요 설정 파일, 비밀번호 파일 등과 같은 주요 파일들의 접근 권한이 적절하게 설정
-# @Description : DB 오류 발생 시 시스템 내부 정보가 과도하게 노출되지 않는지 점검
+# @Description : 데이터베이스의 주요 파일들에 대해 관리자를 제외한 일반 사용자의 파일 수정 권한을 제거하였는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -18,7 +18,7 @@ ITEM_ID="D-14"
 CATEGORY="접근관리"
 CHECK_ITEM="DB 주요 파일 권한"
 DESCRIPTION="PostgreSQL 설정 파일 및 데이터 디렉터리 접근 권한 점검"
-SEVERITY="중"
+IMPORTANCE="중"
 CHECKED_AT=$(date -Iseconds)
 
 # PostgreSQL 데이터 디렉터리
@@ -62,7 +62,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

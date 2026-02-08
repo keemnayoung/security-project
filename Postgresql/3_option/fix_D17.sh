@@ -14,24 +14,20 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-17"
-CATEGORY="옵션관리"
-CHECK_ITEM="Audit Table 접근 통제"
-DESCRIPTION="PostgreSQL에는 Audit Table 개념이 없어 점검 대상 아님"
-IMPORTANCE="하"
-CHECKED_AT=$(date -Iseconds)
+ID="D-17"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: PostgreSQL은 파일 기반 감사 로그 구조를 사용하여 Audit Table 점검 대상이 아님"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="N/A"
-RESULT_MSG="PostgreSQL은 파일 기반 감사 로그 구조를 사용하여 Audit Table 점검 대상이 아님"
-
+# JSON 출력 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
-"category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
-"status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+{
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
+}
 EOF

@@ -14,25 +14,20 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-23"
-CATEGORY="옵션관리"
-CHECK_ITEM="xp_cmdshell 사용 제한"
-DESCRIPTION="MSSQL 전용 xp_cmdshell 기능은 PostgreSQL에 존재하지 않음"
-IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+ID="D-23"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: MSSQL 전용 xp_cmdshell 기능은 PostgreSQL에 존재하지 않음"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="N/A"
-RESULT_MSG="PostgreSQL DBMS에는 xp_cmdshell 또는 이에 상응하는 OS 명령 실행 기능이 존재하지 않아 점검 대상 아님"
-CHECKED=false
-
+# JSON 출력 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
-"category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
-"status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+{
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
+}
 EOF

@@ -14,26 +14,21 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-05"
-CATEGORY="계정관리"
-CHECK_ITEM="비밀번호 재사용 제한 설정"
-DESCRIPTION="비밀번호 변경 시 이전 비밀번호를 재사용할 수 없도록 비밀번호 제약 설정이 되어있는지 점검"
-IMPORTANCE="중"
-CHECKED_AT=$(date -Iseconds)
 
-STATUS="취약"
-RESULT_MSG="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 운영 절차 또는 외부 인증 정책에 따른 수동 관리 여부 확인 필요"
+ID="D-05"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: PostgreSQL은 비밀번호 재사용 제한(password history) 기능을 DBMS 자체적으로 제공하지 않음"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
+# JSON 출력
 cat <<EOF
 {
-  "item_id": "$ITEM_ID",
-  "category": "$CATEGORY",
-  "check_item": "$CHECK_ITEM",
-  "description": "$DESCRIPTION",
-  "IMPORTANCE": "$IMPORTANCE",
-  "checked_at": "$CHECKED_AT",
-  "status": "$STATUS",
-  "result": "$RESULT_MSG",
-  "checked": true
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
 }
 EOF

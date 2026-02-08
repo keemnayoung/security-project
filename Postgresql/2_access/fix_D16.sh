@@ -14,24 +14,22 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-16"
-CATEGORY="접근관리"
-CHECK_ITEM="Windows 인증 모드"
-DESCRIPTION="MSSQL 전용 항목으로 PostgreSQL에는 해당 없음"
-IMPORTANCE="하"
-CHECKED_AT=$(date -Iseconds)
+ID="D-16"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: MSSQL 전용 항목으로 PostgreSQL에는 해당 없음"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="N/A"
-RESULT_MSG="PostgreSQL에는 Windows 인증 모드 및 sa 계정 개념이 없음"
-
+# JSON 출력 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
-"category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
-"status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+{
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
+}
 EOF
+
+

@@ -6,21 +6,19 @@
 # [점검 항목 상세]
 # @ID          : D-25
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
-# @Title       : 주기적 보안 패치 적용 여부
-# @Description : PostgreSQL 보안 패치 지원 버전 사용 여부 점검
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
+# @Title       : 데이터베이스의 접근, 변경, 삭제 등의 감사 기록이 기관의 감사 기록 정책에 적합하도록 설정
+# @Description : 감사 기록 정책 설정이 기관 정책에 적합하게 설정되어 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
 #!/bin/bash
 ITEM_ID="D-25"
-
-ITEM_ID="D-25"
 CATEGORY="패치관리"
 CHECK_ITEM="DBMS 보안 패치 적용"
-DESCRIPTION="PostgreSQL 보안 패치 지원 버전 사용 여부 점검"
-SEVERITY="상"
+DESCRIPTION="감사 기록 정책 설정이 기관 정책에 적합하게 설정되어 있는지 점검"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 version=$(psql -U postgres -t -c "SHOW server_version;" | xargs)
@@ -40,7 +38,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

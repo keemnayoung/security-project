@@ -7,9 +7,9 @@
 # [점검 항목 상세]
 # @ID          : D-02
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
-# @Title       : 불필요한 계정 존재 점검
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
+# @Title       : 데이터베이스의 불필요 계정을 제거하거나, 잠금설정 후 사용
 # @Description : DBMS에 존재하는 계정 중 DB 관리나 운용에 사용하지 않는 불필요한 계정이 존재하는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ==============================================================================
@@ -19,7 +19,7 @@ ITEM_ID="D-02"
 CATEGORY="계정관리"
 CHECK_ITEM="불필요 계정 존재"
 DESCRIPTION="DBMS에 존재하는 계정 중 DB 관리나 운용에 사용하지 않는 불필요한 계정이 존재하는지 점검"
-SEVERITY="상"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 #postgres 기본 관리자 계정에 속하지 않고 이름에 test,demo,temp가 들어간 계정 제외
@@ -45,7 +45,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

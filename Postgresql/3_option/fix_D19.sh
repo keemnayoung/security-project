@@ -14,24 +14,20 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-19"
-CATEGORY="옵션관리"
-CHECK_ITEM="OS 인증 연계"
-DESCRIPTION="Oracle DB 전용 항목으로 PostgreSQL에는 해당 없음"
-IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+ID="D-19"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: Oracle DB 전용 항목으로 PostgreSQL에는 해당 없음"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="N/A"
-RESULT_MSG="PostgreSQL은 OS 계정과 DB 계정을 분리하여 운영함"
-
+# JSON 출력 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
-"category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
-"status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+{
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
+}
 EOF

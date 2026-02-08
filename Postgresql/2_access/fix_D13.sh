@@ -14,25 +14,20 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-13"
-CATEGORY="접근관리"
-CHECK_ITEM="ODBC/OLE-DB 데이터 소스 관리"
-DESCRIPTION="Windows OS 전용 항목으로 PostgreSQL 환경에는 적용되지 않음"
-IMPORTANCE="중"
-CHECKED_AT=$(date -Iseconds)
+ID="D-13"
+CURRENT_STATUS="N/A"
+ACTION_RESULT="NOT_APPLICABLE"
+ACTION_LOG="해당 없음: Windows OS 전용 항목으로 PostgreSQL 환경에는 적용되지 않음"
+NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="N/A"
-RESULT_MSG="Windows OS 전용 항목으로 PostgreSQL(Rocky Linux) 환경에는 해당 없음"
-
-
+# JSON 출력 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
-"category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
-"status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+{
+  "check_id": "$ID",
+  "status": "$CURRENT_STATUS",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG",
+  "action_date": "$NOW",
+  "check_date": "$NOW"
+}
 EOF

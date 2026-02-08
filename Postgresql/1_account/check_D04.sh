@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-04
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
 # @Title       : DBMS 관리자 권한을 꼭 필요한 계정 및 그룹에 대해서만 허용
-# @Description : DB 관리자 권한이 필요한 계정에만 슈퍼유저 권한이 부여되어 있는지 점검
+# @Description : 관리자 권한이 필요한 계정 및 그룹에만 관리자 권한을 부여하였는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-04"
 CATEGORY="계정관리"
 CHECK_ITEM="관리자 권한 계정 최소화"
-DESCRIPTION="DB 관리자 권한이 필요한 계정에만 슈퍼유저 권한이 부여되어 있는지 점검"
-SEVERITY="상"
+DESCRIPTION="관리자 권한이 필요한 계정 및 그룹에만 관리자 권한을 부여하였는지 점검"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 cnt=$(psql -U postgres -t -c \
@@ -37,7 +37,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",
