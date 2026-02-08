@@ -30,12 +30,12 @@ FILE_HASH="N/A"
 
 TARGET_FILES=()
 
-# init 방식 스크립트 수집
+# init 방식
 if [ -d /etc/rc.d ]; then
     INIT_FILES=$(readlink -f /etc/rc.d/*/* 2>/dev/null | sed 's/$/*/')
 fi
 
-# systemd 방식 스크립트 수집
+# systemd 방식
 if [ -d /etc/systemd/system ]; then
     SYSTEMD_FILES=$(readlink -f /etc/systemd/system/* 2>/dev/null | sed 's/$/*/')
 fi
@@ -64,7 +64,7 @@ else
 fi
 
 TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}")
-EVIDENCE=$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')
+EVIDENCE=$(printf "%s\\n" "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
