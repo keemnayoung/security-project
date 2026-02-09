@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="UID가 0인 일반 계정 존재"
 IMPORTANCE="상"
 TARGET_FILE="/etc/passwd"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="해당 계정에 반드시 관리자(root) 권한이 필요한 특수 목적이 없다면, UID를 변경하더라도 일반적인 시스템 운영에는 영향이 없습니다. 다만, 조치 후 해당 계정은 더 이상 관리자 권한을 행사할 수 없으므로 기존에 수행하던 작업의 권한 문제를 사전에 검토해야 합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -51,6 +53,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "root 이외의 계정 중 UID가 0인 계정의 UID를 1000 이상의 번호로 변경하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "${FILE_HASH:-N/A}",

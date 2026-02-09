@@ -21,6 +21,8 @@ CATEGORY="계정관리"
 TITLE="세션 종료 시간 설정"
 IMPORTANCE="하"
 TARGET_FILE="/etc/profile"
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="유휴 세션 종료(TMOUT)를 설정할 경우, 일정 시간 활동이 없으면 접속이 강제로 끊어지게 됩니다. 특히 실시간 모니터링이나 대시보드 관제 용도로 사용하는 계정은 업무 수행에 차질이 발생할 수 있으므로, 해당 용도의 계정이나 IP에 대해서는 별도의 예외 처리가 필요합니다."
 
 STATUS="FAIL"
 EVIDENCE="N/A"
@@ -59,6 +61,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/profile 파일에 TMOUT=600 및 export TMOUT를 설정하세요.",
     "file_hash": "$FILE_HASH",
     "target_file": "$TARGET_FILE",

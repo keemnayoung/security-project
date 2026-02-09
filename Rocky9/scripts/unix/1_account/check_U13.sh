@@ -23,6 +23,8 @@ TITLE="안전한 비밀번호 암호화 알고리즘 사용"
 IMPORTANCE="중"
 DEFS_FILE="/etc/login.defs"
 SHADOW_FILE="/etc/shadow"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="암호화 알고리즘 변경 설정(SHA-512 등)은 일반적인 시스템 운영에는 영향이 없습니다. 다만, 설정 변경 이후 생성되는 계정이나 비밀번호를 새로 변경하는 계정에만 적용되므로, 기존 계정들은 다음 비밀번호 변경 주기 전까지 이전 알고리즘으로 유지됨을 유의해야 합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -65,6 +67,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/login.defs 파일에서 ENCRYPT_METHOD를 SHA512로 설정하세요.",
     "file_hash": "$FILE_HASH",
     "target_file": "$DEFS_FILE,$SHADOW_FILE",

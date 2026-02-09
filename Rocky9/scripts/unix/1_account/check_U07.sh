@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="불필요한 계정 제거"
 IMPORTANCE="하"
 TARGET_FILE="/etc/passwd"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="기본적으로 설치되지만 현재 시스템에서 사용하지 않는 서비스용 계정(lp, uucp 등)을 제거하는 것이므로, 일반적인 시스템 운영 및 서비스 가동에는 영향이 없습니다. 단, 해당 계정을 특정 용도로 활용 중인지 사전에 확인하는 것을 권장합니다."
 
 # KISA 가이드 및 현업 표준 불필요 계정 목록
 DEFAULT_UNUSED_ACCOUNTS=("lp" "uucp" "nuucp")
@@ -61,6 +63,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/passwd에서 lp, uucp 등 사용하지 않는 계정을 userdel로 삭제하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",

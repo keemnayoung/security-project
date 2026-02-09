@@ -1,30 +1,57 @@
-- name: 보안 취약점 개별 조치 (대시보드 연동)
-  hosts: all
+- name: 보안 전수 점검 (Linux & DB 통합 자동화)
+  hosts: target_servers
   become: yes
   tasks:
-    - name: "1. 조치 대상 변수 확인"
-      debug:
-        msg: "조치 항목 ID: {{ target_id }}"
-      failed_when: target_id is not defined
+    - name: "1. OS 및 DB 진단 스크립트 목록 가져오기"
+      delegate_to: localhost
+      become: no
+      find:
+        # [수정] unix와 db 폴더 모두 검색하도록 상위 경로 지정
+        paths: 
+          - "./scripts/unix"
+          - "./scripts/db"
+        patterns: "check_*.sh"
+        recurse: yes
+      register: script_files
 
-    - name: "2. 조치 스크립트 실행"
-      # target_id가 U01이면 바로 fix_U01.sh를 찾습니다.
-      script: "./scripts/unix/1_account/fix_{{ target_id }}.sh -y"
-      register: fix_result
+    - name: "2. 대상 서버 환경에 맞는 스크립트 실행"
+      script: "{{ item.path }}"
+      register: diag_results
+      loop: "{{ script_files.files }}"
+      when: 
+        # [조건 추가] target_id 필터 유지 + DB 타입별 실행 제한
+        - target_id is not defined or (target_id | string) in (item.path | basename)
+        # [분기 로직] 로키9면 mysql 스크립트만, 로키10이면 postgres 스크립트만 실행
+        - ("db/mysql" not in item.path) or ("Target-Node-Rocky9" in inventory_hostname)
+        - ("db/postgresql" not in item.path) or ("Target-Node-Rocky10" in inventory_hostname)
 
-     # 3. 조치 로그 저장 (fix_logs)
-    - name: "3. 조치 로그 저장"
+    - name: "3. 결과 수집 및 JSON 저장"
+      delegate_to: localhost
+      become: no
+      copy:
+        # [정규식 보강] JSON 시작({)과 끝(}) 사이의 유효한 데이터만 추출
+        content: "{{ item.stdout | regex_search('\\{.*\\}', multiline=True, dotall=True) }}"
+        dest: "./results/{{ inventory_hostname }}_{{ item.item.path | basename | replace('.sh', '') | replace('-', '') }}.json"
+        force: yes 
+      loop: "{{ diag_results.results }}"
+      when: 
+        - item.skipped is not defined or not item.skipped
+        - item.stdout is defined and '{' in item.stdout # [수정] stdout 존재 여부 먼저 확인
+
+    # 4. 조치 로그 저장 (fix_logs)
+    - name: "4. 조치 로그 저장"
       delegate_to: localhost
       become: no
       copy:
         content: "{{ fix_result.stdout | regex_search('(?s)\\{.*\\}') }}"
         dest: "/home/manager/security_project/fix_logs/{{ inventory_hostname }}_fix_{{ target_id }}.json"
-      when: "'{' in fix_result.stdout"
+      when: found_fix_script.matched > 0 and '{' in fix_result.stdout
 
-    - name: "4. 대시보드 즉시 반영 (파일명 구분)"
+    # 5. 대시보드 즉시 반영 (파일명 구분)
+    - name: "5. 대시보드 즉시 반영"
       delegate_to: localhost
       become: no
       copy:
         content: "{{ fix_result.stdout | regex_search('(?s)\\{.*\\}') }}"
         dest: "/home/manager/security_project/results/{{ inventory_hostname }}_remediated_{{ target_id }}.json"
-      when: "'{' in fix_result.stdout"
+      when: found_fix_script.matched > 0 and '{' in fix_result.stdout

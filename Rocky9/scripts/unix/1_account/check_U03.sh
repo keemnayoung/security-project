@@ -23,6 +23,8 @@ CATEGORY="계정관리"
 TITLE="계정 잠금 임계값 설정"
 IMPORTANCE="상"
 TARGET_FILE="/etc/security/faillock.conf"
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="PAM 모듈 설정 시 라이브러리 경로가 잘못되거나 모듈 적용 순서가 틀릴 경우, 모든 사용자의 로그인 및 인증이 실패하는 심각한 장애가 발생할 수 있습니다. 특히 HP-UX 등 일부 시스템은 구조 변경으로 운영 서비스에 영향을 줄 수 있으므로 반드시 사전 테스트와 라이브러리 존재 여부(pam_tally.so 등)를 확인한 후 순서에 맞게 설정해야 합니다."
 
 STATUS="FAIL"
 EVIDENCE="N/A"
@@ -54,6 +56,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "faillock.conf 파일에서 deny=10 이하로 설정하고 unlock_time을 지정하세요.",
     "target_file": "$PW_CONF, $LOGIN_DEFS",
     "file_hash": "${FILE_HASH:-N/A}",

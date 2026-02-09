@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="관리자 그룹에 최소한의 계정 포함"
 IMPORTANCE="중"
 TARGET_FILE="/etc/group"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="관리자(root) 그룹에 불필요하게 포함된 일반 계정을 제거하는 조치로, 일반적인 시스템 운영에는 영향이 없습니다. 다만, 조치 후 해당 계정은 root 그룹 권한이 필요한 특정 파일이나 디렉터리에 접근할 수 없게 되므로, 업무상 권한이 필요한 계정인지 사전에 확인이 필요합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -58,6 +60,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/group 파일에서 root 그룹에 등록된 불필요한 일반 계정을 제거하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",

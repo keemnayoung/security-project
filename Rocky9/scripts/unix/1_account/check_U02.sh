@@ -23,6 +23,8 @@ TITLE="패스워드 복잡성 및 유효기간 설정"
 IMPORTANCE="상"
 PW_CONF="/etc/security/pwquality.conf"
 LOGIN_DEFS="/etc/login.defs"
+IMPACT_LEVEL="MEDIUM" 
+ACTION_IMPACT="비밀번호 정책 변경(복잡성/유효기간) 시 Web, WAS, DB 연동 구간에서 계정 인증 문제가 발생할 수 있습니다. 특히 자동 로그인 스크립트나 연동 계정의 비밀번호 만료 시 서비스 중단 위험이 있으므로, 연동 구간에 미칠 수 있는 영향을 충분히 고려하여 적용해야 합니다."
 
 STATUS="PASS"
 EVIDENCE_LIST=()
@@ -71,6 +73,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "pwquality.conf(minlen=8, minclass=3) 및 login.defs(PASS_MAX_DAYS=90) 설정을 적용하세요.",
     "target_file": "$PW_CONF, $LOGIN_DEFS",
     "file_hash": "${FILE_HASH:-N/A}",

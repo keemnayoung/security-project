@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="root 계정 원격 접속 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/ssh/sshd_config"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 이후 외부에서 root 계정으로 직접 SSH 원격 접속이 불가능해지므로 반드시 일반 사용자 계정으로 접속 후 관리자 권한을 획득하여 작업해야 합니다."
 
 # 2. 진단 로직 (무결성 해시 포함)
 STATUS="FAIL"
@@ -59,6 +61,8 @@ cat << EOF
     "guide": "sshd_config 파일에서 PermitRootLogin을 no로 설정하여 root 원격 접속을 차단하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

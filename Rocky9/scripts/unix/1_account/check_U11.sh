@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="사용자 shell 점검"
 IMPORTANCE="하"
 TARGET_FILE="/etc/passwd"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="로그인이 불필요한 시스템 계정(daemon, bin 등)에 대해 로그인 제한 쉘을 부여하는 것이므로, 일반적인 시스템 운영 및 서비스 가동에는 영향이 없습니다. 다만, 특정 시스템 계정을 통해 직접 로그인하여 작업을 수행하던 환경이라면 해당 계정의 접속이 차단됨을 유의해야 합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -72,6 +74,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "로그인이 불필요한 계정에 /sbin/nologin 또는 /bin/false 쉘을 부여하세요.",
     "file_hash": "$FILE_HASH",
     "target_file": "$TARGET_FILE",

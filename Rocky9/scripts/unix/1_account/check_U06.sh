@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="su 명령 사용 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/pam.d/su"
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="su 명령 사용이 제한된 wheel 그룹에 추가된 계정들은 현재 연결된 모든 세션(Session)을 종료하고 재로그인해야만 su 명령어를 정상적으로 사용할 수 있습니다. 기존에 접속 중인 세션에는 설정이 즉시 반영되지 않음을 유의해야 합니다."
 
 STATUS="FAIL"
 EVIDENCE="N/A"
@@ -53,6 +55,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하여 wheel 그룹으로 제한하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",

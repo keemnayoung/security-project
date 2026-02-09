@@ -22,6 +22,8 @@ CATEGORY="계정관리"
 TITLE="동일한 UID 금지"
 IMPORTANCE="중"
 TARGET_FILE="/etc/passwd"
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="운영 목적으로 동일한 UID 값을 부여하였다면, UID 변경 시 해당 계정이 소유한 파일 및 디렉터리에 대한 접근 권한이 상실될 수 있습니다. 따라서 조치 전 해당 계정이 사용 중인 데이터의 소유권과 권한 설정을 철저히 검토하여 서비스 중단이 발생하지 않도록 확인해야 합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -61,6 +63,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/passwd 파일을 확인하여 중복된 UID를 가진 계정의 UID를 수정하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",

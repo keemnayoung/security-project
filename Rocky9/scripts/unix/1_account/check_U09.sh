@@ -23,6 +23,8 @@ TITLE="계정이 존재하지 않는 GID 금지"
 IMPORTANCE="하"
 GROUP_FILE="/etc/group"
 PASSWD_FILE="/etc/passwd"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="소속된 계정이 없는 유휴 그룹을 삭제하는 조치이므로, 일반적인 시스템 운영에는 영향이 없습니다. 다만, 향후 특정 애플리케이션이나 스크립트에서 해당 GID를 사용할 계획이 있는지 사전에 검토하는 것이 좋습니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -71,6 +73,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "/etc/group 파일에서 소속된 계정이 없는 불필요한 그룹(GID 1000 이상)을 groupdel 명령어로 삭제하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",

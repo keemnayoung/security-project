@@ -23,6 +23,8 @@ TITLE="비밀번호 파일 보호"
 IMPORTANCE="상"
 PASSWD_FILE="/etc/passwd"
 SHADOW_FILE="/etc/shadow"
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="리눅스 환경에서 pwconv 명령을 통한 쉐도우 패스워드 전환은 시스템 운영에 직접적인 영향이 거의 없습니다. 다만, HP-UX 시스템의 경우 Trusted Mode 전환 시 파일 시스템 구조 변경으로 인한 서비스 장애 위험이 있으므로 해당 OS 환경에서는 반드시 충분한 사전 테스트가 필요합니다."
 
 STATUS="PASS"
 EVIDENCE="N/A"
@@ -52,6 +54,8 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "guide": "pwconv 명령어를 실행하여 쉐도우 패스워드 정책을 적용하세요.",
     "target_file": "$PASSWD_FILE, $SHADOW_FILE",
     "file_hash": "${FILE_HASH:-N/A}",
