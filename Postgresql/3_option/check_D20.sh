@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-20
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 하
-# @Title       : Object Owner 제한
-# @Description : DB 객체의 소유자 계정이 인가된 관리자 계정인지 점검
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 하
+# @Title       : 인가되지 않은 Object Owner의 제한
+# @Description : Object Owner가 인가된 계정에게만 존재하는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-20"
 CATEGORY="옵션관리"
 CHECK_ITEM="Object Owner 제한"
-DESCRIPTION="인가되지 않은 계정이 DB 객체를 소유하고 있는지 점검"
-SEVERITY="하"
+DESCRIPTION="Object Owner가 인가된 계정에게만 존재하는지 점검"
+IMPORTANCE="하"
 CHECKED_AT=$(date -Iseconds)
 
 cnt=$(psql -U postgres -t -c "
@@ -46,7 +46,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

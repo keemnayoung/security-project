@@ -7,9 +7,9 @@
 # [점검 항목 상세]
 # @ID          : D-01
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
-# @Title       : root 계정 원격 접속 제한
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
+# @Title       : 기본 계정의 비밀번호, 정책 등을 변경하여 사용
 # @Description : DBMS 기본 계정의 초기 비밀번호 및 권한 정책 변경 사용 유무 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ==============================================================================
@@ -19,7 +19,7 @@ ITEM_ID="D-01"
 CATEGORY="계정관리"
 CHECK_ITEM="DB 기본 계정 비밀번호 변경 여부"
 DESCRIPTION="DBMS 기본 계정의 초기 비밀번호 및 권한 정책 변경 사용 유무 점검"
-SEVERITY="상"
+IMPORTANCE="상"
 
 CHECKED_AT=$(date -Iseconds)
 
@@ -42,7 +42,7 @@ cat <<EOF
   "category": "$CATEGORY",
   "check_item": "$CHECK_ITEM",
   "description": "$DESCRIPTION",
-  "severity": "$SEVERITY",
+  "IMPORTANCE": "$IMPORTANCE",
   "checked_at": "$CHECKED_AT",
   "status": "$STATUS",
   "result": "$RESULT_MSG",

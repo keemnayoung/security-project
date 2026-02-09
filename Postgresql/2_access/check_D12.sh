@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-12
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
 # @Title       : 안전한 리스너 비밀번호 설정 및 사용
-# @Description : DBMS 접속 이력에 대한 로그가 정상적으로 수집되고 있는지 점검
+# @Description : 오라클 데이터베이스 Listener의 비밀번호 설정 여부 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -18,7 +18,7 @@ ITEM_ID="D-12"
 CATEGORY="접근관리"
 CHECK_ITEM="Listener 보안 설정"
 DESCRIPTION="PostgreSQL에는 Listener 개념이 없어 해당 없음"
-SEVERITY="상"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 STATUS="N/A"
@@ -30,7 +30,7 @@ cat <<EOF
   "category":"$CATEGORY",
   "check_item":"$CHECK_ITEM",
   "description":"$DESCRIPTION",
-  "severity":"$SEVERITY",
+  "IMPORTANCE":"$IMPORTANCE",
   "checked_at":"$CHECKED_AT",
   "status":"$STATUS",
   "result":"$RESULT_MSG",

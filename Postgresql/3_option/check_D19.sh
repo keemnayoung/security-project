@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-19
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
-# @Title       : 감사 로그 설정
-# @Description : Oracle DB 전용 항목으로 PostgreSQL에는 해당 없음
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
+# @Title       : OS_ROLES, REMOTE_OS_AUTHENTICATION, REMOTE_OS_ROLES를 FALSE로 설정
+# @Description : OS_ROLES, REMOTE_OS_AUTHENTICATION, REMOTE_OS_ROLES가 FALSE로 설정이 적용되어 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -18,7 +18,7 @@ ITEM_ID="D-19"
 CATEGORY="옵션관리"
 CHECK_ITEM="OS 인증 연계"
 DESCRIPTION="Oracle DB 전용 항목으로 PostgreSQL에는 해당 없음"
-SEVERITY="상"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 STATUS="N/A"
@@ -29,7 +29,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

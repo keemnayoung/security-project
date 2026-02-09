@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-06
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 중
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 중
 # @Title       : DB 사용자 계정을 개별적으로 부여하여 사용
-# @Description : 사용자별 별도 DBMS 계정을 사용하여 DB에 접근하는지 점검
+# @Description : DB 접근 시 사용자별로 서로 다른 계정을 사용하여 접근하는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-06"
 CATEGORY="계정관리"
 CHECK_ITEM="사용자별 DB 계정 사용"
-DESCRIPTION="사용자별 별도 DBMS 계정을 사용하여 DB에 접근하는지 점검"
-SEVERITY="중"
+DESCRIPTION="DB 접근 시 사용자별로 서로 다른 계정을 사용하여 접근하는지 점검"
+IMPORTANCE="중"
 CHECKED_AT=$(date -Iseconds)
 
 login_cnt=$(psql -U postgres -t -c \
@@ -38,7 +38,7 @@ cat <<EOF
   "category":"$CATEGORY",
   "check_item":"$CHECK_ITEM",
   "description":"$DESCRIPTION",
-  "severity":"$SEVERITY",
+  "IMPORTANCE":"$IMPORTANCE",
   "checked_at":"$CHECKED_AT",
   "status":"$STATUS",
   "result":"$RESULT_MSG",

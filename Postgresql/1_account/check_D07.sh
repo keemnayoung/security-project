@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-07
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 중
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 중
 # @Title       : root 권한으로 서비스 구동 제한
-# @Description : 과도한 권한 부여 방지 및 최소 권한 원칙 적용
+# @Description : 서비스 구동 시 root 계정 또는 root 권한으로 구동되는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-07"
 CATEGORY="계정관리"
 CHECK_ITEM="root 권한 서비스 구동 제한"
-DESCRIPTION="과도한 권한 부여 방지 및 최소 권한 원칙 적용"
-SEVERITY="중"
+DESCRIPTION="서비스 구동 시 root 계정 또는 root 권한으로 구동되는지 점검"
+IMPORTANCE="중"
 CHECKED_AT=$(date -Iseconds)
 
 root_cnt=$(ps -eo user,comm | grep postgres | grep -w root | wc -l)
@@ -37,7 +37,7 @@ cat <<EOF
   "category":"$CATEGORY",
   "check_item":"$CHECK_ITEM",
   "description":"$DESCRIPTION",
-  "severity":"$SEVERITY",
+  "IMPORTANCE":"$IMPORTANCE",
   "checked_at":"$CHECKED_AT",
   "status":"$STATUS",
   "result":"$RESULT_MSG",

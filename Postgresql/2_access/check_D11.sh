@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-11
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
 # @Title       : DBA 이외의 인가되지 않은 사용자가 시스템 테이블에 접근할 수 없도록 설정
-# @Description : 일반 사용자 계정의 시스템 테이블 접근 권한 부여 여부 점검
+# @Description : 시스템 테이블에 일반 사용자 계정이 접근할 수 없도록 설정되어 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-11"
 CATEGORY="접근관리"
 CHECK_ITEM="시스템 테이블 접근 제한"
-DESCRIPTION="일반 사용자 계정의 시스템 테이블 접근 권한 부여 여부 점검"
-SEVERITY="상"
+DESCRIPTION="시스템 테이블에 일반 사용자 계정이 접근할 수 없도록 설정되어 있는지 점검"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 cnt=$(psql -U postgres -t -c "
@@ -42,7 +42,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

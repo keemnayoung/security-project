@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-17
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 하
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 하
 # @Title       : Audit Table 접근 통제
-# @Description : PostgreSQL에는 Audit Table 개념이 없어 점검 대상 아님
+# @Description : Audit Table 접근 권한이 관리자 계정으로 제한되고 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -18,7 +18,7 @@ ITEM_ID="D-17"
 CATEGORY="옵션관리"
 CHECK_ITEM="Audit Table 접근 통제"
 DESCRIPTION="PostgreSQL에는 Audit Table 개념이 없어 점검 대상 아님"
-SEVERITY="하"
+IMPORTANCE="하"
 CHECKED_AT=$(date -Iseconds)
 
 STATUS="N/A"
@@ -29,7 +29,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

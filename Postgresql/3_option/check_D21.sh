@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-21
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 중
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 중
 # @Title       : 인가되지 않은 GRANT OPTION 사용 제한
-# @Description : 일반 사용자에게 WITH GRANT OPTION 권한 부여 여부 점검
+# @Description : 일반 사용자에게 GRANT OPTION이 ROLE에 의하여 부여되어 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-21"
 CATEGORY="옵션관리"
 CHECK_ITEM="인가되지 않은 GRANT OPTION 사용 제한"
-DESCRIPTION="일반 사용자에게 WITH GRANT OPTION 권한 부여 여부 점검"
-SEVERITY="중"
+DESCRIPTION="일반 사용자에게 GRANT OPTION이 ROLE에 의하여 부여되어 있는지 점검"
+IMPORTANCE="중"
 CHECKED_AT=$(date -Iseconds)
 
 cnt=$(psql -U postgres -t -c "
@@ -42,7 +42,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

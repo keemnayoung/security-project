@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-05
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 중
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 중
 # @Title       : 비밀번호 재사용 제한 정책
-# @Description : 비밀번호 정책 및 설정 관리를 통한 무단 접근 방지
+# @Description : 비밀번호 변경 시 이전 비밀번호를 재사용할 수 없도록 비밀번호 제약 설정이 되어있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-05"
 CATEGORY="계정관리"
 CHECK_ITEM="비밀번호 재사용 제한 설정"
-DESCRIPTION="비밀번호 재사용 제한 정책 적용 여부 점검"
-SEVERITY="중"
+DESCRIPTION="비밀번호 변경 시 이전 비밀번호를 재사용할 수 없도록 비밀번호 제약 설정이 되어있는지 점검"
+IMPORTANCE="중"
 CHECKED_AT=$(date -Iseconds)
 
 STATUS="취약"
@@ -30,7 +30,7 @@ cat <<EOF
   "category": "$CATEGORY",
   "check_item": "$CHECK_ITEM",
   "description": "$DESCRIPTION",
-  "severity": "$SEVERITY",
+  "IMPORTANCE": "$IMPORTANCE",
   "checked_at": "$CHECKED_AT",
   "status": "$STATUS",
   "result": "$RESULT_MSG",

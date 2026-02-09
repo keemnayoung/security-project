@@ -6,8 +6,8 @@
 # [점검 항목 상세]
 # @ID          : D-24
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
 # @Title       : Registry Procedure 권한 제한
 # @Description : MSSQL 전용 Registry Procedure 기능은 PostgreSQL에 존재하지 않음
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
@@ -18,7 +18,7 @@ ITEM_ID="D-24"
 CATEGORY="옵션관리"
 CHECK_ITEM="Registry Procedure 권한 제한"
 DESCRIPTION="MSSQL 전용 Registry Procedure 기능은 PostgreSQL에 존재하지 않음"
-SEVERITY="상"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 STATUS="N/A"
@@ -30,7 +30,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",

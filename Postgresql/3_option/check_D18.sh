@@ -6,10 +6,10 @@
 # [점검 항목 상세]
 # @ID          : D-18
 # @Category    : DBMS
-# @Platform    : PostgreSQL
-# @Severity    : 상
-# @Title       : 응용 프로그램 또는 DBA 계정의 Role이 Public으로 설정되어 있는지 점검
-# @Description : DB 객체에 PUBLIC 권한 부여 여부 점검
+# @Platform    : PostgreSQL 16.11
+# @Importance  : 상
+# @Title       : 응용프로그램 또는 DBA 계정의 Role이 Public으로 설정되지 않도록 조정
+# @Description : 응용 프로그램 또는 DBA 계정의 Role이 Public으로 설정되어 있는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -17,8 +17,8 @@
 ITEM_ID="D-18"
 CATEGORY="옵션관리"
 CHECK_ITEM="PUBLIC Role 권한"
-DESCRIPTION="DB 객체에 PUBLIC 권한 부여 여부 점검"
-SEVERITY="상"
+DESCRIPTION="응용 프로그램 또는 DBA 계정의 Role이 Public으로 설정되어 있는지 점검"
+IMPORTANCE="상"
 CHECKED_AT=$(date -Iseconds)
 
 cnt=$(psql -U postgres -t -c "
@@ -40,7 +40,7 @@ cat <<EOF
 "category":"$CATEGORY",
 "check_item":"$CHECK_ITEM",
 "description":"$DESCRIPTION",
-"severity":"$SEVERITY",
+"IMPORTANCE":"$IMPORTANCE",
 "checked_at":"$CHECKED_AT",
 "status":"$STATUS",
 "result":"$RESULT_MSG",
