@@ -8,7 +8,7 @@
 # [점검 항목 상세]
 # @Check_ID : U-42
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 불필요한 RPC 서비스 비활성화
 # @Description : 불필요한 RPC 서비스의 실행 여부 점검
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-42"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="불필요한 RPC 서비스 비활성화"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -82,6 +82,9 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 비활성화 대상 RPC 서비스가 특정 운영 기능에 사용 중인 경우가 있을 수 있으므로 적용 전 사용 여부를 확인한 뒤 불필요 서비스에 한해 중지·비활성화해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -95,6 +98,8 @@ cat << EOF
     "guide": "RPC 서비스가 불필요한 경우 systemctl stop rpcbind && systemctl disable rpcbind로 비활성화하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

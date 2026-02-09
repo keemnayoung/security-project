@@ -8,21 +8,21 @@
 # [점검 항목 상세]
 # @Check_ID : U-63
 # @Category : 서비스 관리
-# @Platform : Rocky Linux 9
+# @Platform : Rocky Linux
 # @Importance : 중
-# @Title : /etc/sudoers 파일 소유자 및 권한 설정
-# @Description : /etc/sudoers 파일의 소유자가 root이고 권한이 640 이하인지 점검
-# @Criteria_Good : 소유자가 root이고 권한이 640 이하인 경우
-# @Criteria_Bad : 소유자가 root가 아니거나 권한이 640 초과인 경우
+# @Title : sudo 명령어 접근 관리
+# @Description : /etc/sudoers 파일 권한 적절성 여부 점검
+# @Criteria_Good :  /etc/sudoers 파일 소유자가 root이고, 파일 권한이 640인 경우
+# @Criteria_Bad : /etc/sudoers 파일 소유자가 root가 아니거나, 파일 권한이 640을 초과하는 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-63 /etc/sudoers 파일 소유자 및 권한 설정
+# [진단] U-63 sudo 명령어 접근 관리
 
 # 1. 항목 정보 정의
 ID="U-63"
-CATEGORY="서비스관리"
-TITLE="/etc/sudoers 파일 소유자 및 권한 설정"
+CATEGORY="서비스 관리"
+TITLE="sudo 명령어 접근 관리"
 IMPORTANCE="중"
 TARGET_FILE="/etc/sudoers"
 
@@ -66,6 +66,10 @@ else
     EVIDENCE="sudo 미사용 (/etc/sudoers 파일 없음 - 양호)"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, /etc/sudoers 파일의 소유자·권한을 root/640으로 변경하는 과정에서 기존에 특정 사용자 또는 운영 절차가 해당 파일을 직접 수정·관리하던 환경이라면 권한 정책이 달라질 수 있으므로 적용 전 운영 방식(수정 주체/관리 절차)을 확인한 뒤 설정을 반영해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -79,6 +83,8 @@ cat << EOF
     "guide": "chown root:root /etc/sudoers && chmod 440 /etc/sudoers 명령으로 소유자 및 권한을 설정하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

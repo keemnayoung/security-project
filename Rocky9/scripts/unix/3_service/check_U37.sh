@@ -8,20 +8,20 @@
 # [점검 항목 상세]
 # @Check_ID : U-37
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : crontab 설정파일 권한 설정 미흡
 # @Description : crontab 및 at 서비스 관련 파일의 권한 적절성 여부 점검
-# @Criteria_Good : crontab/at 명령어 권한 750 이하, 관련 파일 권한 640 이하
-# @Criteria_Bad : 권한이 과다하게 부여된 경우
+# @Criteria_Good : crontab 및 at 명령어에 일반 사용자 실행 권한이 제거되어 있으며, cron 및 at 관련 파일 권한이 640 이하인 경우
+# @Criteria_Bad :  crontab 및 at 명령어에 일반 사용자 실행 권한이 부여되어 있으며, cron 및 at 관련 파일 권한이 640 이상인 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-37 crontab 설정파일 권한 설정
+# [진단] U-37 crontab 설정파일 권한 설정 미흡
 
 # 1. 항목 정보 정의
 ID="U-37"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="crontab 설정파일 권한 설정 미흡"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -152,6 +152,10 @@ else
     EVIDENCE="crontab/at 명령어 750 이하, 관련 파일 640 이하 적절히 설정됨"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 조치 이후에는 crontab/at 관련 파일 접근 및 예약 작업 등록이 권한 정책에 따라 제한될 수 있으므로 기존에 일반 사용자가 예약 작업을 운영하던 환경이라면 운영 주체와 권한 체계를 재정의해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -165,6 +169,8 @@ cat << EOF
     "guide": "crontab 관련 파일 권한을 640 이하, 소유자를 root로 설정하고, cron.allow/deny 파일을 적절히 구성하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

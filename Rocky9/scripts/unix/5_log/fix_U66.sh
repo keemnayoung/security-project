@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-66
 # @Category    : 로그 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : 정책에 따른 시스템 로깅 설정
 # @Description : 로그 기록 정책을 보안 정책에 따라 설정
@@ -24,58 +24,89 @@
 # *.emerg                                    *
 # ===== END U-66 =====
 
-# 1. 변수 정의
+# 0. 기본 변수 정의
 ID="U-66"
+CATEGORY="로그 관리"
+TITLE="정책에 따른 시스템 로깅 설정"
+IMPORTANCE="중"
 TARGET_FILE="/etc/rsyslog.conf"
-ACTION_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+STATUS="FAIL"
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+EVIDENCE="N/A"
 
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
-
-# 2. 조치 전 설정 백업 및 수집
+# 1. 조치 프로세스 시작
 if [ -f "$TARGET_FILE" ]; then
-    BEFORE_SETTING=$(grep -E "messages|secure|maillog|cron|console|emerg" "$TARGET_FILE")
-    cp "$TARGET_FILE" "${TARGET_FILE}.bak_$(date +%Y%m%d%H%M%S)"
-    ACTION_LOG+="rsyslog 설정 파일 백업 완료\n"
-else
-    ACTION_RESULT="FAIL"
-    ACTION_LOG+="rsyslog 설정 파일이 존재하지 않음\n"
-fi
 
-# 3. 로그 정책 설정 적용
-if [ "$ACTION_RESULT" = "SUCCESS" ]; then
-    ACTION_LOG+="내부 정책 로그 설정 적용 완료\n"
-fi
+    BACKUP_FILE="${TARGET_FILE}_bak_$(date +%Y%m%d_%H%M%S)"
+    cp -p "$TARGET_FILE" "$BACKUP_FILE"
 
-# 4. 서비스 재시작
-if [ "$ACTION_RESULT" = "SUCCESS" ]; then
-    systemctl restart rsyslog 2>/dev/null
+    # 기존 정책 중복 방지
+    sed -i '/U-66 내부 정책 로그 설정/,/END U-66/d' "$TARGET_FILE"
 
-    if [ $? -eq 0 ]; then
-        ACTION_LOG+="rsyslog 서비스 재시작 성공\n"
+    # 내부 정책 로그 설정 적용
+    cat <<EOF >> "$TARGET_FILE"
+
+# ===== U-66 내부 정책 로그 설정 =====
+*.info;mail.none;authpriv.none;cron.none    /var/log/messages
+auth,authpriv.*                             /var/log/secure
+mail.*                                     /var/log/maillog
+cron.*                                     /var/log/cron
+*.alert                                    /dev/console
+*.emerg                                    *
+# ===== END U-66 =====
+EOF
+
+    # 서비스 재시작
+    if systemctl restart rsyslog >/dev/null 2>&1; then
+
+        # 로그 파일 생성 여부 검증
+        MISSING_LOGS=()
+        for LOG in /var/log/messages /var/log/secure /var/log/maillog /var/log/cron; do
+            [ ! -f "$LOG" ] && MISSING_LOGS+=("$LOG")
+        done
+
+        if [ ${#MISSING_LOGS[@]} -eq 0 ]; then
+            STATUS="PASS"
+            ACTION_RESULT="SUCCESS"
+            ACTION_LOG="내부 정책 로그 설정 적용 및 rsyslog 재시작 완료"
+            EVIDENCE="필수 로그 파일 정상 생성 확인 (양호)"
+        else
+            STATUS="FAIL"
+            ACTION_RESULT="PARTIAL_SUCCESS"
+            ACTION_LOG="설정은 적용되었으나 일부 로그 파일이 생성되지 않음"
+            EVIDENCE="미생성 로그 파일: $(IFS=,; echo "${MISSING_LOGS[*]}")"
+        fi
     else
-        ACTION_RESULT="FAIL"
-        ACTION_LOG+="rsyslog 서비스 재시작 실패\n"
+        mv "$BACKUP_FILE" "$TARGET_FILE"
+        systemctl restart rsyslog >/dev/null 2>&1
+        STATUS="FAIL"
+        ACTION_RESULT="FAIL_AND_ROLLBACK"
+        ACTION_LOG="rsyslog 재시작 실패로 설정 롤백 수행"
+        EVIDENCE="롤백 완료 (취약)"
     fi
+else
+    STATUS="FAIL"
+    ACTION_RESULT="ERROR"
+    ACTION_LOG="조치 대상 파일($TARGET_FILE)이 존재하지 않음"
+    EVIDENCE="설정 파일 없음"
 fi
 
-# 5. 조치 후 설정 수집
-if [ -f "$TARGET_FILE" ]; then
-    AFTER_SETTING=$(grep -E "messages|secure|maillog|cron|console|emerg" "$TARGET_FILE")
-fi
-
-# 6. JSON 출력
+# 2. JSON 표준 출력
 echo ""
 
 cat <<EOF
 {
-  "check_id": "$ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$(echo -e "$BEFORE_SETTING" | sed 's/"/\\"/g')",
-  "after_setting": "$(echo -e "$AFTER_SETTING" | sed 's/"/\\"/g')",
-  "action_log": "$(echo -e "$ACTION_LOG" | sed 's/"/\\"/g')",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 로그 정책 설정이 완료되었습니다.",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

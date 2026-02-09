@@ -8,21 +8,21 @@
 # [점검 항목 상세]
 # @Check_ID : U-49
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
-# @Title : DNS 서비스 최신 패치
-# @Description : DNS 서비스의 보안 패치가 최신인지 점검
-# @Criteria_Good : DNS 서비스를 사용하지 않거나, 최신 버전으로 패치되어 있는 경우
-# @Criteria_Bad : 취약한 버전의 DNS 서비스를 사용 중인 경우
+# @Title : DNS 보안 버전 패치
+# @Description : BIND 최신 버전 사용 유무 및 주기적 보안 패치 여부 점검
+# @Criteria_Good : 주기적으로 패치를 관리하는 경우
+# @Criteria_Bad : 주기적으로 패치를 관리하고 있지 않은 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-49 DNS 서비스 최신 패치
+# [진단] U-49 DNS 보안 버전 패치
 
 # 1. 항목 정보 정의
 ID="U-49"
-CATEGORY="서비스관리"
-TITLE="DNS 서비스 최신 패치"
+CATEGORY="서비스 관리"
+TITLE="DNS 보안 버전 패치"
 IMPORTANCE="상"
 TARGET_FILE="/usr/sbin/named"
 
@@ -63,6 +63,10 @@ else
     EVIDENCE="DNS 서비스가 비활성화되어 있음"
 fi
 
+
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="DNS 서비스 보안 패치 적용 시 시스템 및 서비스에 영향을 줄 수 있습니다. 특히 DNS 서비스는 패치 적용에 따른 서비스 영향 정도를 정확히 파악한 뒤 주기적인 패치 적용 정책을 수립하여 운영에 미칠 수 있는 영향을 충분히 고려하고 단계적으로 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -76,6 +80,8 @@ cat << EOF
     "guide": "BIND 최신 보안 버전으로 업데이트: dnf update bind 실행 후 named 서비스 재시작하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

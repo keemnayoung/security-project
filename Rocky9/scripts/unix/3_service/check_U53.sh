@@ -8,21 +8,21 @@
 # [점검 항목 상세]
 # @Check_ID : U-53
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 하
-# @Title : FTP 서비스 접속 배너 설정, 사용자 쉘 점검 (FTP Banner)
-# @Description : FTP 서비스 접속 시 버전 정보가 노출되지 않도록 배너 설정 여부 점검
-# @Criteria_Good : FTP 서비스 배너가 설정되어 버전 정보가 노출되지 않는 경우
-# @Criteria_Bad : FTP 서비스 배너 설정이 없어 버전 정보가 노출되는 경우
+# @Title : FTP 서비스 정보 노출 제한
+# @Description : FTP 서비스 정보 노출 여부 점검
+# @Criteria_Good : FTP 접속 배너에 노출되는 정보가 없는 경우
+# @Criteria_Bad : FTP 접속 배너에 노출되는 정보가 있는 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-53 FTP 서비스 배너 설정
+# [진단] U-53 FTP 서비스 정보 노출 제한
 
 # 1. 항목 정보 정의
 ID="U-53"
-CATEGORY="서비스관리"
-TITLE="FTP 서비스 접속 배너 설정"
+CATEGORY="서비스 관리"
+TITLE="FTP 서비스 정보 노출 제한"
 IMPORTANCE="하"
 TARGET_FILE="/etc/vsftpd.conf"
 
@@ -101,6 +101,10 @@ else
     EVIDENCE="FTP 배너가 적절히 설정되어 있음"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 접속 배너에 서비스 이름/버전 정보가 노출되던 기존 설정이 변경되므로 배너 정책을 사전에 정한 뒤 FTP 설정 파일을 통해 배너를 일관되게 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -114,6 +118,8 @@ cat << EOF
     "guide": "vsftpd.conf에 ftpd_banner=Authorized users only 설정, 또는 banner_file 지정으로 정보 노출을 방지하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

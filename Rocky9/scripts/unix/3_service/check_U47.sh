@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-47
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 스팸 메일 릴레이 제한
-# @Description : 메일 서버의 릴레이 기능이 제한되어 있는지 점검
-# @Criteria_Good : SMTP 서비스를 사용하지 않거나, 릴레이 제한이 설정된 경우
-# @Criteria_Bad : SMTP 서비스를 사용하며, 릴레이 제한이 설정되어 있지 않은 경우
+# @Description : SMTP 서버의 릴레이 기능 제한 여부 점검
+# @Criteria_Good : 메일 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad : 메일 서비스 사용 시 릴레이 방지 설정 또는 릴레이 대상 접근 제어 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-47"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="스팸 메일 릴레이 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/postfix/main.cf"
@@ -167,6 +167,10 @@ else
     EVIDENCE="스팸 릴레이가 적절히 제한되어 있거나 기본 설정 적용됨"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 메일 서비스 사용 시 릴레이 방지 설정 또는 릴레이 대상 접근 제어가 적용되므로 허용 범위(허용 대상/네트워크)를 운영 정책에 맞게 사전에 정의한 뒤 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -180,6 +184,8 @@ cat << EOF
     "guide": "Postfix: mynetworks를 신뢰할 수 있는 IP 대역으로 제한, smtpd_relay_restrictions 설정을 강화하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

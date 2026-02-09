@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-31
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : 홈디렉토리 소유자 및 권한 설정
 # @Description : 홈 디렉토리의 소유자 외 타 사용자가 해당 홈 디렉토리를 수정할 수 없도록 제한 설정 여부 점검
@@ -23,46 +23,48 @@ TITLE="홈디렉토리 소유자 및 권한 설정"
 IMPORTANCE="중"
 STATUS="PASS"
 EVIDENCE=""
-
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 공용처럼 사용되던 홈 디렉터리 구조가 있었다면 일부 사용자나 스크립트의 접근이 제한되어 업무에 영향을 줄 수 있습니다."
 CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 
 # 2. 진단 로직
 # 로그인 가능한 사용자 대상으로 홈 디렉토리 점검
-while IFS=: read -r USER _ UID _ _ HOME _; do
-    # 시스템 계정 제외 (UID 1000 미만)
-    [ "$UID" -lt 1000 ] && continue
+while IFS=: read -r USER _ _ _ _ HOME _; do
 
-    # 홈 디렉토리 존재 여부 확인
-    if [ ! -d "$HOME" ]; then
-        continue
-    fi
 
-    OWNER=$(stat -c %U "$HOME")
-    PERM=$(stat -c %a "$HOME")
+    # 홈 디렉토리가 실제로 존재하는 경우만 점검
+    [[ ! -d "$HOME" ]] && continue
+
+    OWNER=$(stat -c %U "$HOME" 2>/dev/null | tr -d '[:space:]')
+    PERM=$(stat -c %a "$HOME" 2>/dev/null | tr -d '[:space:]')
     OTHER_WRITE=$((PERM % 10))
 
-    # 소유자 불일치 또는 타 사용자 쓰기 권한 존재 시 취약
-    if [ "$OWNER" != "$USER" ] || [ "$OTHER_WRITE" -ge 2 ]; then
-        STATUS="FAIL"
-        EVIDENCE+="[USER:$USER HOME:$HOME OWNER:$OWNER PERM:$PERM] "
+    if [[ "$OWNER" != "$USER" || "$OTHER_WRITE" -ge 2 ]]; then
+        if [[ "$OWNER" != "root" ]]; then
+            STATUS="FAIL"
+            EVIDENCE+="${USER}:${HOME}(OWNER=${OWNER},PERM=${PERM}),"
+        fi
     fi
-done < /etc/passwd
 
+done < /etc/passwd
 
 # 3. 마스터 JSON 출력
 echo ""
 
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "${EVIDENCE:-정상}",
-  "target_file": "/etc/passwd",
-  "file_hash": "$(sha256sum /etc/passwd 2>/dev/null | awk '{print $1}')",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "${EVIDENCE:-정상}",
+    "guide": "사용자별 홈 디렉토리 소유주를 해당 계정으로 변경하고, 타 사용자의 쓰기 권한 제거해주세요.",
+    "target_file": "/etc/passwd",
+    "file_hash": "$(sha256sum /etc/passwd 2>/dev/null | awk '{print $1}')",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

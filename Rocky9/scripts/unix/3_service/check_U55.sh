@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-55
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : Anonymous FTP 비활성화
-# @Description : ftp 계정의 로그인 쉘을 /bin/false 또는 /sbin/nologin 등으로 제한했는지 점검
-# @Criteria_Good : ftp 계정이 없거나 로그인 쉘이 /bin/false 또는 /sbin/nologin 으로 설정된 경우
-# @Criteria_Bad : ftp 계정의 로그인 쉘이 /bin/sh, /bin/bash 등 로그인이 가능한 경우
+# @Platform : Rocky Linux
+# @Importance : 중 
+# @Title : FTP 계정 shell 제한
+# @Description : FTP 기본 계정에 쉘 설정 여부 점검
+# @Criteria_Good : FTP 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad : FTP 서비스 사용 시 FTP 계정에 /bin/false 쉘 부여 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-55 Anonymous FTP 비활성화 (ftp 계정 쉘 제한)
+# [진단] U-55 FTP 계정 shell 제한
 
 # 1. 항목 정보 정의
 ID="U-55"
-CATEGORY="서비스관리"
-TITLE="Anonymous FTP 비활성화"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="FTP 계정 shell 제한"
+IMPORTANCE="중"
 TARGET_FILE="/etc/passwd"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -54,6 +54,10 @@ else
     EVIDENCE="ftp 계정이 존재하지 않음"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, FTP 계정에 로그인 쉘이 부여된 상태에서 작업하던 운영 방식이 있었다면 쉘 접근이 차단되므로 FTP 계정의 용도를 파일 전송으로 한정하고 관리자 계정 기반의 운영 절차로 전환해 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -67,6 +71,8 @@ cat << EOF
     "guide": "FTP 전용 계정의 쉘을 /sbin/nologin 또는 /bin/false로 설정: usermod -s /sbin/nologin ftp",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

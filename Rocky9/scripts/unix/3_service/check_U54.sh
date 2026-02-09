@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-54
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : 불필요한 FTP 서비스 비활성화
-# @Description : 업무상 불필요한 FTP 서비스가 실행 중인지 점검
-# @Criteria_Good : FTP 서비스가 비활성화 되어 있는 경우
-# @Criteria_Bad : 업무 활용 목적 이외의 불필요한 FTP 서비스가 활성화 되어 있는 경우
+# @Platform : Rocky Linux
+# @Importance : 중
+# @Title : 암호화되지 않는 FTP 서비스 비활성화
+# @Description : 암호화되지 않은 FTP 서비스 비활성화 여부 점검
+# @Criteria_Good : 암호화되지 않은 FTP 서비스가 비활성화된 경우
+# @Criteria_Bad : 암호화되지 않은 FTP 서비스가 활성화된 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-54 불필요한 FTP 서비스 비활성화
+# [진단] 암호화되지 않는 FTP 서비스 비활성화
 
 # 1. 항목 정보 정의
 ID="U-54"
-CATEGORY="서비스관리"
-TITLE="불필요한 FTP 서비스 비활성화"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="암호화되지 않는 FTP 서비스 비활성화"
+IMPORTANCE="중"
 TARGET_FILE="/etc/vsftpd.conf"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -78,6 +78,10 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 암호화되지 않은 FTP를 사용하던 절차가 있다면 서비스 중지·비활성화 이후 이용이 불가능해지므로 운영 절차를 SFTP 등 암호화된 방식으로 전환한 뒤 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -91,6 +95,8 @@ cat << EOF
     "guide": "vsftpd.conf에 ssl_enable=YES, force_local_logins_ssl=YES, force_local_data_ssl=YES 설정으로 암호화를 활성화하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

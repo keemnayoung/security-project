@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-67
 # @Category    : 로그 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : 로그 디렉터리 소유자 및 권한 설정
 # @Description : 로그에 대한 접근 통제 및 관리 여부 점검
@@ -24,6 +24,8 @@ TARGET_DIR="/var/log"
 STATUS="PASS"
 EVIDENCE="모든 로그 파일의 소유자 및 권한이 적절함"
 TARGET_FILE="$TARGET_DIR"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 애플리케이션이나 로그 수집 에이전트가 로그 기록·수집에 실패할 수 있다는 영향이 발생할 수 있습니다."
 CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
 VULN_FILES=()
@@ -54,13 +56,17 @@ echo ""
 
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$(echo "$EVIDENCE" | sed ':a;N;$!ba;s/\n/ | /g')",
-  "target_file": "$TARGET_FILE",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$(echo "$EVIDENCE" | sed ':a;N;$!ba;s/\n/ | /g')",
+    "guide": " /var/log/ 디렉터리 내 로그 파일의 소유자를 root로 변경하고 권한도 644로 변경해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

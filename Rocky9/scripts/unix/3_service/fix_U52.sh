@@ -8,20 +8,20 @@
 # [보완 항목 상세]
 # @Check_ID : U-52
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : SSH 서비스 사용 (Telnet 비활성화)
-# @Description : Telnet 서비스를 비활성화하고 SSH 서비스를 활성화
+# @Platform : Rocky Linux
+# @Importance : 중
+# @Title : Telnet 서비스 비활성화
+# @Description : 원격 접속 시 Telnet 프로토콜 사용 여부 점검
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-52 SSH 서비스 사용 (Telnet 비활성화)
+# [보완] U-52 Telnet 서비스 비활성화
 
 # 1. 항목 정보 정의
 ID="U-52"
-CATEGORY="서비스관리"
-TITLE="SSH 서비스 사용 (Telnet 비활성화)"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="Telnet 서비스 비활성화"
+IMPORTANCE="중"
 TARGET_FILE="/etc/inetd.conf"
 
 # 2. 보완 로직
@@ -84,16 +84,21 @@ AFTER_SETTING="Telnet 비활성화 및 SSH 활성화 완료"
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

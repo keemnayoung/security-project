@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-18
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : /etc/shadow 파일 소유자 및 권한 설정
 # @Description : /etc/shadow 파일 권한 적절성 여부 점검
@@ -21,6 +21,8 @@ CATEGORY="파일 및 디렉토리 관리"
 TITLE="/etc/shadow 파일 소유자 및 권한 설정"
 IMPORTANCE="상"
 TARGET_FILE="/etc/shadow"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 잘못 설정될 경우 인증 관련 서비스에서 로그인 오류가 발생할 수 있습니다."
 
 # 2. 진단 로직
 STATUS="PASS"
@@ -47,14 +49,19 @@ fi
 echo ""
 cat << EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "target_file": "$TARGET_FILE",
-  "file_hash": "$FILE_HASH",
-  "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "/etc/shadow 파일 소유자를 root로 변경하고 권한도 400 이하로 변경해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

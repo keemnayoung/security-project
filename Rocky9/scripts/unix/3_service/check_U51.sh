@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-51
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : DNS Dynamic Update 설정
-# @Description : DNS 동적 업데이트가 비활성화되어 있는지 또는 적절히 제한되어 있는지 점검
-# @Criteria_Good : DNS 동적 업데이트가 비활성화되어 있거나(none), 허용된 IP에 대해서만 제한된 경우
-# @Criteria_Bad : DNS 동적 업데이트가 비활성화되어 있지 않고, 모든 호스트 허용 등 제한이 미흡한 경우
+# @Platform : Rocky Linux
+# @Importance : 중
+# @Title : DNS 서비스의 취약한 동적 업데이트 설정 금지
+# @Description : DNS 서비스의 취약한 동적 업데이트 설정 여부 점검
+# @Criteria_Good : DNS 서비스의 동적 업데이트 기능이 비활성화되었거나, 활성화 시 적절한 접근통제를 수행하고 있는 경우
+# @Criteria_Bad : DNS 서비스의 동적 업데이트 기능이 활성화 중이며 적절한 접근통제를 수행하고 있지 않은 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-51 DNS Dynamic Update 설정
+# [진단] U-51 DNS 서비스의 취약한 동적 업데이트 설정 금지
 
 # 1. 항목 정보 정의
 ID="U-51"
-CATEGORY="서비스관리"
-TITLE="DNS Dynamic Update 설정"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="DNS 서비스의 취약한 동적 업데이트 설정 금지"
+IMPORTANCE="중"
 TARGET_FILE="/etc/bind/named.conf.options"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -111,6 +111,10 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, DNS 서비스 사용 시 일반적으로 동적 업데이트 기능이 필요 없더라도 환경에 따라 예외가 있을 수 있으므로 적용 전 사용 필요성을 확인한 뒤 설정을 반영해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -124,6 +128,8 @@ cat << EOF
     "guide": "named.conf zone 설정에서 allow-update { none; }; 으로 동적 업데이트를 차단하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

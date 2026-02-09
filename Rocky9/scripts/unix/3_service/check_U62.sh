@@ -8,21 +8,21 @@
 # [점검 항목 상세]
 # @Check_ID : U-62
 # @Category : 서비스 관리
-# @Platform : Rocky Linux 9
+# @Platform : Rocky Linux
 # @Importance : 하
-# @Title : 로그온 경고 메시지 설정
-# @Description : 서비스별 로그온 시 경고 메시지가 설정되어 있는지 점검
-# @Criteria_Good : 로그온 경고 메시지가 설정되어 있는 경우
-# @Criteria_Bad : 로그온 경고 메시지가 설정되어 있지 않은 경우
+# @Title : 로그인 시 경고 메시지 설정
+# @Description : 서버 및 서비스에 로그온 시 불필요한 정보 차단 설정 및 불법적인 사용에 대한 경고 메시지 출력 여부 점검
+# @Criteria_Good : 서버 및 Telnet, FTP, SMTP, DNS 서비스에 로그온 시 경고 메시지가 설정된 경우
+# @Criteria_Bad : 서버 및 Telnet, FTP, SMTP, DNS 서비스에 로그온 시 경고 메시지가 설정되어 있지 않은 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-62 로그온 경고 메시지 설정
+# [진단] U-62 로그인 시 경고 메시지 설정
 
 # 1. 항목 정보 정의
 ID="U-62"
-CATEGORY="서비스관리"
-TITLE="로그온 경고 메시지 설정"
+CATEGORY="서비스 관리"
+TITLE="로그인 시 경고 메시지 설정"
 IMPORTANCE="하"
 TARGET_FILE="/etc/motd"
 
@@ -164,6 +164,10 @@ else
     EVIDENCE="로그온 경고 메시지 설정됨"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, SNMP 로그가 활성화되면 로그 저장량이 증가하여 저장 공간 및 로그 관리 정책에 영향을 줄 수 있으므로 적용 전 로그 보관 주기와 저장 경로, 용량 관리 기준을 확인한 뒤 로그 설정을 반영해야 합니다"
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -177,6 +181,8 @@ cat << EOF
     "guide": "/etc/issue, /etc/motd에 경고 메시지 설정, sshd_config에 Banner /etc/issue.net 설정 후 서비스 재시작하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

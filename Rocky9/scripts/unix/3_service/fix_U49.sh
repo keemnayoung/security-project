@@ -8,10 +8,10 @@
 # [보완 항목 상세]
 # @Check_ID : U-49
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
-# @Title : DNS 서비스 최신 패치
-# @Description : DNS 서비스를 최신 버전으로 업데이트하거나 비활성화
+# @Title : DNS 보안 버전 패치
+# @Description : BIND 최신 버전 사용 유무 및 주기적 보안 패치 여부 점검
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -19,8 +19,8 @@
 
 # 1. 항목 정보 정의
 ID="U-49"
-CATEGORY="서비스관리"
-TITLE="DNS 서비스 최신 패치"
+CATEGORY="서비스 관리"
+TITLE="DNS 보안 버전 패치"
 IMPORTANCE="상"
 TARGET_FILE="/usr/sbin/named"
 
@@ -63,16 +63,21 @@ fi
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

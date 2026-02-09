@@ -8,7 +8,7 @@
 # [보완 항목 상세]
 # @Check_ID : U-47
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 스팸 메일 릴레이 제한
 # @Description : 메일 서버의 릴레이 기능을 제한
@@ -19,7 +19,7 @@
 
 # 1. 항목 정보 정의
 ID="U-47"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="스팸 메일 릴레이 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/postfix/main.cf"
@@ -162,16 +162,21 @@ AFTER_SETTING="릴레이 제한 설정 조치 완료 (Sendmail/Postfix)"
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

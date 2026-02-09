@@ -8,7 +8,7 @@
 # [점검 항목 상세]
 # @Check_ID : U-35
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 공유 서비스에 대한 익명 접근 제한 설정
 # @Description : 공유 서비스의 익명 접근 제한 설정 여부 점검
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-35"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="공유 서비스에 대한 익명 접근 제한 설정"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -124,6 +124,10 @@ else
     EVIDENCE="공유 서비스에 대해 익명 접근이 제한됨"
 fi
 
+
+IMPACT_LEVEL=""
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 익명 FTP·NFS anon·Samba guest 등 익명 접근 방식에 의존하던 공유 방식이 있었다면 익명 접속이 차단되므로 인증된 계정 기반 접근 및 권한 정책으로 전환하여 운영해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -137,6 +141,8 @@ cat << EOF
     "guide": "vsFTPd: anonymous_enable=NO 설정, Samba: guest ok=no 설정, NFS: /etc/exports에서 insecure 옵션 제거 후 서비스 재시작하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

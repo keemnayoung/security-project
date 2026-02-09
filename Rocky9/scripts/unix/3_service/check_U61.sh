@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-61
 # @Category : 서비스 관리
-# @Platform : Rocky Linux 9
-# @Importance : 중
-# @Title : SNMP 접근 제어 설정
-# @Description : SNMP 접근이 특정 네트워크 주소로 제한되어 있는지 점검
-# @Criteria_Good : SNMP 접근이 허용된 네트워크 주소로만 제한된 경우
-# @Criteria_Bad : SNMP 접근이 모든 호스트(default)에 허용된 경우
+# @Platform : Rocky Linux
+# @Importance : 상
+# @Title : SNMP Access Control 설정
+# @Description : SNMP 접근 제어 설정 여부 점검
+# @Criteria_Good : SNMP 서비스에 접근 제어 설정이 되어 있는 경우
+# @Criteria_Bad : SNMP 서비스에 접근 제어 설정이 되어 있지 않은 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-61 SNMP 접근 제어 설정
+# [진단] U-61 SNMP Access Control 설정
 
 # 1. 항목 정보 정의
 ID="U-61"
-CATEGORY="서비스관리"
-TITLE="SNMP 접근 제어 설정"
-IMPORTANCE="중"
+CATEGORY="서비스 관리"
+TITLE="SNMP Access Control 설정"
+IMPORTANCE="상"
 TARGET_FILE="/etc/snmp/snmpd.conf"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -88,6 +88,10 @@ else
     fi
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, SNMP 접근 제어가 강화되면서 기존에 허용되지 않았던 관리 구간(호스트/IP)에서 접근이 차단될 수 있으므로 운영에 필요한 허용 대상을 사전에 식별하고 정책에 맞게 접근 제어를 반영해야 합니다"
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -101,6 +105,8 @@ cat << EOF
     "guide": "snmpd.conf에서 agentAddress를 특정 IP로 제한하고, com2sec에서 default 대신 특정 네트워크 대역으로 설정하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

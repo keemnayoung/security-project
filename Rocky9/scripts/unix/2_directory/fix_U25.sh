@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-25
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : world writable 파일 점검
 # @Description : world writable 권한 제거 (chmod o-w)
@@ -19,31 +19,32 @@
 # 검토 필요
 ###################
 
-# 1. 기본 변수 정의
-CHECK_ID="U-25"
-TARGET_FILE="/"
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ID="U-25"
+CATEGORY="파일 및 디렉토리 관리"
+TITLE="world writable 파일 점검"
+IMPORTANCE="상"
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
 
-BEFORE_SETTING=""
-AFTER_SETTING=""
-ACTION_LOG=""
-ACTION_RESULT="PASS"
+STATUS="FAIL"
+EVIDENCE="N/A"
 
-TMP_BEFORE="/tmp/u25_before.txt"
-TMP_AFTER="/tmp/u25_after.txt"
+TMP_BEFORE="/tmp/u25_world_writable_before.txt"
+TMP_AFTER="/tmp/u25_world_writable_after.txt"
 
-# 2. 조치 전 상태 수집
+# 1. 실제 조치 프로세스 시작
+
+# Step 1) world writable 파일 확인
 find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null > "$TMP_BEFORE"
 
 if [ ! -s "$TMP_BEFORE" ]; then
-    BEFORE_SETTING="world writable 파일 없음"
-    AFTER_SETTING="조치 불필요"
-    ACTION_LOG="조치 대상 파일이 존재하지 않음"
-    ACTION_RESULT="PASS"
+    # 조치 대상 없음
+    ACTION_RESULT="SUCCESS"
+    STATUS="PASS"
+    ACTION_LOG="world writable 파일이 존재하지 않아 조치 불필요"
+    EVIDENCE="world writable 파일 없음 (양호)"
 else
-    BEFORE_SETTING=$(cat "$TMP_BEFORE" | tr '\n' '; ')
-
-    # 3. 조치 수행 (o-w 제거)
+    # Step 2) 일반 사용자 쓰기 권한 제거
     while read -r line; do
         FILE_PATH=$(echo "$line" | awk '{print $NF}')
         chmod o-w "$FILE_PATH" 2>/dev/null
@@ -51,35 +52,41 @@ else
         if [ $? -eq 0 ]; then
             ACTION_LOG+="[권한 제거] $FILE_PATH ; "
         else
-            ACTION_LOG+="[실패] $FILE_PATH ; "
-            ACTION_RESULT="FAIL"
+            ACTION_LOG+="[권한 제거 실패] $FILE_PATH ; "
         fi
     done < "$TMP_BEFORE"
 
-    # 4. 조치 후 상태 수집
+    # Step 3) 조치 후 재확인
     find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null > "$TMP_AFTER"
 
     if [ ! -s "$TMP_AFTER" ]; then
-        AFTER_SETTING="world writable 파일 제거 완료"
+        ACTION_RESULT="SUCCESS"
+        STATUS="PASS"
+        EVIDENCE="모든 world writable 파일의 일반 사용자 쓰기 권한 제거 완료"
     else
-        AFTER_SETTING=$(cat "$TMP_AFTER" | tr '\n' '; ')
-        ACTION_RESULT="FAIL"
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        STATUS="FAIL"
+        EVIDENCE="일부 world writable 파일이 여전히 존재함 (수동 확인 필요)"
     fi
 fi
 
-# 5. 마스터 JSON 출력
+# 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$CHECK_ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$BEFORE_SETTING",
-  "after_setting": "$AFTER_SETTING",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "world writable 파일 존재 여부를 점검하고 불필요한 경우 일반 사용자 쓰기 권한을 제거하도록 설정합니다.",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
 
-# 6. 임시 파일 정리
+# 3. 임시 파일 정리
 rm -f "$TMP_BEFORE" "$TMP_AFTER"

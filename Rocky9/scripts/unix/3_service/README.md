@@ -144,7 +144,7 @@ deactivate
 
 ---
 
-## � 대시보드가 읽는 JSON 형식
+##   대시보드가 읽는 JSON 형식
 
 ```json
 {

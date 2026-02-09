@@ -8,20 +8,20 @@
 # [보완 항목 상세]
 # @Check_ID : U-55
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : Anonymous FTP 비활성화
-# @Description : ftp 계정의 로그인 쉘을 로그인이 불가능하도록 변경
+# @Platform : Rocky Linux
+# @Importance : 중 
+# @Title : FTP 계정 shell 제한
+# @Description : FTP 기본 계정에 쉘 설정 여부 점검
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-55 Anonymous FTP 비활성화 (ftp 계정 쉘 제한)
+# [보완] U-55 FTP 계정 shell 제한
 
 # 1. 항목 정보 정의
 ID="U-55"
-CATEGORY="서비스관리"
-TITLE="Anonymous FTP 비활성화"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="FTP 계정 shell 제한"
+IMPORTANCE="중"
 TARGET_FILE="/etc/passwd"
 
 # 2. 보완 로직
@@ -61,16 +61,21 @@ fi
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

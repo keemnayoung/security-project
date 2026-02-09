@@ -8,10 +8,10 @@
 # [보완 항목 상세]
 # @Check_ID : U-60
 # @Category : 서비스 관리
-# @Platform : Rocky Linux 9
+# @Platform : Rocky Linux
 # @Importance : 중
 # @Title : SNMP Community String 복잡성 설정
-# @Description : SNMP Community String을 추측하기 어려운 값으로 변경
+# @Description : SNMP Community String 복잡성 설정 여부 점검
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -19,7 +19,7 @@
 
 # 1. 항목 정보 정의
 ID="U-60"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="SNMP Community String 복잡성 설정"
 IMPORTANCE="중"
 TARGET_FILE="/etc/snmp/snmpd.conf"
@@ -81,16 +81,21 @@ fi
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-41
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 불필요한 automountd 제거
-# @Description : automount 또는 autofs 서비스가 비활성화되어 있는지 점검
-# @Criteria_Good : automount/autofs 서비스가 비활성화된 경우
-# @Criteria_Bad : 서비스가 활성화된 경우
+# @Description : automountd 서비스 데몬의 실행 여부 점검
+# @Criteria_Good : automountd 서비스가 비활성화된 경우
+# @Criteria_Bad :  automountd 서비스가 활성화된 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-41"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="불필요한 automountd 제거"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -53,6 +53,10 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="automountd 제거 조치 적용 시 NFS 및 삼바(Samba) 서비스에서 automountd를 사용 중인지 여부에 따라 서비스 접근 및 자동 마운트 동작에 문제가 발생할 수 있습니다. 특히 적용 이후에는 CD-ROM 자동 마운트가 이뤄지지 않을 수 있으므로(/etc/auto., /etc/auto_ 설정 확인 필요) 운영 절차에 미칠 수 있는 영향을 충분히 고려하여 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -63,9 +67,11 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "automount 서비스가 불필요한 경우 systemctl stop autofs && systemctl disable autofs로 비활성화하세요.",
+    "guide": "automountd 서비스가 불필요한 경우 systemctl stop autofs && systemctl disable autofs로 비활성화하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

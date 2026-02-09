@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-40
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : NFS 접근 통제
-# @Description : NFS 공유 설정이 적절히 제한되어 있는지 점검
-# @Criteria_Good : 접근 통제 설정 및 /etc/exports 파일 권한 644인 경우
-# @Criteria_Bad : 접근 통제 미설정 또는 파일 권한이 과다한 경우
+# @Description : NFS(Network File System)의 접근 통제 설정 적용 여부 점검
+# @Criteria_Good : 접근 통제가 설정되어 있으며 NFS 설정 파일 접근 권한이 644 이하인 경우
+# @Criteria_Bad : 접근 통제가 설정되어 있지 않고 NFS 설정 파일 접근 권한이 644를 초과하는 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-40"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="NFS 접근 통제"
 IMPORTANCE="상"
 TARGET_FILE="/etc/exports"
@@ -77,6 +77,9 @@ else
     fi
 fi
 
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, NFS를 불가피하게 사용 중인 경우 허용 대상(사용자/호스트) 및 권한이 제한되면서 기존 접속 주체 중 일부가 접근하지 못할 수 있으므로, 운영에 필요한 허용 범위를 사전에 정의하고 단계적으로 반영해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -90,6 +93,8 @@ cat << EOF
     "guide": "/etc/exports에서 everyone(*) 공유 제거, no_root_squash를 root_squash로 변경 후 exportfs -ra로 적용하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

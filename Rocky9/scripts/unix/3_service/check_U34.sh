@@ -8,7 +8,7 @@
 # [점검 항목 상세]
 # @Check_ID : U-34
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : Finger 서비스 비활성화
 # @Description : Finger 서비스 비활성화 여부 점검
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-34"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="Finger 서비스 비활성화"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -66,6 +66,9 @@ else
     EVIDENCE="Finger 서비스가 비활성화되어 있음"
 fi
 
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, finger 서비스를 운영·진단 목적 등으로 실제 사용 중인 경우 해당 기능이 더 이상 제공되지 않으므로 적용 전 사용 여부를 반드시 확인하고 필요 시 대체 절차를 마련해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -79,6 +82,8 @@ cat << EOF
     "guide": "xinetd에서 finger 서비스를 disable=yes로 설정하거나, inetd.conf에서 finger 라인을 주석처리 후 서비스를 재시작하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

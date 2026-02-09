@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-59
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 중
-# @Title : SNMP 서비스 보안 설정 (SNMPv3 사용)
-# @Description : SNMP 서비스 사용 시 SNMPv3를 사용하여 보안을 강화했는지 점검
-# @Criteria_Good : SNMPv3를 사용하거나, SNMP 서비스를 사용하지 않는 경우
-# @Criteria_Bad : SNMPv1/v2c를 사용하며 Community String이 취약(public/private)한 경우
+# @Platform : Rocky Linux
+# @Importance : 상 
+# @Title : 안전한 SNMP 버전 사용
+# @Description : 안전한 SNMP 버전 사용 여부 점검
+# @Criteria_Good : SNMP 서비스를 v3 이상으로 사용하는 경우
+# @Criteria_Bad : SNMP 서비스를 v2 이하로 사용하는 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-59 SNMP 서비스 보안 설정 (SNMPv3 사용)
+# [진단] U-59 안전한 SNMP 버전 사용
 
 # 1. 항목 정보 정의
 ID="U-59"
-CATEGORY="서비스관리"
-TITLE="SNMP 서비스 보안 설정 (SNMPv3 사용)"
-IMPORTANCE="중"
+CATEGORY="서비스 관리"
+TITLE="안전한 SNMP 버전 사용"
+IMPORTANCE="상"
 TARGET_FILE="/etc/snmp/snmpd.conf"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -93,6 +93,10 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 SNMP v1/v2c 기반으로 연동된 장비·모니터링 시스템이 있다면 설정 변경 이후 연동 방식이 달라질 수 있으므로 적용 전 연동 대상 및 지원 버전을 확인한 뒤 안전한 버전으로 전환해야 합니다"
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -106,6 +110,8 @@ cat << EOF
     "guide": "SNMPv3 사용을 권장, SNMPv1/v2c 사용 시 community string을 복잡하게 변경하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

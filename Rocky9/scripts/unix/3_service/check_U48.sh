@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-48
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 중
 # @Title : expn, vrfy 명령어 제한
-# @Description : SMTP expn, vrfy 명령어가 제한되어 있는지 점검
-# @Criteria_Good : FTP 서비스가 비활성화 되어있거나, expn/vrfy 명령어가 제한된 경우
-# @Criteria_Bad : expn/vrfy 명령어가 허용된 경우
+# @Description : SMTP 서비스 사용 시 expn, vrfy 명령어 사용 금지 설정 여부 점검
+# @Criteria_Good : 메일 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad : 메일 서비스 사용 시 메일 서비스 설정 파일에 noexpn, novrfy 또는 goaway 옵션 추가 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-48"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="expn, vrfy 명령어 제한"
 IMPORTANCE="중"
 TARGET_FILE="/etc/postfix/main.cf"
@@ -105,6 +105,10 @@ else
     EVIDENCE="expn/vrfy 명령어가 제한되어 있음"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 메일 서비스 설정 파일에 noexpn·novrfy(또는 goaway) 옵션이 적용되므로 관련 진단·운영 방식은 변경된 정책을 반영하여 수행해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -118,6 +122,8 @@ cat << EOF
     "guide": "Postfix: main.cf에 disable_vrfy_command=yes 설정, Sendmail: PrivacyOptions에 noexpn,novrfy 추가하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

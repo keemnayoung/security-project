@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-30
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : UMASK 설정 관리
 # @Description : 시스템 UMASK 값이 022 이상 설정 여부 점검
@@ -23,6 +23,8 @@ IMPORTANCE="중"
 STATUS="PASS"
 EVIDENCE=""
 TARGET_FILE="/etc/profile, /etc/login.defs"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 사용자나 그룹 간 파일 공유가 필요한 작업에서는 접근 권한 문제로 불편이 발생할 수 있습니다."
 CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 UMASK_PROFILE=""
@@ -71,13 +73,17 @@ echo ""
 
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "target_file": "$TARGET_FILE",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "설정 파일에 UMASK 값을 022로 설정해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

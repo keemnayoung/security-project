@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-50
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : DNS Zone Transfer 설정
-# @Description : DNS Zone Transfer가 제한되어 있는지 점검
-# @Criteria_Good : DNS Zone Transfer가 허용된 IP에 대해서만 제한된 경우
-# @Criteria_Bad : DNS Zone Transfer가 모든 호스트에게 허용된 경우
+# @Description : Secondary Name Server로만 Zone 정보 전송 제한 여부 점검
+# @Criteria_Good : DNS 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad :  DNS 서비스 사용 시 DNS Zone Transfer를 허가된 사용자에게만 전송 허용하도록 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-50"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="DNS Zone Transfer 설정"
 IMPORTANCE="상"
 TARGET_FILE="/etc/bind/named.conf.options"
@@ -120,6 +120,10 @@ else
     fi
 fi
 
+
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="Zone Transfer 설정에서 허용할 대상을 정상적으로 등록하였다면 일반적으로 영향이 없으나, 허용 대상 등록을 정확히 반영하지 않으면 운영에 영향을 줄 수 있으므로 허용 대상(Secondary Name Server 등)을 사전에 점검·검증한 뒤 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -133,6 +137,8 @@ cat << EOF
     "guide": "named.conf에서 allow-transfer { none; }; 또는 신뢰된 Secondary DNS IP만 허용하도록 설정하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

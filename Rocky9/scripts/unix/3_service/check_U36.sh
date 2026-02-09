@@ -8,10 +8,10 @@
 # [점검 항목 상세]
 # @Check_ID : U-36
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : r 계열 서비스 비활성화
-# @Description : rsh, rlogin, rexec 등 r 계열 서비스가 비활성화되어 있는지 점검
+# @Description : r-command 서비스 비활성화 여부 점검
 # @Criteria_Good : 불필요한 r 계열 서비스가 비활성화된 경우
 # @Criteria_Bad : 불필요한 r 계열 서비스가 활성화된 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-36"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="r 계열 서비스 비활성화"
 IMPORTANCE="상"
 TARGET_FILE="N/A"
@@ -76,6 +76,10 @@ else
     EVIDENCE="r 계열 서비스가 비활성화되어 있음"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, r-command 서비스가 백업 또는 클러스터링 등 특정 용도로 사용 중인 환경이라면 관련 작업이 중단될 수 있으므로 적용 전 서비스 사용 여부와 대체 수단을 반드시 확인해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -89,6 +93,8 @@ cat << EOF
     "guide": "xinetd에서 rsh, rlogin, rexec 서비스를 disable=yes로 설정하고, /etc/hosts.equiv 및 .rhosts 파일을 삭제하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

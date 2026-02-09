@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-57
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : root 홈, 패스 디렉터리 권한 및 패스 설정 (FTP root 제한)
-# @Description : FTP 서비스 이용 시 root 계정의 접속을 제한하고 있는지 점검
-# @Criteria_Good : FTP 서비스에서 root 계정 접속이 차단되어 있는 경우
-# @Criteria_Bad : FTP 서비스에서 root 계정 접속이 허용되어 있는 경우
+# @Platform : Rocky Linux
+# @Importance : 중 
+# @Title : Ftpusers 파일 설정
+# @Description : FTP 서비스에 root 계정 접근 제한 설정 여부 점검
+# @Criteria_Good : root 계정 접속을 차단한 경우
+# @Criteria_Bad : root 계정 접속을 허용한 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-57 root 계정 FTP 접속 제한
+# [진단] U-57 Ftpusers 파일 설정
 
 # 1. 항목 정보 정의
 ID="U-57"
-CATEGORY="서비스관리"
-TITLE="root 계정 FTP 접속 제한"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="Ftpusers 파일 설정"
+IMPORTANCE="중"
 TARGET_FILE="/etc/ftpusers"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -142,6 +142,10 @@ else
     fi
 fi
 
+
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="Ftpusers 파일 설정을 적용하면 root 계정의 FTP 사용이 제한(차단)될 수 있으므로, 애플리케이션이나 운영 절차에서 root 계정으로 직접 접속하여 FTP를 사용하고 있는 경우 계정 인증/운영 방식에 문제가 발생할 수 있습니다. 특히 자동화 스크립트나 배치 작업이 root 기반으로 구성되어 있다면 영향이 있을 수 있으므로, 사전에 사용 여부를 점검한 뒤 적용해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -155,6 +159,8 @@ cat << EOF
     "guide": "/etc/ftpusers 또는 /etc/vsftpd/ftpusers 파일에 root 계정을 추가하여 FTP 접속을 차단하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

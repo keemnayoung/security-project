@@ -8,20 +8,20 @@
 # [보완 항목 상세]
 # @Check_ID : U-51
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : DNS Dynamic Update 설정
-# @Description : DNS Dynamic Update 기능을 제한
+# @Platform : Rocky Linux
+# @Importance : 중
+# @Title : DNS 서비스의 취약한 동적 업데이트 설정 금지
+# @Description : DNS 서비스의 취약한 동적 업데이트 설정 여부 점검
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-51 DNS Dynamic Update 설정
+# [보완] U-51 DNS 서비스의 취약한 동적 업데이트 설정 금지
 
 # 1. 항목 정보 정의
 ID="U-51"
-CATEGORY="서비스관리"
-TITLE="DNS Dynamic Update 설정"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="DNS 서비스의 취약한 동적 업데이트 설정 금지"
+IMPORTANCE="중"
 TARGET_FILE="/etc/bind/named.conf.options"
 
 # 2. 보완 로직
@@ -101,16 +101,21 @@ fi
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
+
+STATUS="$ACTION_RESULT"
+EVIDENCE="$ACTION_LOG"
 cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
     "action_result": "$ACTION_RESULT",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

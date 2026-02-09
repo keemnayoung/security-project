@@ -8,22 +8,22 @@
 # [점검 항목 상세]
 # @Check_ID : U-56
 # @Category : 서비스 관리
-# @Platform : LINUX
-# @Importance : 상
-# @Title : root 홈, 패스 디렉터리 권한 및 패스 설정
-# @Description : ftpusers 파일의 소유자 및 권한 확인, root 계정 차단 여부 점검
-# @Criteria_Good : ftpusers 파일 소유자가 root이고, 권한이 640 이하이며 root 계정 접속이 차단된 경우
-# @Criteria_Bad : ftpusers 파일 소유자/권한이 취약하거나 root 계정 접속이 허용된 경우
+# @Platform : Rocky Linux
+# @Importance : 하
+# @Title : FTP 서비스 접근 제어 설정
+# @Description : FTP 서비스에 비인가자의 접근 가능 여부 점검
+# @Criteria_Good : FTP 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad : FTP 서비스 사용 시 접근 제어 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-56 ftpusers 파일 설정 (root 접근 제한)
+# [진단] U-56 FTP 서비스 접근 제어 설정
 
 # 1. 항목 정보 정의
 ID="U-56"
-CATEGORY="서비스관리"
-TITLE="root 홈, 패스 디렉터리 권한 및 패스 설정 (FTP users 점검)"
-IMPORTANCE="상"
+CATEGORY="서비스 관리"
+TITLE="FTP 서비스 접근 제어 설정"
+IMPORTANCE="하"
 TARGET_FILE="/etc/ftpusers"
 
 # 2. 진단 로직 (무결성 해시 포함)
@@ -183,6 +183,10 @@ else
     fi
 fi
 
+
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="FTP 서비스 접근 제어 설정을 적용하면 특정 IP 주소 또는 호스트에서만 FTP 접속이 가능해지므로, 기존에 허용되지 않은 구간(운영자 PC, 배치 서버 등)에서 FTP를 사용하던 경우 접속 장애가 발생할 수 있습니다. 따라서 적용 전, FTP가 필요한 접속 주체(서버/클라이언트)와 허용 대상을 충분히 정리한 뒤 반영해야 합니다"
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -196,6 +200,8 @@ cat << EOF
     "guide": "vsftpd.conf에 tcp_wrappers=YES 설정 후, /etc/hosts.allow 및 /etc/hosts.deny로 접근 제어하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

@@ -8,12 +8,15 @@
 # [점검 항목 상세]
 # @Check_ID : U-60
 # @Category : 서비스 관리
-# @Platform : Rocky Linux 9
+# @Platform : Rocky Linux
 # @Importance : 중
 # @Title : SNMP Community String 복잡성 설정
-# @Description : SNMP Community String이 추측하기 어렵게 설정되어 있는지 점검
-# @Criteria_Good : Community String이 public/private이 아닌 복잡한 값으로 설정된 경우
-# @Criteria_Bad : Community String이 public/private 등 기본값으로 설정된 경우
+# @Description : SNMP Community String 복잡성 설정 여부 점검
+# @Criteria_Good : NMP Community String 기본값인 “public”, “private”이 아닌 영문자, 숫자 포함 10자리 이상 또는 영문자, 숫자, 특수문자 포함 8자리 이상인 경우
+# @Criteria_Bad :  아래의 내용 중 하나라도 해당되는 경우
+                   # 1. SNMP Community String 기본값인 “public”, “private”일 경우
+                   # 2. 영문자, 숫자 포함 10자리 미만인 경우
+                   # 3. 영문자, 숫자, 특수문자 포함 8자리 미만인 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +24,7 @@
 
 # 1. 항목 정보 정의
 ID="U-60"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="SNMP Community String 복잡성 설정"
 IMPORTANCE="중"
 TARGET_FILE="/etc/snmp/snmpd.conf"
@@ -86,6 +89,10 @@ fi
 # JSON 출력 전 특수문자 제거
 EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 단순 Community String으로 연동된 모니터링/관리 시스템이 있다면 변경 후 인증 실패로 수집이 중단될 수 있으므로 적용 전 연동 대상의 Community String 설정을 함께 변경할 수 있는지 확인한 뒤 복잡성 정책을 반영해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -99,6 +106,8 @@ cat << EOF
     "guide": "snmpd.conf에서 public/private 대신 추측 불가능한 community string으로 변경 후 서비스 재시작하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

@@ -8,12 +8,12 @@
 # [점검 항목 상세]
 # @Check_ID : U-46
 # @Category : 서비스 관리
-# @Platform : LINUX
+# @Platform : Rocky Linux
 # @Importance : 상
 # @Title : 일반 사용자의 메일 서비스 실행 방지
-# @Description : 일반 사용자가 메일 서비스를 실행할 수 없도록 제한되어 있는지 점검
-# @Criteria_Good : 일반 사용자의 메일 서비스 실행이 제한된 경우
-# @Criteria_Bad : 일반 사용자가 메일 서비스를 실행할 수 있는 경우
+# @Description : SMTP 서비스 사용 시 일반 사용자의 q 옵션 제한 여부 점검
+# @Criteria_Good : 메일 서비스를 사용하지 않는 경우 서비스 중지 및 비활성화 설정
+# @Criteria_Bad : 메일 서비스 사용 시 메일 서비스의 q 옵션 제한 설정
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -21,7 +21,7 @@
 
 # 1. 항목 정보 정의
 ID="U-46"
-CATEGORY="서비스관리"
+CATEGORY="서비스 관리"
 TITLE="일반 사용자의 메일 서비스 실행 방지"
 IMPORTANCE="상"
 TARGET_FILE="/etc/mail/sendmail.cf"
@@ -96,6 +96,10 @@ else
     EVIDENCE="일반 사용자의 메일 서비스 실행이 방지됨"
 fi
 
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 메일 서비스 사용 시 q 옵션 제한이 적용되므로 관련 운영 작업은 관리자 권한 및 승인된 운영 절차에 따라 수행해야 합니다."
+
 # 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
@@ -109,6 +113,8 @@ cat << EOF
     "guide": "sendmail 실행파일에서 SUID 비트를 제거하세요: chmod u-s /usr/sbin/sendmail",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
