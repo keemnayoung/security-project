@@ -1,4 +1,4 @@
-- name: 보안 전수 진단 (전체 자동화)
+- name: 보안 전수 점검 (전체 자동화)
   hosts: target_servers
   become: yes
   tasks:
