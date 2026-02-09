@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-64
 # @Category    : 패치 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : 주기적 보안 패치 및 벤더 권고사항 적용
 # @Description : 시스템에서 최신 패치가 적용 여부 점검
@@ -23,6 +23,8 @@ IMPORTANCE="상"
 STATUS="PASS"
 EVIDENCE=""
 TARGET_FILE="/etc/os-release"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 서비스의 설정 변경·라이브러리 의존성 충돌·커널 변경에 따른 재부팅으로 인해 서비스 중단이나 기능 이상이 일시적으로 발생할 수 있습니다."
 CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # 2. OS 정보 수집
@@ -134,13 +136,17 @@ EOF
 echo ""
 cat <<EOF
 {
-  "check_id": "${CHECK_ID}",
-  "category": "${CATEGORY}",
-  "title": "${TITLE}",
-  "importance": "${IMPORTANCE}",
-  "status": "${STATUS}",
-  "evidence": "$(echo "${EVIDENCE}" | sed ':a;N;$!ba;s/\n/\\n/g')",
-  "target_file": "${TARGET_FILE}",
-  "check_date": "${CHECK_DATE}"
+    "check_id": "${CHECK_ID}",
+    "category": "${CATEGORY}",
+    "title": "${TITLE}",
+    "importance": "${IMPORTANCE}",
+    "status": "${STATUS}",
+    "evidence": "$(echo "${EVIDENCE}" | sed ':a;N;$!ba;s/\n/\\n/g')",
+    "guide": "OS 관리자, 서비스 개발자가 패치 적용에 따른 서비스 영향 정도를 파악하여 OS 관리자 및 벤더에서 적용하도록 설정해주세요.",
+    "target_file": "${TARGET_FILE}",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "${CHECK_DATE}"
 }
 EOF

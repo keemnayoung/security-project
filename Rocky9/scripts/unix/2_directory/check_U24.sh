@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-24
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : 사용자, 시스템 환경변수 파일 소유자 및 권한 설정
 # @Description : 홈 디렉터리 내의 환경변수 파일에 대한 소유자 및 접근 권한이 관리자 또는 해당 계정으로 설정 여부 점검
@@ -17,12 +17,14 @@
 
 # 1. 점검 항목 정보 정의
 CHECK_ID="U-24"
-CATEGORY="계정 관리"
+CATEGORY="파일 및 디렉토리 관리"
 TITLE="사용자, 시스템 환경변수 파일 소유자 및 권한 설정"
 IMPORTANCE="상"
 STATUS="PASS"
 EVIDENCE=""
 TARGET_FILE=""
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 사용자 환경변수 파일에 대한 수정이 제한되어 사용자별 쉘 초기화 스크립트 변경이나 커스텀 설정이 일시적으로 적용되지 않을 수 있습니다."
 CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 ENV_FILES=(
@@ -37,9 +39,10 @@ ENV_FILES=(
 )
 
 # 2. 진단 로직
-while IFS=: read -r USER _ UID _ _ HOME_DIR _; do
-  # 시스템 계정 제외 (UID 1000 미만)
-  if [ "$UID" -lt 1000 ] || [ ! -d "$HOME_DIR" ]; then
+while IFS=: read -r USER _ _ _ _ HOME_DIR _; do
+
+  # 홈 디렉터리가 실제로 존재하는 계정만 대상
+  if [ ! -d "$HOME_DIR" ]; then
     continue
   fi
 
@@ -50,31 +53,25 @@ while IFS=: read -r USER _ UID _ _ HOME_DIR _; do
       OWNER="$(stat -c %U "$FILE_PATH")"
       PERM="$(stat -c %A "$FILE_PATH")"
 
-      # 소유자 점검 (root 또는 해당 계정)
-        if [[ "$OWNER" != "root" && "$OWNER" != "$USER" ]]; then
-            STATUS="FAIL"
-            if [ -z "$EVIDENCE" ]; then
-            EVIDENCE="[소유자 오류] $FILE_PATH (owner=$OWNER)"
-            else
-            EVIDENCE+=", [소유자 오류] $FILE_PATH (owner=$OWNER)"
-            fi
-            TARGET_FILE+="$FILE_PATH "
-            continue
-        fi
+      # 1) 소유자 점검 (root 또는 해당 계정만 허용)
+      if [[ "$OWNER" != "root" && "$OWNER" != "$USER" ]]; then
+        STATUS="FAIL"
+        [ -n "$EVIDENCE" ] && EVIDENCE+=", "
+        EVIDENCE+="[소유자 오류] $FILE_PATH (owner=$OWNER, user=$USER)"
+        TARGET_FILE+="$FILE_PATH "
+        continue
+      fi
 
-      # 기타 사용자 쓰기 권한 점검
-
-        if [[ "${PERM:8:1}" == "w" ]]; then
-            STATUS="FAIL"
-            if [ -z "$EVIDENCE" ]; then
-            EVIDENCE="[권한 오류] $FILE_PATH (perm=$PERM)"
-            else
-            EVIDENCE+=", [권한 오류] $FILE_PATH (perm=$PERM)"
-            fi
-            TARGET_FILE+="$FILE_PATH "
-        fi
+      # 2) group / other 쓰기 권한 점검
+      if [[ "${PERM:5:1}" == "w" || "${PERM:8:1}" == "w" ]]; then
+        STATUS="FAIL"
+        [ -n "$EVIDENCE" ] && EVIDENCE+=", "
+        EVIDENCE+="[권한 오류] $FILE_PATH (perm=$PERM)"
+        TARGET_FILE+="$FILE_PATH "
+      fi
     fi
   done
+
 done < /etc/passwd
 
 if [ "$STATUS" = "PASS" ]; then
@@ -93,7 +90,11 @@ cat <<EOF
   "importance": "$IMPORTANCE",
   "status": "$STATUS",
   "evidence": "$EVIDENCE",
+  "guide": "환경변수 파일의 일반 사용자 쓰기 권한을 제거해주세요.",
   "target_file": "$TARGET_FILE",
+  "file_hash": "N/A",
+  "action_impact": "$ACTION_IMPACT",
+  "impact_level": "$IMPACT_LEVEL",  
   "check_date": "$CHECK_DATE"
 }
 EOF

@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-23
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : SUID, SGID, Sticky bit 설정 파일 점검
 # @Description : 주요 실행 파일의 권한에 SUID와 SGID에 대한 설정 해제
@@ -20,52 +20,69 @@
 #######################
 
 
-# 1. 기본 변수 정의
 ID="U-23"
-TARGET_FILE="/"
-ACTION_RESULT="SUCCESS"
+CATEGORY="파일 및 디렉토리 관리"
+TITLE="SUID, SGID, Sticky bit 설정 파일 점검"
+IMPORTANCE="상"
+
+ACTION_RESULT="FAIL"
+STATUS="FAIL"
 ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+EVIDENCE=""
 
-
-# 2. 조치 대상 수집
+# 1. 실제 조치 프로세스 시작
 SUID_SGID_FILES=$(find / -user root -type f \( -perm -04000 -o -perm -02000 \) -xdev 2>/dev/null)
 
 if [ -z "$SUID_SGID_FILES" ]; then
-    ACTION_LOG="조치 대상 SUID/SGID 파일이 존재하지 않음"
-    BEFORE_SETTING="N/A"
-    AFTER_SETTING="N/A"
+    ACTION_RESULT="SUCCESS"
+    STATUS="PASS"
+    ACTION_LOG="SUID 또는 SGID가 설정된 불필요한 파일이 존재하지 않습니다."
+    EVIDENCE="SUID/SGID 설정 파일 미검출 (양호)"
 else
-    # 쉼표 구분으로 BEFORE_SETTING 저장
-    BEFORE_SETTING=$(echo "$SUID_SGID_FILES" | xargs ls -al 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    # 조치 전 상태 기록
+    BEFORE_LIST=$(echo "$SUID_SGID_FILES" | tr '\n' ',' | sed 's/,$//')
 
-    # 3. SUID / SGID 제거
-    while read -r FILE; do
+    # SUID / SGID 제거
+    for FILE in $SUID_SGID_FILES; do
         chmod -s "$FILE" 2>/dev/null
         if [ $? -eq 0 ]; then
-            ACTION_LOG="${ACTION_LOG}SUID/SGID 제거 완료: ${FILE}\n"
+            ACTION_LOG="${ACTION_LOG}권한 제거 완료: ${FILE}, "
         else
-            ACTION_LOG="${ACTION_LOG}SUID/SGID 제거 실패: ${FILE}\n"
-            ACTION_RESULT="FAIL"
+            ACTION_LOG="${ACTION_LOG}권한 제거 실패: ${FILE}, "
         fi
-    done <<< "$SUID_SGID_FILES"
+    done
 
-    # 쉼표 구분으로 AFTER_SETTING 저장
-    AFTER_SETTING=$(echo "$SUID_SGID_FILES" | xargs ls -al 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    # 재확인
+    REMAIN_FILES=$(find / -user root -type f \( -perm -04000 -o -perm -02000 \) -xdev 2>/dev/null)
+
+    if [ -z "$REMAIN_FILES" ]; then
+        ACTION_RESULT="SUCCESS"
+        STATUS="PASS"
+        ACTION_LOG="${ACTION_LOG}모든 SUID/SGID 권한 제거 완료"
+        EVIDENCE="조치 전: ${BEFORE_LIST} → 조치 후: 미검출 (양호)"
+    else
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        STATUS="FAIL"
+        AFTER_LIST=$(echo "$REMAIN_FILES" | tr '\n' ',' | sed 's/,$//')
+        ACTION_LOG="${ACTION_LOG}일부 파일에서 권한 제거 실패"
+        EVIDENCE="조치 후에도 SUID/SGID 유지됨: ${AFTER_LIST} (취약)"
+    fi
 fi
 
-# 4. 마스터 JSON 출력
+# 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$BEFORE_SETTING",
-  "after_setting": "$AFTER_SETTING",
-  "action_log": "$(echo -e "$ACTION_LOG" | tr '\n' ',' | sed 's/,$//')",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "KISA 가이드라인에 따라 불필요한 SUID/SGID 권한을 제거하도록 설정했습니다.",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

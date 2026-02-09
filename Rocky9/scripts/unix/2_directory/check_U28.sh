@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-28
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : 접속 IP 및 포트 제한
 # @Description : 허용할 호스트에 대한 접속 IP주소 제한 및 포트 제한 설정 여부 점검
@@ -23,6 +23,8 @@ IMPORTANCE="상"
 STATUS="FAIL"
 EVIDENCE=""
 TARGET_FILE="N/A"
+IMPACT_LEVEL="HIGH" 
+ACTION_IMPACT="허용된 IP와 포트만 접속 가능하도록 제한되면서 관리자나 외부 시스템이 기존에 사용하던 접속 경로가 차단되어 일시적인 서비스 접근 장애가 발생할 수 있습니다."
 CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
 # 2. 진단 로직
@@ -77,13 +79,17 @@ fi
 echo ""
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')",
-  "target_file": "$TARGET_FILE",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "OS에 기본으로 제공하는 방화벽 애플리케이션이나 TCP Wrapper와 같은 호스트별 서비스 제한하고 애플리케이션을 사용하여 접근 허용 IP를 등록해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

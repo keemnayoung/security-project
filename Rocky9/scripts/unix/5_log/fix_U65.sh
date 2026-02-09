@@ -1,135 +1,89 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.1
+# @Version: 1.0.2
 # @Author: 권순형
-# @Last Updated: 2026-02-08
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-65
 # @Category    : 로그 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : NTP 및 시각 동기화 설정
 # @Description : NTP 및 시각 동기화 설정이 기준에 따라 적용
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 기본 변수 정의
 ID="U-65"
-TARGET_FILE=""
+CATEGORY="로그 관리"
+TITLE="NTP 및 시각 동기화 설정"
+IMPORTANCE="중"
+TARGET_FILE="/var/log"
 ACTION_RESULT="FAIL"
-ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_LOG="N/A"
+STATUS="FAIL"
+EVIDENCE=""
 
-DEFAULT_NTP_SERVER="time.google.com"
+# 1. 로그 파일 점검 및 조치
+if [ -d "$TARGET_FILE" ]; then
 
+    # 취약 로그 파일 탐색 (root 소유 아님 or 권한 644 초과)
+    VULN_FILES=$(find "$TARGET_FILE" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
 
-# 2. 서비스 활성화 여부
-USE_NTP=false
+    if [ -z "$VULN_FILES" ]; then
+        ACTION_RESULT="NO_ACTION_REQUIRED"
+        STATUS="PASS"
+        ACTION_LOG="모든 로그 파일이 이미 적절한 소유자 및 권한을 유지하고 있습니다."
+        EVIDENCE="취약 로그 파일 없음 (양호)"
+    else
+        # 조치 수행
+        for file in $VULN_FILES; do
+            chown root:root "$file" 2>/dev/null
+            chmod 644 "$file" 2>/dev/null
+        done
 
-if systemctl list-units --type=service | grep -q chrony; then
-    USE_CHRONY=true
-elif systemctl list-units --type=service | grep -q ntp; then
-    USE_NTP=true
+        # 재확인
+        RECHECK=$(find "$TARGET_FILE" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
+
+        if [ -z "$RECHECK" ]; then
+            ACTION_RESULT="SUCCESS"
+            STATUS="PASS"
+            ACTION_LOG="취약 로그 파일의 소유자 및 권한을 root:root, 644로 조치 완료했습니다."
+            EVIDENCE="조치된 파일:\n$VULN_FILES"
+        else
+            ACTION_RESULT="PARTIAL_SUCCESS"
+            STATUS="FAIL"
+            ACTION_LOG="일부 로그 파일 조치 실패. 수동 확인이 필요합니다."
+            EVIDENCE="조치 실패 파일:\n$RECHECK"
+        fi
+    fi
+else
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="로그 디렉터리($TARGET_FILE)가 존재하지 않습니다."
+    EVIDENCE="디렉터리 없음"
 fi
 
 
-# 3. Chrony 조치
-if [ "$USE_CHRONY" = true ]; then
-    TARGET_FILE="/etc/chrony.conf"
-    ACTION_LOG+="Chrony 기반 조치 수행, "
-
-    # 사전 상태 수집
-    if systemctl list-units --type=service | grep -q chrony; then
-        BEFORE_SETTING+="chrony=active, "
-    else
-        BEFORE_SETTING+="chrony=inactive, "
-    fi
-
-    # 설정 파일 서버 항목 확인 및 추가
-    if ! grep -qE '^[[:space:]]*server[[:space:]]+' "$TARGET_FILE" 2>/dev/null; then
-        echo "server $DEFAULT_NTP_SERVER iburst" >> "$TARGET_FILE"
-        ACTION_LOG+="chrony.conf 서버 추가($DEFAULT_NTP_SERVER), "
-    else
-        ACTION_LOG+="chrony.conf 서버 설정 이미 존재, "
-    fi
-
-    # 서비스 재시작
-    systemctl restart chrony
-    sleep 2
-
-    # 사후 상태 수집
-    if systemctl list-units --type=service | grep -q chrony; then
-        AFTER_SETTING+="chrony=active, "
-    else
-        AFTER_SETTING+="chrony=inactive, "
-    fi
-
-    # 동기화 확인
-    if command -v chronyc >/dev/null 2>&1 && chronyc sources 2>/dev/null | grep -q '^\^'; then
-        AFTER_SETTING+="sync=ok"
-        ACTION_RESULT="PASS"
-    else
-        AFTER_SETTING+="sync=fail"
-    fi
-fi
+# JSON 출력용 줄바꿈 이스케이프
+EVIDENCE_ESCAPED=$(echo -e "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g')
 
 
-
-# 4. NTP 조치
-if [ "$USE_NTP" = true ] && [ "$USE_CHRONY" = false ]; then
-    TARGET_FILE="/etc/ntp.conf"
-    ACTION_LOG+="NTP 기반 조치 수행, "
-
-    # 사전 상태 수집
-    if systemctl list-units --type=service | grep -q ntp; then
-        BEFORE_SETTING+="ntp=active, "
-    else
-        BEFORE_SETTING+="ntp=inactive, "
-    fi
-
-    # 설정 파일 서버 항목 확인 및 추가
-    if ! grep -qE '^[[:space:]]*server[[:space:]]+' "$TARGET_FILE" 2>/dev/null; then
-        echo "server $DEFAULT_NTP_SERVER" >> "$TARGET_FILE"
-        ACTION_LOG+="ntp.conf 서버 추가($DEFAULT_NTP_SERVER), "
-    else
-        ACTION_LOG+="ntp.conf 서버 설정 이미 존재, "
-    fi
-
-    # 서비스 재시작
-    systemctl restart ntp
-    sleep 2
-
-    # 사후 상태 수집
-    if systemctl list-units --type=service | grep -q ntp; then
-        AFTER_SETTING+="ntp=active, "
-    else
-        AFTER_SETTING+="ntp=inactive, "
-    fi
-
-    # 동기화 확인
-    if command -v ntpq >/dev/null 2>&1 && ntpq -pn 2>/dev/null | grep -q '^[\*\+]'; then
-        AFTER_SETTING+="sync=ok"
-        ACTION_RESULT="PASS"
-    else
-        AFTER_SETTING+="sync=fail"
-    fi
-fi
-
-
-# 5. JSON 결과 출력
+# 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$BEFORE_SETTING",
-  "after_setting": "$AFTER_SETTING",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE_ESCAPED",
+    "guide": "KISA 가이드라인에 따른 로그 파일 접근 권한 설정을 수행했습니다.",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

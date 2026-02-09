@@ -1,97 +1,111 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-24
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : 사용자, 시스템 환경변수 파일 소유자 및 권한 설정
 # @Description : 홈 디렉터리 환경변수 파일 소유자가 root 또는 해당 계정으로 지정되어 있고, 홈 디렉터리 환경변수 파일에 root 계정과 소유자만 쓰기 권한 부여
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 기본 변수 정의 (고정 템플릿)
 ID="U-24"
-TARGET_FILE=""
+CATEGORY="파일 및 디렉토리 관리"
+TITLE="사용자, 시스템 환경변수 파일 소유자 및 권한 설정"
+IMPORTANCE="상"
+
+STATUS="PASS"
 ACTION_RESULT="SUCCESS"
 ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
-ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+EVIDENCE=""
+GUIDE="KISA 가이드라인에 따른 홈 디렉터리 환경변수 파일 권한 설정을 수행하였습니다."
 
 ENV_FILES=(
   ".profile"
-  ".kshrc"
-  ".cshrc"
   ".bashrc"
   ".bash_profile"
+  ".kshrc"
+  ".cshrc"
   ".login"
   ".exrc"
   ".netrc"
 )
 
-# 2. 조치 로직
-while IFS=: read -r USER _ UID _ _ HOME_DIR _; do
-  # 일반 사용자만 대상
-  if [ "$UID" -lt 1000 ] || [ ! -d "$HOME_DIR" ]; then
-    continue
-  fi
+ACTION_TARGET_FOUND=false
+
+
+# 1. 실제 조치 프로세스
+while IFS=: read -r USER _ _ _ _ HOME_DIR _; do
+
+  [ ! -d "$HOME_DIR" ] && continue
 
   for ENV_FILE in "${ENV_FILES[@]}"; do
     FILE_PATH="$HOME_DIR/$ENV_FILE"
 
-    if [ -f "$FILE_PATH" ]; then
-      PERM_BEFORE="$(stat -c %A "$FILE_PATH")"
+    [ ! -f "$FILE_PATH" ] && continue
 
-      # 기타 사용자 쓰기 권한이 있는 경우만 조치
-      if [[ "${PERM_BEFORE:8:1}" == "w" ]]; then
-        chmod o-w "$FILE_PATH" 2>/dev/null
+    ACTION_TARGET_FOUND=true
 
-        PERM_AFTER="$(stat -c %A "$FILE_PATH")"
+    OWNER_BEFORE="$(stat -c %U "$FILE_PATH")"
 
-        TARGET_FILE+="$FILE_PATH "
-
-        if [ -z "$BEFORE_SETTING" ]; then
-          BEFORE_SETTING="$FILE_PATH:$PERM_BEFORE"
-          AFTER_SETTING="$FILE_PATH:$PERM_AFTER"
-          ACTION_LOG="기타 사용자 쓰기 권한 제거"
-        else
-          BEFORE_SETTING+=", $FILE_PATH:$PERM_BEFORE"
-          AFTER_SETTING+=", $FILE_PATH:$PERM_AFTER"
-          ACTION_LOG+=", 기타 사용자 쓰기 권한 제거"
-        fi
-
-        if [ "$PERM_BEFORE" = "$PERM_AFTER" ]; then
-          ACTION_RESULT="FAIL"
-          ACTION_LOG+=", 조치 실패"
-        fi
-      fi
+    # 1) 소유자 조치
+    if [[ "$OWNER_BEFORE" != "root" && "$OWNER_BEFORE" != "$USER" ]]; then
+      chown "$USER" "$FILE_PATH" 2>/dev/null
     fi
+
+    # 2) 권한 조치 (group / other write 제거)
+    chmod go-w "$FILE_PATH" 2>/dev/null
+
+    OWNER_AFTER="$(stat -c %U "$FILE_PATH")"
+    PERM_AFTER="$(stat -c %A "$FILE_PATH")"
+
+    # 검증
+    if [[ "$OWNER_AFTER" != "root" && "$OWNER_AFTER" != "$USER" ]] \
+       || [[ "${PERM_AFTER:5:1}" == "w" || "${PERM_AFTER:8:1}" == "w" ]]; then
+        STATUS="FAIL"
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        [ -n "$ACTION_LOG" ] && ACTION_LOG+=", "
+        ACTION_LOG+="조치 실패: $FILE_PATH"
+        [ -n "$EVIDENCE" ] && EVIDENCE+=", "
+        EVIDENCE+="조치 후에도 기준 미충족 ($FILE_PATH)"
+    else
+        [ -n "$ACTION_LOG" ] && ACTION_LOG+=", "
+        ACTION_LOG+="조치 완료: $FILE_PATH"
+    fi
+
   done
 done < /etc/passwd
 
-if [ -z "$TARGET_FILE" ]; then
-  ACTION_LOG="조치 대상 파일 없음"
-  BEFORE_SETTING="N/A"
-  AFTER_SETTING="N/A"
+
+# 2. 결과 정리
+if [ "$ACTION_TARGET_FOUND" = false ]; then
+  STATUS="PASS"
+  ACTION_RESULT="SUCCESS"
+  ACTION_LOG="조치 대상 환경변수 파일이 존재하지 않음"
+  EVIDENCE="점검 대상 파일 없음"
 fi
 
 
-# 3. JSON 결과 출력 (echo 공백 필수)
+# 3. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
   "check_id": "$ID",
+  "category": "$CATEGORY",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
+  "status": "$STATUS",
+  "evidence": "$EVIDENCE",
+  "guide": "$GUIDE",
   "action_result": "$ACTION_RESULT",
-  "before_setting": "$BEFORE_SETTING",
-  "after_setting": "$AFTER_SETTING",
   "action_log": "$ACTION_LOG",
-  "action_date": "$ACTION_DATE"
+  "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

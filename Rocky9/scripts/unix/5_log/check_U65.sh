@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.1
+# @Version: 1.0.2
 # @Author: 권순형
-# @Last Updated: 2026-02-08
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-65
 # @Category    : 로그 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : NTP 및 시각 동기화 설정
 # @Description : NTP 및 시각 동기화 설정 여부 점검
@@ -23,6 +23,8 @@ IMPORTANCE="중"
 STATUS="FAIL"
 EVIDENCE=""
 TARGET_FILE="/etc/ntp.conf, /etc/chrony.conf"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 잘못된 NTP 서버 설정이나 네트워크 지연 시 서비스 시작 지연이나 시간 의존 애플리케이션 오류가 발생할 수 있습니다."
 CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 
@@ -102,13 +104,17 @@ echo ""
 
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "target_file": "$TARGET_FILE",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "NTP 또는 Chrony 설정과 동기화 주기를 설정해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

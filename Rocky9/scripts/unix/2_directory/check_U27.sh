@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-27
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 상
 # @Title       : $HOME/.rhosts, hosts.equiv 사용 금지
 # @Description : $HOME/.rhosts 및 /etc/hosts.equiv 파일에 대해 적절한 소유자 및 접근 권한 설정 여부 점검
@@ -21,7 +21,8 @@ TITLE="\$HOME/.rhosts, hosts.equiv 사용 금지"
 IMPORTANCE="상"
 STATUS="PASS"
 EVIDENCE=""
-
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 해당 방식에 의존하던 레거시 자동화 작업이나 원격 관리 기능은 더 이상 동작하지 않을 수 있습니다."
 CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 TARGET_FILES=("/etc/hosts.equiv")
@@ -79,13 +80,17 @@ fi
 echo ""
 cat <<EOF
 {
-  "check_id": "$CHECK_ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')",
-  "target_file": "$TARGET_FILE",
-  "check_date": "$CHECK_DATE"
+    "check_id": "$CHECK_ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')",
+    "guide": "/etc/hosts.equiv, $HOME/.rhosts 파일 소유자를 root 또는 해당 계정으로 변경해주시고 권한도 600 이하로 변경해주세요. 각 파일에 허용 호스트 및 계정을 등록해주세요.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "N/A",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",  
+    "check_date": "$CHECK_DATE"
 }
 EOF

@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-33
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 하
 # @Title       : 숨겨진 파일 및 디렉토리 검색 및 제거
 # @Description : 숨겨진 파일 및 디렉토리 내 의심스러운 파일 존재 여부 점검
@@ -19,43 +19,57 @@
 # 수동 점검
 ######################
 
-# 1. 기본 변수 정의
+# 1. 기본 변수 정의 (U-01 구조 반영)
 ID="U-33"
-TARGET_FILE="/"
+CATEGORY="파일 및 디렉토리 관리"
+TITLE="숨겨진 파일 및 디렉토리 검색 및 제거"
+IMPORTANCE="하"
 ACTION_DATE=$(date "+%Y-%m-%d %H:%M:%S")
 
 ACTION_RESULT=""
 ACTION_LOG=""
 BEFORE_SETTING=""
 AFTER_SETTING=""
+STATUS="PASS"
+EVIDENCE=""
 
-# 2. 조치 로직 (수동 확인)
-HIDDEN_FILES=$(find / -type f -name ".*" 2>/dev/null | head -n 50)
-HIDDEN_DIRS=$(find / -type d -name ".*" 2>/dev/null | head -n 50)
 
-BEFORE_SETTING="Hidden files:\n$HIDDEN_FILES\n\nHidden directories:\n$HIDDEN_DIRS"
+# 2. 숨겨진 파일 / 디렉토리 검색
+HIDDEN_FILES=$(find / -type f -name ".*" 2>/dev/null | head -n 50 | sed ':a;N;$!ba;s/\n/\\n/g')
+HIDDEN_DIRS=$(find / -type d -name ".*" 2>/dev/null | head -n 50 | sed ':a;N;$!ba;s/\n/\\n/g')
+
+BEFORE_SETTING="Hidden_files:\\n$HIDDEN_FILES\\n\\nHidden_directories:\\n$HIDDEN_DIRS"
 
 if [[ -n "$HIDDEN_FILES" || -n "$HIDDEN_DIRS" ]]; then
+    STATUS="FAIL"
     ACTION_RESULT="MANUAL_REQUIRED"
-    ACTION_LOG="Hidden files or directories detected. Administrator review and manual removal required using rm / rm -r."
-    AFTER_SETTING="No automatic changes applied."
+    ACTION_LOG="숨겨진 파일 또는 디렉토리가 존재합니다. 관리자 확인 후 rm / rm -r로 제거 필요."
+    AFTER_SETTING="수동 조치 필요"
+    EVIDENCE="숨겨진 파일 또는 디렉토리 발견:\\n$HIDDEN_FILES\\n$HIDDEN_DIRS"
 else
+    STATUS="PASS"
     ACTION_RESULT="NO_ACTION_REQUIRED"
-    ACTION_LOG="No hidden files or directories detected."
-    AFTER_SETTING="System already compliant."
+    ACTION_LOG="숨겨진 파일 및 디렉토리 없음"
+    AFTER_SETTING="양호"
+    EVIDENCE="숨겨진 파일 또는 디렉토리 없음"
 fi
 
 
 # 3. JSON 결과 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$(echo -e "$BEFORE_SETTING" | sed 's/"/\\"/g')",
-  "after_setting": "$(echo -e "$AFTER_SETTING" | sed 's/"/\\"/g')",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "before_setting": "$BEFORE_SETTING",
+    "after_setting": "$AFTER_SETTING",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$ACTION_DATE",
+    "check_date": "$ACTION_DATE"
 }
 EOF

@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 1.0.1
 # @Author: 권순형
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-09
 # ============================================================================
-# [점검 항목 상세]
+# [조치 항목 상세]
 # @Check_ID    : U-32
 # @Category    : 파일 및 디렉토리 관리
-# @Platform    : Debian
+# @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : 홈 디렉토리로 지정한 디렉토리의 존재 관리
 # @Description : 홈 디렉토리가 존재하지 않는 계정이 발견되지 않도록 조치
@@ -19,56 +19,70 @@
 # 삭제는 수동으로 처리
 #######################
 
-# 1. 변수 정의
 ID="U-32"
+CATEGORY="파일 및 디렉토리 관리"
+TITLE="홈 디렉토리로 지정한 디렉토리의 존재 관리"
+IMPORTANCE="중"
 TARGET_FILE="/etc/passwd"
-ACTION_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
-ACTION_RESULT="PASS"
-ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
+ACTION_RESULT="FAIL"
+STATUS="FAIL"
+ACTION_LOG="N/A"
+EVIDENCE="N/A"
 
-MISSING_HOME_USERS=()
+MISSING_USERS=()
 
 
-# 2. 조치 로직
-while IFS=: read -r username _ uid _ _ homedir shell; do
-    if [ "$uid" -ge 1000 ]; then
-        if [ ! -d "$homedir" ]; then
-            MISSING_HOME_USERS+=("$username:$homedir")
-            BEFORE_SETTING+="$username:$homedir (미존재); "
+# 1. 실제 조치 프로세스 시작
+if [ -f "$TARGET_FILE" ]; then
+    while IFS=: read -r username _ uid _ _ homedir _; do
+        # 일반 사용자 계정만 점검
+        if [ "$uid" -ge 1000 ]; then
+            if [ ! -d "$homedir" ]; then
+                MISSING_USERS+=("$username:$homedir")
 
-            # 홈 디렉토리 생성
-            mkdir -p "$homedir"
-            chown "$username:$username" "$homedir"
-            chmod 700 "$homedir"
+                # 홈 디렉토리 생성
+                mkdir -p "$homedir"
+                chown "$username:$username" "$homedir"
+                chmod 700 "$homedir"
 
-            AFTER_SETTING+="$username:$homedir (생성 완료); "
-            ACTION_LOG+="계정 [$username] 홈 디렉토리 [$homedir] 생성 완료. "
+                ACTION_LOG+="계정 [$username] 홈 디렉토리 [$homedir] 생성 완료. "
+            fi
         fi
-    fi
-done < "$TARGET_FILE"
+    done < "$TARGET_FILE"
 
-if [ "${#MISSING_HOME_USERS[@]}" -eq 0 ]; then
-    ACTION_LOG="조치 대상 계정 없음."
-    BEFORE_SETTING="모든 사용자 홈 디렉토리 정상"
-    AFTER_SETTING="변경 사항 없음"
+    if [ "${#MISSING_USERS[@]}" -eq 0 ]; then
+        STATUS="PASS"
+        ACTION_RESULT="SUCCESS"
+        ACTION_LOG="조치 대상 계정 없음."
+        EVIDENCE="모든 사용자 계정의 홈 디렉토리가 정상적으로 존재함 (양호)"
+    else
+        STATUS="PASS"
+        ACTION_RESULT="SUCCESS"
+        EVIDENCE="홈 디렉토리가 없던 계정 조치 완료: ${MISSING_USERS[*]}"
+    fi
 else
-    ACTION_RESULT="SUCCESS"
+    STATUS="FAIL"
+    ACTION_RESULT="ERROR"
+    ACTION_LOG="조치 대상 파일($TARGET_FILE)이 존재하지 않습니다."
+    EVIDENCE="파일 없음"
 fi
 
 
-# 3. JSON 결과 출력
+# 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$ID",
-  "action_result": "$ACTION_RESULT",
-  "before_setting": "$BEFORE_SETTING",
-  "after_setting": "$AFTER_SETTING",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$ACTION_DATE"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "홈 디렉토리가 존재하지 않는 계정에 대해 홈 디렉토리 설정 또는 계정 제거 필요",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
