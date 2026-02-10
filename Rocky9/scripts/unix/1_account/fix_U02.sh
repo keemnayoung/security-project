@@ -59,11 +59,11 @@ CHECK_DAYS=$(grep "^PASS_MAX_DAYS" "$LOGIN_DEFS" | awk '{print $2}' | tail -1)
 if [ "$CHECK_LEN" == "8" ] && [ "$CHECK_DAYS" == "90" ]; then
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
-    ACTION_LOG="조치 완료. 패스워드 규정 준수 설정됨. (minlen:8, MaxDays:90)"
+    ACTION_LOG="비밀번호의 최소 길이를 8자로 강화하고 유효기간을 90일로 설정하여, 유추하기 어려운 암호 사용 및 정기적인 변경을 유도하도록 정책을 변경하였습니다."
 else
     ACTION_RESULT="FAIL"
     STATUS="FAIL"
-    ACTION_LOG="조치 실패. 설정값이 기준과 일치하지 않습니다. 수동 확인 필요."
+    ACTION_LOG="보안 설정을 시도하였으나 일부 파라미터가 시스템 기준값과 일치하지 않습니다. 설정 파일의 문법 오류나 권한 문제를 점검하기 위해 관리자의 수동 확인이 필요합니다."
 fi
 
 echo ""

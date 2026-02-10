@@ -58,21 +58,24 @@ if [ -f "$TARGET_FILE" ]; then
         fi
     done
 
-    # 4. 결과 판정} -gt 0 ]; then"]
+    # 4. 결과 판정
     if [ "$STILL_VULN" -eq 0 ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
         if [ ${#FIXED_ACCOUNTS[@]} -gt 0 ]; then
-            ACTION_LOG="조치 완료. 계정(${FIXED_ACCOUNTS[*]})의 쉘을 /sbin/nologin으로 변경 완료 및 검증 성공."
+            ACTION_LOG="시스템 계정(${FIXED_ACCOUNTS[*]})을 통한 비정상적인 로그인을 차단하기 위해 쉘 환경을 /sbin/nologin으로 변경하고 조치를 완료하였습니다."
         else
-            ACTION_LOG="양호. 조치할 대상 계정이 이미 존재하지 않습니다."
+            ACTION_LOG="모든 시스템 계정에 이미 로그인 제한 설정이 적용되어 있어 추가 설정 변경 없이 조치를 완료하였습니다."
         fi
     else
         ACTION_RESULT="PARTIAL_SUCCESS"
-        ACTION_LOG="주의. 일부 계정의 쉘 변경에 실패했습니다. 수동 확인이 필요합니다."
+        STATUS="FAIL"
+        ACTION_LOG="쉘 환경 변경 작업을 시도하였으나 일부 계정의 설정이 반영되지 않아, 관리자의 수동 점검 및 조치가 필요합니다."
     fi
 else
-    ACTION_LOG="오류. 조치 대상 파일($TARGET_FILE)이 없습니다."
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="사용자 정보 설정 파일($TARGET_FILE)이 식별되지 않아 자동 조치 프로세스를 완료할 수 없습니다."
 fi
 
 echo ""

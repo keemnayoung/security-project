@@ -58,16 +58,19 @@ if [ -f "$GROUP_FILE" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
         if [ ${#REMOVED_GROUPS[@]} -gt 0 ]; then
-            ACTION_LOG="조치 완료. 불필요한 그룹(${REMOVED_GROUPS[*]}) 삭제 완료."
+            ACTION_LOG="사용자가 존재하지 않는 불필요한 그룹(${REMOVED_GROUPS[*]})을 모두 정리하여 시스템 관리 최적화 조치를 완료하였습니다."
         else
-            ACTION_LOG="조치 실패. 삭제할 대상 그룹이 없습니다."
+            ACTION_LOG="현재 시스템 내에 삭제가 필요한 빈 그룹이 존재하지 않아 추가 설정 변경 없이 조치를 완료하였습니다."
         fi
     else
         ACTION_RESULT="PARTIAL_SUCCESS"
-        ACTION_LOG="주의: 일부 그룹 삭제에 실패했습니다."
+        STATUS="FAIL"
+        ACTION_LOG="그룹 삭제 작업을 수행하였으나 일부 항목이 시스템에서 제거되지 않아, 관리자의 수동 점검 및 조치가 필요합니다."
     fi
 else
-    ACTION_LOG="오류: 대상 파일($GROUP_FILE)이 없습니다."
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="그룹 정보 설정 파일($GROUP_FILE)이 식별되지 않아 자동 조치 프로세스를 완료할 수 없습니다."
 fi
 
 echo ""

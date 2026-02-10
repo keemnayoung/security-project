@@ -63,14 +63,14 @@ fi
     if [ "$CHECK_VAL" == "10" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. 임계값(10회) 및 잠금시간(120초) 설정됨."
+        ACTION_LOG="계정 잠금 임계값 10회 및 잠금 시간 120초 적용을 통해 시스템 접근 제어 강화를 위한 조치를 완료하였습니다."
     else
-        ACTION_LOG="조치 실패. 설정값이 반영되지 않았습니다."
+        ACTION_LOG="설정 변경을 시도하였으나 시스템에 즉시 반영되지 않았습니다. 정확한 적용을 위해 설정 파일의 문법이나 서비스 상태를 수동으로 확인해야 합니다."
     fi
 } || {
     [ -f "${CONF_FILE}_bak_$TIMESTAMP" ] && mv "${CONF_FILE}_bak_$TIMESTAMP" "$CONF_FILE"
     ACTION_RESULT="FAIL_AND_ROLLBACK"
-    ACTION_LOG="설정 도중 오류가 발생하여 원복했습니다."
+    ACTION_LOG="구성 파일 수정 중 예기치 않은 오류가 발생하여 시스템의 안정성을 유지하기 위해 기존 설정 상태로 복구하였습니다."
 }
 
 echo ""

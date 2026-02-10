@@ -37,21 +37,22 @@ if [ -f "$TARGET_FILE" ]; then
     # 3. 결과 판별: 가이드 기준(600초 이하) 준수 여부 확인
     if [[ "$TMOUT_VAL" =~ ^[0-9]+$ ]] && [ "$TMOUT_VAL" -le 600 ] && [ "$TMOUT_VAL" -gt 0 ]; then
         STATUS="PASS"
-        EVIDENCE="세션 종료 시간이 ${TMOUT_VAL}초로 적절히 설정되어 있습니다."
+        # [수정] 기준 준수라는 말 대신 세션 보안 상태를 설명
+        EVIDENCE="일정 시간 서비스 요청이 없을 경우 세션이 자동 종료되도록 ${TMOUT_VAL}초로 설정되어 있어 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
         if [ -z "$TMOUT_VAL" ]; then
-            EVIDENCE="TMOUT 설정이 존재하지 않거나 비활성화되어 있습니다."
+            EVIDENCE="현재 자동 세션 종료(TMOUT) 설정이 확인되지 않아, 비인가자의 세션 탈취 방지를 위한 조치가 필요합니다."
         else
-            EVIDENCE="현재 설정값(${TMOUT_VAL}초)이 가이드 기준(600초 이하)을 초과합니다."
+
+            EVIDENCE="설정된 세션 종료 시간(${TMOUT_VAL}초)이 권장 범위를 벗어나 있어, 안전한 세션 관리를 위한 조치가 필요합니다."
         fi
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE) 누락"
+    EVIDENCE="환경 설정 파일($TARGET_FILE)이 식별되지 않아 세션 타임아웃 설정을 점검할 수 없으므로, 시스템 확인 조치가 필요합니다."
     FILE_HASH="NOT_FOUND"
 fi
-
 echo ""
 cat << EOF
 {

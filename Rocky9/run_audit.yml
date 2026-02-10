@@ -1,4 +1,4 @@
-- name: 보안 전수 점검 (Linux & DB 통합 자동화)
+- name: 보안 조치 (Linux & DB 통합 자동화)
   hosts: target_servers
   become: yes
   tasks:

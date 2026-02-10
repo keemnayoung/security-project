@@ -17,43 +17,48 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 1. 항목 정보 정의
 ID="U-10"
 CATEGORY="계정관리"
 TITLE="동일한 UID 금지"
 IMPORTANCE="중"
 TARGET_FILE="/etc/passwd"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="운영 목적으로 동일한 UID 값을 부여하였다면, UID 변경 시 해당 계정이 소유한 파일 및 디렉터리에 대한 접근 권한이 상실될 수 있습니다. 따라서 조치 전 해당 계정이 사용 중인 데이터의 소유권과 권한 설정을 철저히 검토하여 서비스 중단이 발생하지 않도록 확인해야 합니다."
 
+# 2. 진단 로직
 STATUS="PASS"
 EVIDENCE="N/A"
 DUPLICATE_INFO=""
 
 if [ -f "$TARGET_FILE" ]; then
-    # 1. 파일 해시 추출 (무결성 검증용)
-    FILE_HASH=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
-    
-    # 2. 중복된 UID 값 추출
-    DUPS=$(cut -d: -f3 "$TARGET_FILE" | sort | n | uniq -d)
+    # 중복된 UID 값 추출
+    DUPS=$(cut -d: -f3 "$TARGET_FILE" | sort -n | uniq -d)
 
     if [ -z "$DUPS" ]; then
         STATUS="PASS"
-        EVIDENCE="중복된 UID를 사용하는 계정이 존재하지 않습니다."
+        ACTION_RESULT="SUCCESS"
+        EVIDENCE="모든 사용자가 고유한 식별 번호(UID)를 할당받아 사용 중이며 계정 간 권한 충돌 위험이 없습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        # 3. 중복 UID별 계정 매칭 상세화
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        
+        # 중복 UID별 계정 매칭 상세화
         for uid in $DUPS; do
             ACCOUNTS=$(awk -F: -v u="$uid" '$3 == u {print $1}' "$TARGET_FILE" | xargs | sed 's/ /, /g')
-            DUPLICATE_INFO+="UID $uid($ACCOUNTS); "
+            DUPLICATE_INFO+="UID ${uid}번(${ACCOUNTS}); "
         done
-        EVIDENCE="동일한 UID 발견 [${DUPLICATE_INFO%; }]"
+        
+        EVIDENCE="동일한 식별 번호를 공유하는 계정(${DUPLICATE_INFO%; })이 식별되어 권한 분리가 필요합니다."
+        GUIDE="1. 중복된 계정 중 UID를 변경할 대상을 결정하세요. 2. 해당 사용자가 소유한 파일 리스트를 'find / -uid <UID>'로 먼저 확보하세요. 3. 'usermod -u <새UID> <계정명>'으로 UID를 수정한 뒤, 확보한 파일들의 소유권을 'chown'으로 재설정하십시오."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)을 찾을 수 없습니다."
-    FILE_HASH="NOT_FOUND"
+    ACTION_RESULT="PARTIAL_SUCCESS"
+    EVIDENCE="사용자 정보 설정 파일($TARGET_FILE)이 존재하지 않아 계정 식별자 점검이 불가능합니다."
+    GUIDE="시스템 환경에 맞는 계정 설정 파일 존재 여부를 수동으로 점검하십시오."
 fi
 
+# 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
 {
@@ -63,11 +68,9 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "/etc/passwd 파일을 확인하여 중복된 UID를 가진 계정의 UID를 수정하세요.",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
     "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

@@ -29,7 +29,7 @@ if [ -f "$TARGET_FILE" ]; then
     # 1. 안전한 복구를 위한 백업 생성
     cp -p "$TARGET_FILE" "${TARGET_FILE}_bak_$TIMESTAMP"
 
-    # 2. [조치 정교화] 기존 TMOUT 관련 모든 설정(주석 포함) 제거 후 표준 설정 삽입
+    # 2. [기존 TMOUT 관련 모든 설정 제거 후 표준 설정 삽입
     sed -i '/TMOUT/d' "$TARGET_FILE"
     
     # 파일 끝에 설정 추가
@@ -46,14 +46,15 @@ if [ -f "$TARGET_FILE" ]; then
     if [ "$AFTER_VAL" == "600" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. 세션 종료 시간을 600초로 설정 완료 및 검증 성공."
+        ACTION_LOG="비인가 사용자의 세션 도용을 방지하기 위해 자동 종료 시간을 600초로 일괄 설정하고 조치를 완료하였습니다."
     else
-        ACTION_LOG="조치 실패. 설정 반영 후 검증 값이 일치하지 않습니다."
+        ACTION_LOG="세션 타임아웃 설정 변경을 시도하였으나 실제 반영 값이 일치하지 않아 조치가 완료되지 않았습니다. 수동 확인이 필요합니다."
     fi
 else
-    ACTION_LOG="오류: 조치 대상 파일($TARGET_FILE)이 없습니다."
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="환경 설정 파일($TARGET_FILE)이 존재하지 않아 자동 조치 프로세스를 완료할 수 없습니다."
 fi
-
 # 4. 표준 JSON 출력
 echo ""
 cat << EOF

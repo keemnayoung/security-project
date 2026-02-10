@@ -47,6 +47,7 @@ st.markdown("""
     }
     .border-pass { border-top: 8px solid #10B981 !important; }
     .border-vulnerable { border-top: 8px solid #EF4444 !important; }
+    .border-manual {border-top: 5px solid #EF4444 !important; }
 
     /* --- 버튼 스타일 전체 수정 --- */
     .stButton > button {
@@ -290,8 +291,21 @@ def draw_security_cards(data):
     if data.empty:
         st.info("💡 해당하는 점검 항목이 없습니다.")
         return
-        
-    for cat in sorted(data['category'].unique()):
+
+    category_order = [
+        "계정관리",           # 1_account
+        "파일 및 디렉토리 관리", # 2_directory
+        "서비스 관리",         # 3_service
+        "패치 관리",           # 4_patch
+        "로그 관리"            # 5_log
+    ]
+   # 2. 실제 데이터의 카테고리를 기준 리스트 순서에 맞게 정렬
+    existing_cats = [cat for cat in category_order if cat in data['category'].unique()]
+    other_cats = sorted([cat for cat in data['category'].unique() if cat not in category_order])
+    final_cats = existing_cats + other_cats
+
+    # 3. sorted(...) 대신 위에서 만든 final_cats로 루프 돌리기
+    for cat in final_cats:
         cat_items = data[data['category'] == cat].sort_values('check_id').reset_index(drop=True)
         fail_count = len(cat_items[cat_items['status'] == 'FAIL'])
         
@@ -356,28 +370,47 @@ def draw_security_cards(data):
             # 카드가 닫혀있을 땐 아무것도 안 보이고, 열릴 때만 아래 패딩 추가
             st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
             for i, row in cat_items.iterrows():
-                # (기존 상세 카드 렌더링 로직...)
-                is_pass = row['status'] == 'PASS'
-                card_cls = "border-pass" if is_pass else "border-vulnerable"
-                
                 # 변수 가져오기 및 display_text 결정
                 action_result = row.get('action_result', '')
                 action_log = row.get('action_log', '')
                 evidence = row.get('evidence', '')
+                is_pass = row['status'] == 'PASS'
+                # PARTIAL_SUCCESS 여부 확인
+                is_manual_target = (action_result == 'PARTIAL_SUCCESS')
 
-                if action_result == 'SUCCESS' and action_log:
+                if is_pass:
+                    card_cls = "border-pass"
+                elif is_manual_target:
+                    card_cls = "border-manual" # 노란색 테두리 (CSS 정의 필요)
+                else:
+                    card_cls = "border-vulnerable"
+                
+                # [수정] PARTIAL_SUCCESS인 경우 action_log(수동 조치 가이드)를 최우선으로 표시
+                if is_manual_target and action_log:
+                    display_text = action_log
+                elif action_result == 'SUCCESS' and action_log:
                     display_text = action_log
                 elif evidence:
                     display_text = evidence
                 else:
                     display_text = "상세 데이터가 없습니다."
-                
+
                 # 가이드/알림 박스
+                # 가이드/알림 박스 (중복 생성을 막기 위해 elif로 연결)
                 guide_html = ""
-                if not is_pass:
+                
+                # 1. 수동 조치 대상인 경우 (노란색)
+                if is_manual_target:
+                    guide_html = f'<div style="background:#FFFBEB; padding:18px; border-radius:12px; border:1px solid #FDE68A; margin-top:15px; color:#92400E;">⚠️ <b>수동 조치 안내:</b> {row["guide"]}</div>'
+                
+                # 2. 일반 취약 상태인 경우 (빨간색)
+                elif not is_pass:
                     guide_html = f'<div style="background:#FFF5F5; padding:18px; border-radius:12px; border:1px solid #FED7D7; margin-top:15px; color:#C53030;">💡 <b>조치 가이드:</b> {row["guide"]}</div>'
+                
+                # 3. 조치 완료 상태인 경우 (초록색)
                 elif row.get('action_result') == 'SUCCESS':
                     guide_html = f'<div style="background:#F0FDF4; padding:18px; border-radius:12px; border:1px solid #BBF7D0; margin-top:15px; color:#15803D;">✅ <b>조치 완료:</b> {row["guide"]}</div>'
+               
 
                 # 메인 카드 출력 
                 st.markdown(f"""
@@ -387,11 +420,12 @@ def draw_security_cards(data):
                                 <span class="badge">중요도: {row['importance']}</span>
                                 <span class="badge">ISMS-P 2.1.2</span>
                                 <h2 style="margin: 15px 0; font-size: 1.6rem; letter-spacing:-0.5px;">
-                                    <span style="color:#64748B; margin-right:10px;">{i+1}.</span> {row['check_id']} {row['title']}
+                                    <span style="color:#64748B; margin-right:10px;"></span> {row['check_id']} {row['title']}
                                 </h2>
                                 <p style="font-size: 1.1rem; color: #475569;">🔍 <b>점검 결과:</b> {display_text}</p>
                             </div>
-                            <div class="{'status-secure' if is_pass else 'status-vulnerable'}">
+                            <div class="{'status-secure' if is_pass else 'status-vulnerable'}"
+                            style="margin-top: -10px; font-weight: bold; font-size: 1.2rem;">
                                 ● {'양호' if is_pass else '취약'}
                             </div>
                         </div>
@@ -403,17 +437,22 @@ def draw_security_cards(data):
                     # 현재 항목이 조치 모드인지 확인
                     is_fixing = st.session_state.get(f"confirm_{row['check_id']}", False)
 
-                    if not is_fixing:
-                        # 1단계: 조치 시작 버튼 (누르면 사라짐)
+                    # 1. 수동 조치 대상이면 안내만 띄우고 버튼은 아예 생략
+                    if is_manual_target:
+                        st.info("💡**이 항목은 관리자의 수동 조치가 필요합니다.** 상단 가이드를 확인해 주세요.")
+                    
+                    # 2. 수동 조치가 아니고, 아직 '조치 시작' 버튼을 안 눌렀을 때
+                    elif not is_fixing:
                         if st.button(f"⚡ {row['check_id']} 조치 프로세스 시작", key=f"pre_fix_{row['check_id']}", use_container_width=True):
                             st.session_state[f"confirm_{row['check_id']}"] = True
-                            st.rerun() # 상태 반영을 위해 즉시 새로고침
+                            st.rerun()
+                    
+                    # 3. 조치 시작을 눌러서 승인 단계로 넘어왔을 때
                     else:
-                        # 1. 데이터 가져오기 (스크립트에서 보낸 값)
                         impact_text = row.get('action_impact', '일반적인 경우 영향이 없습니다.')
                         impact_level = row.get('impact_level', 'LOW')
-
-                        # 2. 영향도 안내 UI (사용자가 안심할 수 있게 시각화)
+      
+                        # 영향도 안내 UI (사용자가 안심할 수 있게 시각화)
                         if impact_level == "LOW":
                             st.markdown(f"""
                                 <div style="background-color: #F0FDF4; padding: 16px; border-radius: 8px; border: 1px solid #BBF7D0; margin-bottom: 20px;">
