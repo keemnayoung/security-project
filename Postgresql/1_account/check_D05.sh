@@ -14,26 +14,30 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-05"
-CATEGORY="계정관리"
-CHECK_ITEM="비밀번호 재사용 제한 설정"
-DESCRIPTION="비밀번호 변경 시 이전 비밀번호를 재사용할 수 없도록 비밀번호 제약 설정이 되어있는지 점검"
+ID="D-05"
+CATEGORY="계정 관리"
+TITLE="비밀번호 재사용 제한 설정"
 IMPORTANCE="중"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="취약"
-RESULT_MSG="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 운영 절차 또는 외부 인증 정책에 따른 수동 관리 여부 확인 필요"
+EVIDENCE="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 운영 절차 또는 외부 인증 정책에 따른 관리 여부를 수동으로 확인할 필요가 있다."
+
+TARGET_FILE="password"
+ACTION_IMPACT="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 해당없습니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
 {
-  "item_id": "$ITEM_ID",
+  "check_id": "$ID",
   "category": "$CATEGORY",
-  "check_item": "$CHECK_ITEM",
-  "description": "$DESCRIPTION",
-  "IMPORTANCE": "$IMPORTANCE",
-  "checked_at": "$CHECKED_AT",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
   "status": "$STATUS",
-  "result": "$RESULT_MSG",
-  "checked": true
+  "evidence": "$EVIDENCE",
+  "guide": "PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 해당없습니다.",
+  "target_file": "$TARGET_FILE",
+  "action_impact": "$ACTION_IMPACT",
+  "impact_level": "$IMPACT_LEVEL",
+  "check_date": "$DATE"
 }
 EOF

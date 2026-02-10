@@ -17,59 +17,65 @@
 #!/bin/bash
 # [점검] D-03 비밀번호 사용기간 및 복잡도 정책 적용 여부 (인증 방식 기반 안내)
 
-ITEM_ID="D-03"
-CATEGORY="계정관리"
-CHECK_ITEM="비밀번호 사용기간 및 복잡도를 기관의 정책에 맞도록 설정"
-DESCRIPTION="pg_hba.conf 인증 방식에 따라 비밀번호 정책 적용 위치 및 확인 항목 안내"
+ID="D-03"
+CATEGORY="계정 관리"
+TITLE="비밀번호 사용기간 및 복잡도를 기관의 정책에 맞도록 설정"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 
 STATUS="취약"
-RESULT_MSG=""
+guide=""
 
-PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
+TARGET_FILE="/var/lib/pgsql/data/pg_hba.conf"
+ACTION_IMPACT="주기적인 비밀번호 변경 필요"
+IMPACT_LEVEL="MEDIUM"
 
-# pg_hba.conf에서 인증 방식 추출 (주석/공백 제외)
-AUTH_METHODS=$(grep -Ev '^\s*#|^\s*$' "$PG_HBA" 2>/dev/null | awk '{print $NF}' | sort -u)
+# pg_hba.conf에서 인증 방식 추출
+AUTH_METHODS=$(grep -Ev '^\s*#|^\s*$' "$TARGET_FILE" 2>/dev/null | awk '{print $NF}' | sort -u)
 
 # DB 내부 인증
 if echo "$AUTH_METHODS" | grep -Eq 'password|md5|scram-sha-256'; then
-  RESULT_MSG="DB 내부 인증(password/md5/scram-sha-256) 사용 중. \
+  guide="DB 내부 인증(password/md5/scram-sha-256) 사용 중. \
 PostgreSQL은 비밀번호 사용기간 및 복잡도 정책을 기본 제공하지 않으므로, \
 DB 차원의 비밀번호 정책 확장 사용 여부 또는 \
 중앙 인증/OS 인증 전환 여부를 확인해야 함."
 
 # PAM 인증
 elif echo "$AUTH_METHODS" | grep -Eq '^pam$'; then
-  RESULT_MSG="PAM 인증 사용 중. \
+  guide="PAM 인증 사용 중. \
 OS 계정 비밀번호 정책이 기관 정책에 맞게 설정되어 있는지 확인 필요. \
 확인 항목: /etc/security/pwquality.conf (복잡도), \
 /etc/login.defs (PASS_MAX_DAYS 등 사용기간)."
 
 # LDAP / AD 인증
 elif echo "$AUTH_METHODS" | grep -Eq 'ldap|gss|sspi'; then
-  RESULT_MSG="중앙 인증(LDAP/AD) 연계 사용 중. \
+  guide="중앙 인증(LDAP/AD) 연계 사용 중. \
 비밀번호 복잡도 및 사용기간 정책은 중앙 인증 시스템에서 관리됨. \
 중앙 인증 서버의 비밀번호 정책이 기관 정책에 부합하는지 확인 필요."
 
 # 혼합 또는 식별 불가
 else
-  RESULT_MSG="pg_hba.conf에서 인증 방식이 혼합되어 있거나 식별 불가. \
+  guide="pg_hba.conf에서 인증 방식이 혼합되어 있거나 식별 불가. \
 각 인증 방식별로 비밀번호 정책 적용 위치(DB/OS/중앙 인증)를 구분하여 \
 운영 정책 및 설정을 수동으로 확인해야 함."
 fi
 
+EVIDENCE="pg_hba.conf 인증 방식: $(echo "$AUTH_METHODS" | tr '\n' ',' | sed 's/,$//').
+비밀번호 사용기간 및 복잡도 정책의 적용 여부를 자동으로 확인할 수 없음"
+
 cat <<EOF
 {
-  "item_id": "$ITEM_ID",
+  "check_id": "$ID",
   "category": "$CATEGORY",
-  "check_item": "$CHECK_ITEM",
-  "description": "$DESCRIPTION",
+  "title": "$TITLE"",
   "importance": "$IMPORTANCE",
-  "checked_at": "$CHECKED_AT",
   "status": "$STATUS",
-  "result": "$RESULT_MSG",
-  "checked": true
+  "evidence": "$EVIDENCE",
+  "guide": "$guide",
+  "target_file": "$TARGET_FILE",
+  "action_impact": "$ACTION_IMPACT",
+  "impact_level": "$IMPACT_LEVEL",
+  "check_date": "$DATE"
 }
 EOF
 
