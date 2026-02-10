@@ -347,7 +347,6 @@ def draw_security_cards(data):
                 background-color: white; 
                 padding: 18px 25px; 
                 border-radius: 15px; 
-                /* [수정] 왼쪽 바(border-left)를 삭제하고 전체 테두리만 연하게 추가 */
                 border: 1px solid #E2E8F0; 
                 box-shadow: 0 4px 12px rgba(0,0,0,0.05);
                 display: flex;
@@ -395,7 +394,6 @@ def draw_security_cards(data):
                 else:
                     display_text = "상세 데이터가 없습니다."
 
-                # 가이드/알림 박스
                 # 가이드/알림 박스 (중복 생성을 막기 위해 elif로 연결)
                 guide_html = ""
                 
@@ -452,7 +450,7 @@ def draw_security_cards(data):
                         impact_text = row.get('action_impact', '일반적인 경우 영향이 없습니다.')
                         impact_level = row.get('impact_level', 'LOW')
       
-                        # 영향도 안내 UI (사용자가 안심할 수 있게 시각화)
+                        # 영향도 안내 UI 
                         if impact_level == "LOW":
                             st.markdown(f"""
                                 <div style="background-color: #F0FDF4; padding: 16px; border-radius: 8px; border: 1px solid #BBF7D0; margin-bottom: 20px;">
