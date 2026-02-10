@@ -14,31 +14,34 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-08"
-CATEGORY="계정관리"
-CHECK_ITEM="비밀번호 암호화 알고리즘"
-DESCRIPTION="해시 알고리즘 SHA-256 이상의 암호화 알고리즘을 사용하는지 점검"
+ID="D-08"
+CATEGORY="계정 관리"
+TITLE="비밀번호 암호화 알고리즘"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+DATE=(date '+%Y-%m-%d %H:%M:%S')
+TARGET_FILE="password_encryption"
+ACTION_IMPACT="비밀번호 암호화 알고리즘 설정은 신규 계정 생성 또는 비밀번호 변경 시점에만 적용되므로, 기존 계정의 인증 정보나 서비스 가용성에는 영향을 주지 않습니다."
+IMPACT_LEVEL="LOW"
 
 enc=$(psql -U postgres -t -c "SHOW password_encryption;" | xargs)
-
 if [ "$enc" = "scram-sha-256" ]; then
   STATUS="양호"
-  RESULT_MSG="SHA-256 기반 SCRAM 암호화 알고리즘 사용"
+   EVIDENCE="SHA-256 기반 SCRAM 암호화 알고리즘 사용"
 else
   STATUS="취약"
-  RESULT_MSG="SHA-256 미만 암호화 알고리즘 사용($enc)"
+   EVIDENCE="SHA-256 미만 암호화 알고리즘 사용($enc)"
 fi
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ "check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide":"psql 접속 후 password_encryption 설정을 확인하고, 신규 사용자 생성 또는 기존 사용자 비밀번호 변경 시 SCRAM-SHA-256 알고리즘이 적용되도록 구성해야 합니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE" }
 EOF

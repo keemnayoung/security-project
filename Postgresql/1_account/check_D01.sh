@@ -15,37 +15,47 @@
 # ==============================================================================
 
 #!/bin/bash
-ITEM_ID="D-01"
-CATEGORY="계정관리"
-CHECK_ITEM="DB 기본 계정 비밀번호 변경 여부"
-DESCRIPTION="DBMS 기본 계정의 초기 비밀번호 및 권한 정책 변경 사용 유무 점검"
+
+ID="D-01"
+CATEGORY="계정 관리"
+TITLE="기본 계정의 비밀번호, 정책 등을 변경하여 사용"
 IMPORTANCE="상"
+TARGET_FILE="pg_shadow.passwd"
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="기본 관리자 계정의 불필요한 사용을 제한할 수 있습니다."
+STATUS="FAIL"
+EVIDENCE="N/A"
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 
-CHECKED_AT=$(date -Iseconds)
+PSQL_CMD="psql -U postgres -t -A -c"
+QUERY="SELECT usename FROM pg_shadow WHERE usename='postgres' AND passwd IS NULL;"
+RESULT=$($PSQL_CMD "$QUERY" 2>/dev/null)
 
-result=$(psql -U postgres -t -c \
-"SELECT usename FROM pg_shadow WHERE usename='postgres' AND passwd IS NULL;" 2>/dev/null)
-
-if [ -z "$result" ]; then
-  STATUS="양호"
-  RESULT_MSG="초기 비밀번호가 변경되어 있음"
-  CHECKED=true
+if [ $? -ne 0 ]; then
+    STATUS="FAIL"
+    EVIDENCE="PostgreSQL 접속 실패 또는 권한이 부족합니다."
 else
-  STATUS="취약"
-  RESULT_MSG="초기 비밀번호가 변경되어 있지 않음"
-  CHECKED=true
+    if [ -z "$RESULT" ]; then
+        STATUS="PASS"
+        EVIDENCE="postgres 기본 계정의 비밀번호가 설정되어 있습니다."
+    else
+        STATUS="FAIL"
+        EVIDENCE="postgres 기본 계정의 비밀번호가 설정되어 있지 않습니다."
+    fi
 fi
 
 cat <<EOF
 {
-  "item_id": "$ITEM_ID",
-  "category": "$CATEGORY",
-  "check_item": "$CHECK_ITEM",
-  "description": "$DESCRIPTION",
-  "IMPORTANCE": "$IMPORTANCE",
-  "checked_at": "$CHECKED_AT",
-  "status": "$STATUS",
-  "result": "$RESULT_MSG",
-  "checked": $CHECKED
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "ALTER USER postgres WITH PASSWORD '신규비밀번호'; 명령으로 비밀번호를 설정하세요.",
+    "target_file": "$TARGET_FILE",
+    "action_impact": "$ACTION_IMPACT",
+    "impact_level": "$IMPACT_LEVEL",
+    "check_date": "$DATE"
 }
 EOF

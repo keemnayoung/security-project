@@ -14,32 +14,37 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-04"
-CATEGORY="계정관리"
-CHECK_ITEM="관리자 권한 계정 최소화"
-DESCRIPTION="관리자 권한이 필요한 계정 및 그룹에만 관리자 권한을 부여하였는지 점검"
+ID="D-04"
+CATEGORY="계정 관리"
+TITLE="DBMS 관리자 권한을 꼭 필요한 계정 및 그룹에 대해서만 허용"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+TARGET_FILE="pg_roles"
+ACTION_IMPACT="필요 최소한의 관리자 권한만 유지하는 조치로 서비스 및 정상 운영에는 영향이 없습니다."
+IMPACT_LEVEL="LOW"
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 
 cnt=$(psql -U postgres -t -c \
 "SELECT COUNT(*) FROM pg_roles WHERE rolsuper = true AND rolname <> 'postgres';" | xargs)
 
 if [ "$cnt" -eq 0 ]; then
   STATUS="양호"
-  RESULT_MSG="postgres 외 불필요한 관리자 권한 계정 없음"
+   EVIDENCE="postgres 외 불필요한 관리자 권한을 가진 계정이 없습니다."
 else
   STATUS="취약"
-  RESULT_MSG="postgres 외 관리자 권한이 부여된 계정 존재"
+   EVIDENCE="postgres 외 관리자 권한이 부여된 계정이 존재합니다."
 fi
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide":"계정별 용도를 파악한 후 불필요한 계정 삭제하세요."
+"target_file": "$TARGET_FILE",
+"action_impact": "$ACTION_IMPACT",
+"impact_level": "$IMPACT_LEVEL",
+"check_date": "$DATE" }
 EOF
