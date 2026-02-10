@@ -14,24 +14,29 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-16"
+ID="D-16"
 CATEGORY="접근관리"
-CHECK_ITEM="Windows 인증 모드"
-DESCRIPTION="MSSQL 전용 항목으로 PostgreSQL에는 해당 없음"
+TITLE="Windows 인증 모드 사용"
 IMPORTANCE="하"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="PostgreSQL에는 Windows 인증 모드 및 sa 계정 개념이 없음"
+TARGET_FILE="Windows sa 계정"
+EVIDENCE="PostgreSQL에는 Windows 인증 모드 및 sa 계정 개념이 없음"
+ACTION_IMPACT="PostgreSQL에는 Windows 인증 모드 및 sa 계정이 없어 해당없습니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide": "PostgreSQL에는 Windows 인증 모드 및 sa 계정이 없어 해당없습니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

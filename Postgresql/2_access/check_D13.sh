@@ -14,25 +14,29 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-13"
+ID="D-13"
 CATEGORY="접근관리"
-CHECK_ITEM="ODBC/OLE-DB 데이터 소스 관리"
-DESCRIPTION="Windows OS 전용 항목으로 PostgreSQL 환경에는 적용되지 않음"
+TITLE="ODBC/OLE-DB 데이터 소스 관리"
 IMPORTANCE="중"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="Windows OS 전용 항목으로 PostgreSQL(Rocky Linux) 환경에는 해당 없음"
-
+EVIDENCE="Windows OS 전용 항목으로 ODBC/OLE-DB 데이터 소스가 존재하지 않아 PostgreSQL에는 적용되지 않습니다."
+TARGET_FILE="Listener"
+ACTION_IMPACT="PostgreSQL은 ODBC/OLE-DB 데이터 소스를 제공하지 않아 해당없습니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide":"PostgreSQL은 ODBC/OLE-DB 데이터 소스를 제공하지 않아 해당없습니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE" 
+}
 EOF

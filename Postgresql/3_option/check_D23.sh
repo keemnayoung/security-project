@@ -14,25 +14,29 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-23"
+ID="D-23"
 CATEGORY="옵션관리"
-CHECK_ITEM="xp_cmdshell 사용 제한"
-DESCRIPTION="MSSQL 전용 xp_cmdshell 기능은 PostgreSQL에 존재하지 않음"
+TITLE="xp_cmdshell 사용 제한"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="PostgreSQL DBMS에는 xp_cmdshell 또는 이에 상응하는 OS 명령 실행 기능이 존재하지 않아 점검 대상 아님"
-CHECKED=false
+EVIDENCE="PostgreSQL DBMS에는 xp_cmdshell 또는 이에 상응하는 OS 명령 실행 기능이 존재하지 않아 점검 대상 아님"
+TARGET_FILE="xp_cmdshell"
+ACTION_IMPACT="PostgreSQL DBMS에는 xp_cmdshell 또는 이에 상응하는 OS 명령 실행 기능이 존재하지 않아 점검 대상이 아닙니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide": "PostgreSQL DBMS에는 xp_cmdshell 또는 이에 상응하는 OS 명령 실행 기능이 존재하지 않아 점검 대상이 아닙니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

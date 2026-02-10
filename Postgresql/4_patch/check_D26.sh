@@ -14,31 +14,38 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-26"
+ID="D-26"
 CATEGORY="패치관리"
-CHECK_ITEM="DB 감사 로그 정책"
+TITLE="DB 감사 로그 정책"
 DESCRIPTION="감사 기록 정책 설정이 기관 정책에 적합하게 설정되어 있는지 점검"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+DATE=(date '+%Y-%m-%d %H:%M:%S')
+TARGET_FILE="logging_collector"
+ACTION_IMPACT="DB 감사 로그 수집이 활성화되며, 일반적인 서비스 운영에는 영향이 없습니다. 다만 로그 증가로 인해 디스크 사용량이 증가할 수 있으므로 주기적인 로그 관리가 필요합니다."
+IMPACT_LEVEL="HIGH"
 
 log_collector=$(psql -U postgres -t -c "SHOW logging_collector;" 2>/dev/null | xargs)
 
 if [ "$log_collector" = "on" ]; then
   STATUS="양호"
-  RESULT_MSG="DB 감사 로그 수집 기능(logging_collector)이 활성화됨"
+   EVIDENCE="DB 감사 로그 수집 기능(logging_collector)이 활성화됨"
 else
   STATUS="취약"
-  RESULT_MSG="DB 감사 로그 수집 기능(logging_collector)이 비활성화됨"
+   EVIDENCE="DB 감사 로그 수집 기능(logging_collector)이 비활성화됨"
 fi
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide"="PostgreSQL 데이터 디렉터리의 postgresql.conf 파일에서 logging_collector를 on으로 설정하십시오. 설정 변경 후 systemctl restart postgresql 명령을 통해 서비스를 재시작하여 적용 여부를 확인해야 합니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

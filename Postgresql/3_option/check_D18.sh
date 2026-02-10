@@ -14,12 +14,15 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-18"
+ID="D-18"
 CATEGORY="옵션관리"
-CHECK_ITEM="PUBLIC Role 권한"
+TITLE="PUBLIC Role 권한"
 DESCRIPTION="응용 프로그램 또는 DBA 계정의 Role이 Public으로 설정되어 있는지 점검"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+DATE=(date '+%Y-%m-%d %H:%M:%S')
+TARGET_FILE="information_schema.table_privileges"
+ACTION_IMPACT="PUBLIC Role을 통한 불필요한 객체 접근이 차단되며, 일반적인 경우 응용 프로그램 및 서비스 동작에는 영향이 없습니다."
+IMPACT_LEVEL="MEDIUM"
 
 cnt=$(psql -U postgres -t -c "
 SELECT COUNT(*)
@@ -29,20 +32,24 @@ WHERE grantee = 'PUBLIC';
 
 if [ "$cnt" -eq 0 ]; then
   STATUS="양호"
-  RESULT_MSG="PUBLIC Role에 불필요한 권한이 부여되지 않음"
+   EVIDENCE="PUBLIC Role에 불필요한 권한이 부여되지 않음"
 else
   STATUS="취약"
-  RESULT_MSG="PUBLIC Role에 부여된 객체 권한 존재"
+   EVIDENCE="PUBLIC Role에 부여된 객체 권한 존재"
 fi
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide":"PostgreSQL에서 PUBLIC Role에 부여된 테이블 및 객체 권한을 점검하고, 불필요한 권한은 REVOKE 명령으로 제거하십시오. 필요한 권한은 개별 사용자 또는 Role에 명시적으로 부여해야 합니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

@@ -14,24 +14,30 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-19"
+ID="D-19"
 CATEGORY="옵션관리"
-CHECK_ITEM="OS 인증 연계"
-DESCRIPTION="Oracle DB 전용 항목으로 PostgreSQL에는 해당 없음"
+TITLE="OS_ROLES, REMOTE_OS_AUTHENTICATION, REMOTE_OS_ROLES를 FALSE로 설정"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="PostgreSQL은 OS 계정과 DB 계정을 분리하여 운영함"
+EVIDENCE="PostgreSQL은 OS 계정과 DB 계정을 분리하여 운영함"
+TARGET_FILE="OS_ROLES, REMOTE_OS_AUTHENTICATION, REMOTE_OS_ROLES"
+ACTION_IMPACT="PostgreSQL은 OS 계정과 DB 계정을 분리하여 운영하기때문에 해당없습니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide": "PostgreSQL은 OS 계정과 DB 계정을 분리하여 운영하기때문에 해당없습니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
+
 EOF

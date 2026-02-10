@@ -14,25 +14,30 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-22"
+ID="D-22"
 CATEGORY="옵션관리"
-CHECK_ITEM="DB 자원 제한 기능"
-DESCRIPTION="Oracle DB 전용 RESOURCE_LIMIT 항목으로 PostgreSQL에는 해당 기능 없음"
+TITLE="DB 자원 제한 기능"
 IMPORTANCE="하"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="PostgreSQL DBMS에는 RESOURCE_LIMIT 파라미터가 존재하지 않아 점검 대상 아님"
-CHECKED=false
+EVIDENCE="PostgreSQL DBMS에는 RESOURCE_LIMIT 파라미터가 존재하지 않아 점검 대상 아님"
+TARGET_FILE="RESOURCE_LIMIT"
+ACTION_IMPACT="PostgreSQL DBMS에는 RESOURCE_LIMIT 파라미터가 존재하지 않아 조치 대상이 아니며, 서비스 운영에는 영향이 없습니다."
+IMPACT_LEVEL="LOW"
+
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide": "PostgreSQL DBMS에는 RESOURCE_LIMIT 파라미터가 존재하지 않아 조치 대상이 아니며, 서비스 운영에는 영향이 없습니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

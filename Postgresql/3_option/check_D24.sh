@@ -14,25 +14,29 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-24"
+ID="D-24"
 CATEGORY="옵션관리"
-CHECK_ITEM="Registry Procedure 권한 제한"
-DESCRIPTION="MSSQL 전용 Registry Procedure 기능은 PostgreSQL에 존재하지 않음"
+TITLE="Registry Procedure 권한 제한"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
-
+DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="N/A"
-RESULT_MSG="PostgreSQL DBMS에는 Registry Procedure(xp_reg*) 기능이 존재하지 않아 점검 대상 아님"
-CHECKED=false
+EVIDENCE="PostgreSQL에는 Registry Procedure(xp_reg*) 기능이 존재하지 않아 해당하지 않습니다."
+TARGET_FILE="Registry Procedure"
+ACTION_IMPACT="PostgreSQL에는 Registry Procedure(xp_reg*) 기능이 존재하지 않아 해당하지 않습니다."
+IMPACT_LEVEL="LOW"
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide": "PostgreSQL에는 Registry Procedure(xp_reg*) 기능이 존재하지 않아 해당하지 않습니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE"
+}
 EOF

@@ -14,12 +14,14 @@
 # ============================================================================
 
 #!/bin/bash
-ITEM_ID="D-10"
+ID="D-10"
 CATEGORY="접근관리"
-CHECK_ITEM="원격 접속 IP 제한"
-DESCRIPTION="지정된 IP 주소에서만 DB 서버 접속이 허용되는지 점검"
+TITLE="원격에서 DB 서버로의 접속 제한"
 IMPORTANCE="상"
-CHECKED_AT=$(date -Iseconds)
+DATE=(date '+%Y-%m-%d %H:%M:%S')
+TARGET_FILE="/var/lib/pgsql/data/pg_hba.conf"
+ACTION_IMPACT="지정되지 않은 IP 주소에서의 DB 접속이 차단되며, DB에 접근하는 애플리케이션 서버의 IP가 허용 목록에 포함되지 않은 경우 서비스 접속 오류가 발생할 수 있으므로 사전 확인이 필요합니다."
+IMPACT_LEVEL="HIGH"
 
 # IPv4 / IPv6 전체 허용 여부 점검
 open_ipv4=$(grep -E "^[^#].*0.0.0.0/0" /var/lib/pgsql/data/pg_hba.conf)
@@ -27,20 +29,24 @@ open_ipv6=$(grep -E "^[^#].*::/0" /var/lib/pgsql/data/pg_hba.conf)
 
 if [ -n "$open_ipv4" ] || [ -n "$open_ipv6" ]; then
   STATUS="취약"
-  RESULT_MSG="전체 IP(0.0.0.0/0 또는 ::/0) 접근 허용 설정 존재"
+   EVIDENCE="전체 IP(0.0.0.0/0 또는 ::/0) 접근 허용 설정 존재"
 else
   STATUS="양호"
-  RESULT_MSG="지정된 IP 대역에서만 DB 접속 허용"
+   EVIDENCE="지정된 IP 대역에서만 DB 접속 허용"
 fi
 
 cat <<EOF
-{ "item_id":"$ITEM_ID",
+{ 
+"check_id":"$ID",
 "category":"$CATEGORY",
-"check_item":"$CHECK_ITEM",
-"description":"$DESCRIPTION",
-"IMPORTANCE":"$IMPORTANCE",
-"checked_at":"$CHECKED_AT",
+"title":"$TITLE",
+"importance":"$IMPORTANCE",
 "status":"$STATUS",
-"result":"$RESULT_MSG",
-"checked":true }
+"evidence":"$EVIDENCE",
+"guide":"pg_hba.conf에서 전체 IP 허용 설정을 제거하고, DB 접근이 필요한 특정 IP 또는 IP 대역만 허용하도록 설정하십시오. 설정 변경 후 PostgreSQL 서비스를 재시작해야 합니다.",
+"target_file":"$TARGET_FILE",
+"action_impact":"$ACTION_IMPACT",
+"impact_level":"$IMPACT_LEVEL",
+"check_date": "$DATE" 
+}
 EOF
