@@ -37,24 +37,23 @@ if [ -f "$DEFS_FILE" ] && [ -f "$SHADOW_FILE" ]; then
     ENCRYPT_METHOD=$(grep -i "^ENCRYPT_METHOD" "$DEFS_FILE" | awk '{print $2}')
     
     # 3. [검증 강화] /etc/shadow에서 실제 사용 중인 알고리즘 식별자 확인 ($6$ = SHA-512)
-    # 암호가 설정된 계정 중 SHA-512가 아닌 계정이 있는지 확인
     INVALID_ALGO_ACCOUNTS=$(awk -F: '$2 ~ /^\$/ && $2 !~ /^\$6\$/ {print $1}' "$SHADOW_FILE" | xargs | sed 's/ /, /g')
     
     if [[ "$ENCRYPT_METHOD" =~ "SHA512" ]]; then
         if [ -z "$INVALID_ALGO_ACCOUNTS" ]; then
             STATUS="PASS"
-            EVIDENCE="ENCRYPT_METHOD가 SHA512이며, 모든 계정이 안전한 알고리즘을 사용 중입니다."
+            EVIDENCE="패스워드 암호화 표준에 따라 강력한 해시 알고리즘(SHA-512)을 사용 중이며 모든 계정이 안전하게 보호되고 있습니다."
         else
             STATUS="FAIL"
-            EVIDENCE="설정은 SHA512이나, 기존 일부 계정이 취약한 알고리즘 사용 중입니다. ($INVALID_ALGO_ACCOUNTS)"
+            EVIDENCE="암호화 정책은 SHA-512로 설정되어 있으나, 일부 계정($INVALID_ALGO_ACCOUNTS)에 구형 알고리즘이 적용되어 있어 비밀번호 재설정 등의 조치가 필요합니다."
         fi
     else
         STATUS="FAIL"
-        EVIDENCE="취약한 암호화 알고리즘을 사용 중입니다. (현재 설정: $ENCRYPT_METHOD)"
+        EVIDENCE="현재 패스워드 암호화 강도가 권장 기준($ENCRYPT_METHOD)에 미치지 못하여, 시스템 보안성 향상을 위한 조치가 필요합니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="필수 설정 파일이 누락되었습니다."
+    EVIDENCE="암호화 정책 관련 필수 설정 파일이 식별되지 않아 정확한 보안성 점검을 위한 시스템 확인 조치가 필요합니다."
     FILE_HASH="NOT_FOUND"
 fi
 

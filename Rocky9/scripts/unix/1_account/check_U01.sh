@@ -22,30 +22,31 @@ CATEGORY="계정관리"
 TITLE="root 계정 원격 접속 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/ssh/sshd_config"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 이후 외부에서 root 계정으로 직접 SSH 원격 접속이 불가능해지므로 반드시 일반 사용자 계정으로 접속 후 관리자 권한을 획득하여 작업해야 합니다."
 
 # 2. 진단 로직 (무결성 해시 포함)
 STATUS="FAIL"
 EVIDENCE="N/A"
 
 if [ -f "$TARGET_FILE" ]; then
-    # sshd 설정값 확인
-   VAL=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
-    # 원본 파일 해시 추출
-    FILE_HASH=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
-
+    # sshd 실제 적용값 확인
+    VAL=$(sshd -T 2>/dev/null | grep -i "permitrootlogin" | awk '{print $2}')
+    
     if [[ "$VAL" == "no" ]]; then
         STATUS="PASS"
-        EVIDENCE="PermitRootLogin 설정이 'no'로 되어 있습니다."
+        ACTION_RESULT="SUCCESS"
+        EVIDENCE="원격 터미널을 통한 root 계정의 직접 접속이 차단되어 보안 가이드라인을 준수하고 있습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="현재 설정값: $VAL (취약 - 원격 root 접속 허용)"
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        EVIDENCE="현재 root 원격 접속이 허용($VAL)되어 있습니다. 무분별한 차단 시 접속 불능 위험이 있어 수동 조치가 권장됩니다."
+        GUIDE="1. 먼저 sudo 권한을 가진 일반 관리자 계정을 생성하세요. 2. 해당 계정으로 원격 접속 테스트를 반드시 완료하세요. 3. 이후 sshd_config에서 PermitRootLogin을 no로 수정하고 서비스를 재시작하십시오."
     fi
 else
     STATUS="PASS"
-    EVIDENCE="SSH 서비스가 존재하지 않음"
-    FILE_HASH="NOT_FOUND"
+    ACTION_RESULT="SUCCESS"
+    EVIDENCE="SSH 서비스 설정 파일이 존재하지 않아 해당 보안 위협이 없습니다."
+    GUIDE="점검 대상 파일이 없습니다."
 fi
 
 # 3. 마스터 템플릿 표준 출력
@@ -58,11 +59,9 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "sshd_config 파일에서 PermitRootLogin을 no로 설정하여 root 원격 접속을 차단하세요.",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
     "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

@@ -53,14 +53,14 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ]; then
     # 4. 결과 판별
     if [ ${#UNUSED_GROUPS[@]} -gt 0 ]; then
         STATUS="FAIL"
-        EVIDENCE="계정이 존재하지 않는 그룹 발견 (${UNUSED_GROUPS[*]})"
+        EVIDENCE="현재 소속된 사용자가 없는 불필요한 그룹(${UNUSED_GROUPS[*]})이 식별되어, 관리 효율성 향상을 위한 정리 조치가 필요합니다."
     else
         STATUS="PASS"
-        EVIDENCE="모든 일반 그룹에 소속된 계정이 존재합니다."
+        EVIDENCE="모든 일반 그룹에 소속된 계정이 존재하여 그룹 관리 정책이 적절하게 유지되고 있습니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="필수 설정 파일이 누락되었습니다."
+    EVIDENCE="그룹 및 사용자 정보 확인을 위한 필수 설정 파일이 식별되지 않아, 정확한 점검을 위한 시스템 확인 조치가 필요합니다."
     FILE_HASH="NOT_FOUND"
 fi
 

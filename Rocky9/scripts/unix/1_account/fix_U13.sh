@@ -40,12 +40,14 @@ if [ -f "$DEFS_FILE" ]; then
     if [ "$RESULT_VAL" == "SHA512" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. 암호화 알고리즘을 SHA512로 변경 완료. (기존 계정은 암호 재설정 시 적용됨)"
+        ACTION_LOG="시스템 패스워드 보안 강화를 위해 암호화 알고리즘을 SHA-512로 변경하고 조치를 완료하였습니다. (기존 계정은 비밀번호 재설정 시 해당 알고리즘이 적용됩니다.)"
     else
-        ACTION_LOG="조치 실패. 설정 변경 후 검증값이 일치하지 않습니다."
+        ACTION_LOG="암호화 정책 수정을 시도하였으나 설정 파일에 정상적으로 반영되지 않아 조치가 완료되지 않았습니다. 수동 점검이 필요합니다."
     fi
 else
-    ACTION_LOG="오류: 조치 대상 파일($DEFS_FILE)이 없습니다."
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="암호화 정책 설정 파일($DEFS_FILE)이 식별되지 않아 자동 조치 프로세스를 완료할 수 없습니다."
 fi
 
 echo ""

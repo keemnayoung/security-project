@@ -53,12 +53,12 @@ fi
 MAX_DAYS=$(grep "^PASS_MAX_DAYS" "$LOGIN_DEFS" | awk '{print $2}' | tail -n 1)
 if [ -z "$MAX_DAYS" ] || [ "$MAX_DAYS" -gt 90 ]; then
     STATUS="FAIL"
-    EVIDENCE_LIST+=("유효기간 초과(현재:${MAX_DAYS:-기본값}, 기준:90일)")
+    EVIDENCE_LIST+=("비밀번호 최대 유효기간이 ${MAX_DAYS:-미지정}일로 설정되어 있어 정기적인 변경 권고 기간(90일)을 초과했습니다.")
 fi
 
 # 최종 결과 정리
 if [ "$STATUS" == "PASS" ]; then
-    EVIDENCE="KISA 권고 복잡성 및 유효기간 기준을 모두 충족합니다."
+    EVIDENCE="비밀번호 복잡성 설정과 유효기간 정책이 보안 가이드라인의 권고 기준을 모두 충족하고 있습니다."
 else
     EVIDENCE=$(printf "; %s" "${EVIDENCE_LIST[@]}")
     EVIDENCE=${EVIDENCE#; }

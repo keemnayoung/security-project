@@ -35,19 +35,19 @@ if [ -f "$TARGET_FILE" ]; then
     # 2. root 그룹(GID 0)에 속한 사용자 리스트 추출
     ROOT_GROUP_USERS=$(grep "^root:x:0:" "$TARGET_FILE" | cut -d: -f4)
     
-    # root를 제외한 불필요한 계정 필터링
+    # root를 제외한 계정 필터링
     EXTRA_USERS=$(echo "$ROOT_GROUP_USERS" | tr ',' '\n' | grep -v "^root$" | grep -v "^$" | xargs | tr ' ' ',')
 
     if [ -z "$EXTRA_USERS" ]; then
         STATUS="PASS"
-        EVIDENCE="관리자 그룹에 root 계정만 존재합니다."
+        EVIDENCE="관리자 그룹(root)에 필수 계정 외에 다른 사용자가 포함되어 있지 않아 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="관리자 그룹에 불필요한 계정 존재 ($EXTRA_USERS)"
+        EVIDENCE="관리자 권한을 가진 그룹에 일반 사용자 계정($EXTRA_USERS)이 포함되어 있어, 권한 오남용 방지를 위한 조치가 필요합니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="$TARGET_FILE 파일을 찾을 수 없습니다."
+    EVIDENCE="그룹 정보 설정 파일($TARGET_FILE)이 식별되지 않아 정확한 권한 점검을 위한 시스템 확인 조치가 필요합니다."
     FILE_HASH="NOT_FOUND"
 fi
 

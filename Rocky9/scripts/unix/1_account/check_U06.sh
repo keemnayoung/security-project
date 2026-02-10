@@ -17,35 +17,40 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 1. 항목 정보 정의
 ID="U-06"
 CATEGORY="계정관리"
 TITLE="su 명령 사용 제한"
 IMPORTANCE="상"
 TARGET_FILE="/etc/pam.d/su"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="su 명령 사용이 제한된 wheel 그룹에 추가된 계정들은 현재 연결된 모든 세션(Session)을 종료하고 재로그인해야만 su 명령어를 정상적으로 사용할 수 있습니다. 기존에 접속 중인 세션에는 설정이 즉시 반영되지 않음을 유의해야 합니다."
 
+# 2. 진단 로직
 STATUS="FAIL"
 EVIDENCE="N/A"
 
 if [ -f "$TARGET_FILE" ]; then
-    # 1. pam_wheel.so 설정이 주석 해제되어 활성화된 라인 확인
-    # 현업 기준: auth required pam_wheel.so use_uid 형태가 표준
+    # pam_wheel.so 설정이 활성화되어 있는지 확인
     CHECK_WHEEL=$(grep -v '^#' "$TARGET_FILE" | grep "pam_wheel.so" | grep "auth" | grep "required")
     
     if [ -n "$CHECK_WHEEL" ]; then
         STATUS="PASS"
-        # 실제 설정된 라인을 근거로 제시
-        EVIDENCE="su 사용 제한 설정이 활성화 되어있습니다. ($(echo $CHECK_WHEEL | xargs))"
+        ACTION_RESULT="SUCCESS"
+        EVIDENCE="wheel 그룹에 속한 사용자만 su 명령을 사용할 수 있도록 제한되어 있어 보안 가이드라인을 준수하고 있습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="pam_wheel.so 설정이 비활성화되어 모든 사용자가 su 명령을 시도할 수 있습니다."
+        ACTION_RESULT="PARTIAL_SUCCESS"
+        EVIDENCE="현재 모든 사용자가 su 명령어를 사용할 수 있는 상태로 설정되어 있어 권한 오남용 위험이 존재합니다."
+        GUIDE="1. 먼저 su 명령을 사용해야 하는 운영자 계정 리스트를 확인하세요. 2. 해당 계정들을 'usermod -G wheel <계정명>' 명령으로 wheel 그룹에 추가하세요. 3. 이후 /etc/pam.d/su 파일에서 pam_wheel.so 라인의 주석을 제거하십시오."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)을 찾을 수 없습니다."
+    ACTION_RESULT="PARTIAL_SUCCESS"
+    EVIDENCE="시스템 인증 설정 파일($TARGET_FILE)이 존재하지 않아 권한 제어 상태를 확인할 수 없습니다."
+    GUIDE="시스템 환경에 맞는 인증 설정 파일 존재 여부를 수동으로 점검하십시오."
 fi
 
+# 3. 마스터 템플릿 표준 출력
 echo ""
 cat << EOF
 {
@@ -55,11 +60,9 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "/etc/pam.d/su 파일에서 pam_wheel.so 설정의 주석을 제거하여 wheel 그룹으로 제한하세요.",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
     "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF

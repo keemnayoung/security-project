@@ -51,17 +51,17 @@ if [ -f "$TARGET_FILE" ]; then
         fi
     done
 
-    # 3. 결과 판정} -gt 0 ]; then"]
+    # 3. 결과 판정
     if [ ${#VULN_ACCOUNTS[@]} -gt 0 ]; then
         STATUS="FAIL"
-        EVIDENCE="로그인이 제한되어야 할 계정의 쉘 설정이 부적절합니다.[${VULN_ACCOUNTS[*]}]"
+        EVIDENCE="로그인 권한이 필요 없는 일부 시스템 계정(${VULN_ACCOUNTS[*]})에 실행 가능한 쉘이 부여되어 있어, 비정상적인 접속 차단을 위한 조치가 필요합니다."
     else
         STATUS="PASS"
-        EVIDENCE="모든 시스템 계정에 로그인 제한 쉘(/sbin/nologin 등)이 부여되어 있습니다."
+        EVIDENCE="모든 시스템 계정에 로그인 제한 쉘(/sbin/nologin 등)이 적절히 부여되어 관리자 권한 오남용 방지 가이드라인을 준수하고 있습니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="필수 설정 파일($TARGET_FILE) 누락"
+    EVIDENCE="사용자 정보 설정 파일($TARGET_FILE)이 식별되지 않아 시스템 계정의 쉘 설정을 점검할 수 없으므로 파일 상태 확인 조치가 필요합니다."
     FILE_HASH="NOT_FOUND"
 fi
 

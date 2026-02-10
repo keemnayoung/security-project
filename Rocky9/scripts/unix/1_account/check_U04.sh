@@ -35,14 +35,14 @@ UNSHADOWED_USERS=$(awk -F: '$2 != "x" {print $1}' "$PASSWD_FILE" | xargs | sed '
 if [ -f "$PASSWD_FILE" ] && [ -f "$SHADOW_FILE" ]; then
     if [ -z "$UNSHADOWED_USERS" ]; then
         STATUS="PASS"
-        EVIDENCE="모든 계정이 쉐도우 패스워드(x)를 사용하여 암호화 보호 중입니다."
+        EVIDENCE="모든 계정의 패스워드가 쉐도우 정책에 따라 암호화되어 안전하게 보호되고 있음을 확인하였습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="암호화되지 않은 계정이 존재합니다. ($UNSHADOWED_USERS)"
+        EVIDENCE="패스워드 보호 정책(x)이 적용되지 않은 일부 계정($UNSHADOWED_USERS)이 식별되어 시스템 보안을 위한 조치가 필요합니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="필수 파일($PASSWD_FILE 또는 $SHADOW_FILE)이 누락되었습니다."
+    EVIDENCE="비밀번호 암호화 정책을 관리하는 필수 설정 파일이 누락되어 정확한 점검이 불가능하므로, 시스템 파일 복구 조치가 필요합니다."
 fi
 
 echo ""

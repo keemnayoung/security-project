@@ -38,14 +38,15 @@ if command -v pwconv >/dev/null 2>&1; then
     if [ "$CHECK_COUNT" -eq 0 ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. pwconv 실행 완료 및 모든 계정 쉐도우 패스워드 적용 확인"
+       ACTION_LOG="쉐도우 패스워드 정책을 일괄 적용하고 모든 계정의 비밀번호가 안전하게 암호화되어 관리되도록 조치를 완료하였습니다."
     else
         ACTION_RESULT="FAIL"
-        ACTION_LOG="조치 실패. pwconv 실행 후에도 ${CHECK_COUNT}개의 계정이 미적용 상태입니다."
+        STATUS="FAIL"
+        ACTION_LOG="패스워드 암호화 정책을 적용하였으나 일부 계정(${CHECK_COUNT}개)이 여전히 미적용 상태로 남아 있어 추가적인 조치가 필요합니다."
     fi
 else
     ACTION_RESULT="ERROR"
-    ACTION_LOG="오류: 시스템에서 pwconv 명령어를 찾을 수 없습니다."
+    ACTION_LOG="시스템 내에 패스워드 암호화 도구(pwconv)가 존재하지 않아 정책 적용을 완료하지 못했습니다. 수동 점검이 필요합니다."
 fi
 
 # 4. 표준 JSON 출력

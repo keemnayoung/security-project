@@ -63,11 +63,11 @@ else
     if [ "$REMAIN_COUNT" -eq 0 ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. 모든 위험 계정의 UID가 변경되었습니다. (${LOG_MSG%; })"
+        ACTION_LOG="root 이외의 계정에 부여되었던 관리자 권한(UID 0)을 모두 일반 권한으로 변경 완료하였습니다. (${LOG_MSG%; })"
     else
         ACTION_RESULT="PARTIAL_SUCCESS"
         STATUS="FAIL"
-        ACTION_LOG="조치 실패. 일부 계정의 UID 변경에 실패했습니다. (${LOG_MSG%; })"
+        ACTION_LOG="권한 변경 작업을 시도하였으나 일부 계정의 UID 설정이 여전히 관리자 권한으로 유지되고 있어, 수동 확인 및 조치가 필요합니다. (${LOG_MSG%; })"
     fi
 fi
 

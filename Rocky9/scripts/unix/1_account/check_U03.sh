@@ -36,15 +36,15 @@ if [ -f "$TARGET_FILE" ]; then
     # 10회 이하인 경우 '양호' 판정 && [ \"$DENY_VAL\" -le 10 ]; then STATUS=\"PASS\""]
     if [ -n "$DENY_VAL" ] && [ "$DENY_VAL" -le 10 ] && [ "$DENY_VAL" -gt 0 ]; then
         STATUS="PASS"
-        EVIDENCE="계정 잠금 임계값이 ${DENY_VAL}회로 설정되어 있습니다. (기준: 10회 이하)"
+        EVIDENCE="연속적인 로그인 실패 시 계정이 잠기도록 ${DENY_VAL}회로 설정되어 있어 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="현재 설정값(${DENY_VAL:-설정없음})이 기준(10회 이하)을 만족하지 않습니다."
+        EVIDENCE="현재 계정 잠금 임계값이 ${DENY_VAL:-설정되지 않은} 상태이므로, 시스템 보안 기준에 맞춘 잠금 정책 적용 조치가 필요합니다."
     fi
 else
     # 파일이 없는 경우도 취약으로 간주
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)이 존재하지 않습니다."
+    EVIDENCE="계정 잠금 정책을 관리하는 설정 파일이 시스템 내에 존재하지 않아 적절한 보안 정책이 적용되지 않고 있습니다."
 fi
 
 echo ""

@@ -35,7 +35,7 @@ if [ -f "$TARGET_FILE" ]; then
     if [ -z "$EXTRA_USERS" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="양호: 이미 root 그룹에 불필요한 계정이 없습니다."
+        ACTION_LOG="관리자 그룹(root)에 불필요한 계정이 포함되어 있지 않아 추가적인 설정 변경 없이 조치를 완료하였습니다."
     else
         # 2. 계정 제거 수행
         REMOVED_USERS=()
@@ -45,20 +45,23 @@ if [ -f "$TARGET_FILE" ]; then
             fi
         done
 
-        # 3. [핵심 검증] 조치 후 상태 재확인
+        # 3. 조치 후 상태 재확인
         REMAIN_USERS=$(grep "^root:x:0:" "$TARGET_FILE" | cut -d: -f4 | tr ',' '\n' | grep -v "^root$" | grep -v "^$" | wc -l)
         
         if [ "$REMAIN_USERS" -eq 0 ]; then
             ACTION_RESULT="SUCCESS"
             STATUS="PASS"
-            ACTION_LOG="조치 완료. root 그룹에서 계정(${REMOVED_USERS[*]}) 제거 완료."
+            ACTION_LOG="관리자 권한 오남용 방지를 위해 root 그룹에 포함된 일반 계정(${REMOVED_USERS[*]})을 모두 제외하고 조치를 완료하였습니다."
         else
             ACTION_RESULT="PARTIAL_SUCCESS"
-            ACTION_LOG="조치 실패. 일부 계정이 제거되지 않았습니다. 수동 확인이 필요합니다."
+            STATUS="FAIL"
+            ACTION_LOG="관리자 그룹 내 계정 제외 작업을 수행하였으나 일부 계정이 제거되지 않아, 관리자의 수동 점검 및 조치가 필요합니다."
         fi
     fi
 else
-    ACTION_LOG="오류: 대상 파일($TARGET_FILE)이 없습니다."
+    ACTION_RESULT="ERROR"
+    STATUS="FAIL"
+    ACTION_LOG="그룹 정보 설정 파일($TARGET_FILE)이 존재하지 않아 자동 조치 프로세스를 완료할 수 없습니다."
 fi
 
 # 4. 표준 JSON 출력

@@ -34,14 +34,14 @@ if [ -f "$TARGET_FILE" ]; then
     
     if [ -z "$UID_ZERO_ACCOUNTS" ]; then
         STATUS="PASS"
-        EVIDENCE="root 계정 외에 UID가 0인 계정이 존재하지 않습니다."
+        EVIDENCE="시스템 관리자 권한(UID 0)을 가진 계정이 root 이외에 존재하지 않아 보안 가이드라인을 준수하고 있습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="UID가 0인 위험 계정이 존재합니다. ($UID_ZERO_ACCOUNTS)"
+        EVIDENCE="root 계정 외에 관리자 권한을 공유하는 계정($UID_ZERO_ACCOUNTS)이 식별되어, 권한 오남용 방지를 위한 조치가 필요합니다."
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="설정 파일($TARGET_FILE)을 찾을 수 없습니다."
+    EVIDENCE="사용자 계정 정보 파일($TARGET_FILE)을 확인할 수 없어 정확한 권한 점검을 위한 시스템 확인 조치가 필요합니다."
 fi
 
 echo ""
