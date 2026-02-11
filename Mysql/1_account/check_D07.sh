@@ -52,6 +52,8 @@ else
     FILE_HASH="NOT_FOUND"
 fi
 
+ACTION_IMPACT="이 조치를 적용하면 MySQL 서버가 지정된 일반 사용자 계정으로 실행되도록 설정이 변경됩니다. 일반적인 시스템 운영에는 영향이 없으며, 서버 시작 및 데이터베이스 접근에도 문제를 일으키지 않습니다. 다만, 서버 구동 사용자 계정 변경 후 파일 권한이나 소유권이 올바르게 설정되어 있는지 확인해야 합니다."
+
 cat << EOF
 {
     "check_id": "$ID",
@@ -63,6 +65,8 @@ cat << EOF
     "guide": "DBMS 서비스는 root가 아닌 전용 계정(mysql 등)으로 구동되도록 설정하고, systemd 또는 서비스 설정 파일에서 실행 계정을 점검하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
