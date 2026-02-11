@@ -24,51 +24,72 @@ TARGET_FILE="mysql.user"
 STATUS="FAIL"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
-MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+# TCP 강제(소켓 미생성 환경 대응)
+MYSQL_CMD="mysql --connect-timeout=5 --protocol=TCP -uroot -N -s -B -e"
 
-# [가이드 대응] D-04는 "관리자 권한을 꼭 필요한 계정에만 부여" 여부를 확인한다.
-# 따라서 일반 DML 권한(SELECT/INSERT 등)은 제외하고, 계정/서버 운영에 영향이 큰
-# 관리자급 권한만 조회 대상으로 한정한다.
+# [가이드 취지] 관리자급 권한만 점검(일반 DML 권한 제외)
+ADMIN_PRIVS="'SUPER','SYSTEM_USER','CREATE USER','RELOAD','SHUTDOWN','PROCESS'"
+
 QUERY="
 SELECT grantee
 FROM information_schema.user_privileges
-WHERE privilege_type IN ('SUPER','SYSTEM_USER','CREATE USER','RELOAD','SHUTDOWN','PROCESS')
+WHERE privilege_type IN (${ADMIN_PRIVS})
 GROUP BY grantee;
 "
 
-if [[ -n "$TIMEOUT_BIN" ]]; then
-    RESULT=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
-else
-    RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
-fi
+# 1) 관리자 권한 보유 계정 목록 조회
+RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null)
+RC=$?
 
-if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
+if [[ $RC -ne 0 ]]; then
     STATUS="FAIL"
-    EVIDENCE="관리자 권한이 부여된 계정 목록을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 진단에 실패했습니다. DB 응답 상태를 확인해야 합니다."
-elif [[ "$RESULT" == "ERROR" ]]; then
-    STATUS="FAIL"
-    EVIDENCE="MySQL 접속 실패로 인해 관리자 권한 부여 상태를 확인할 수 없습니다."
+    EVIDENCE="MySQL 접속 실패 또는 쿼리 실행 오류로 관리자 권한 부여 상태를 확인할 수 없습니다."
 else
-    # [가이드 해석] root는 관리자 목적의 기본 계정으로 보고 예외 처리한다.
-    # root 외 계정에 관리자 권한이 있으면 "최소 권한 원칙 위반 가능성"으로 판정한다.
-    NON_ROOT=$(echo "$RESULT" | grep -v "root@" || true)
+    # 2) 가이드 판정 로직(조금 더 엄격하게)
+    # - root@localhost 는 기본 관리자 계정으로 허용
+    # - root@% 또는 root@원격호스트 는 원격 root 가능성이므로 취약으로 판단
+    # - 그 외 관리자 권한 보유 계정은(허용목록 제외) 취약으로 판단
 
-    if [[ -z "$NON_ROOT" ]]; then
-        # 관리자 권한 보유 계정이 root만 존재 -> D-04 요구 충족(PASS)
-        STATUS="PASS"
-        EVIDENCE="관리자 권한이 필요한 계정에만 권한이 부여되어 있어, 권한 남용으로 인한 계정 탈취 위험이 낮습니다."
-    else
-        # root 외 관리자 권한 계정이 존재 -> D-04 요구 미충족(FAIL)
-        COUNT=$(echo "$NON_ROOT" | wc -l | tr -d ' ')
-        SAMPLE=$(echo "$NON_ROOT" | head -n 1 | tr -d "'")
+    ROOT_LOCAL=$(echo "$RESULT" | grep -E "root@localhost" || true)
+    ROOT_REMOTE=$(echo "$RESULT" | grep -E "root@%" || true)
+
+    # root@'host' 형태라 따옴표 포함 가능 -> 공백/따옴표 제거해 비교
+    ROOT_REMOTE2=$(echo "$RESULT" | grep -E "root@" | grep -v "localhost" || true)
+
+    # 허용 계정 목록(필요 시 추가 가능): 예) ALLOWLIST=("root@localhost" "dba@localhost")
+    ALLOWLIST=("root@localhost")
+
+    # 결과에서 따옴표 제거 후 비교용 정규화
+    NORMALIZED=$(echo "$RESULT" | tr -d "'" | sed 's/[[:space:]]//g')
+
+    # 허용 목록 제외한 관리자 권한 보유 계정 추출
+    NON_ALLOWED="$NORMALIZED"
+    for a in "${ALLOWLIST[@]}"; do
+        NON_ALLOWED=$(echo "$NON_ALLOWED" | grep -v -F "$a" || true)
+    done
+
+    # root 원격 계정 판단(정규화 기준)
+    ROOT_REMOTE_NORM=$(echo "$NORMALIZED" | grep -E "^root@%" || true)
+    ROOT_OTHER_REMOTE_NORM=$(echo "$NORMALIZED" | grep -E "^root@" | grep -v "^root@localhost$" || true)
+
+    if [[ -n "$ROOT_REMOTE_NORM" || -n "$ROOT_OTHER_REMOTE_NORM" ]]; then
         STATUS="FAIL"
-        EVIDENCE="관리자 권한이 필요하지 않은 계정(${COUNT}개)에 관리자 권한이 부여되어 있어, 계정 유출 시 DB 전체가 위험에 노출될 수 있습니다. (예: ${SAMPLE})"
+        SAMPLE=$( (echo "$ROOT_REMOTE_NORM"; echo "$ROOT_OTHER_REMOTE_NORM") | head -n 1 )
+        EVIDENCE="원격 root 계정에 관리자 권한이 부여되어 있습니다. (예: ${SAMPLE})"
+    else
+        if [[ -z "$NON_ALLOWED" ]]; then
+            STATUS="PASS"
+            EVIDENCE="관리자 권한이 필요한 계정(예: root@localhost)에만 권한이 부여되어 있습니다."
+        else
+            COUNT=$(echo "$NON_ALLOWED" | wc -l | tr -d ' ')
+            SAMPLE=$(echo "$NON_ALLOWED" | head -n 1)
+            STATUS="FAIL"
+            EVIDENCE="허용되지 않은 계정(${COUNT}개)에 관리자 권한이 부여되어 있습니다. (예: ${SAMPLE})"
+        fi
     fi
 fi
 
-# 파일 해시
+# 파일 해시(요구사항 유지)
 if [ -f "$TARGET_FILE" ]; then
     FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
     [[ -z "$FILE_HASH" ]] && FILE_HASH="HASH_ERROR"
