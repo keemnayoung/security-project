@@ -28,7 +28,9 @@ TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
 MYSQL_TIMEOUT=5
 MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
 
-# 관리자 권한으로 간주할 권한 목록
+# [가이드 대응] D-04는 "관리자 권한을 꼭 필요한 계정에만 부여" 여부를 확인한다.
+# 따라서 일반 DML 권한(SELECT/INSERT 등)은 제외하고, 계정/서버 운영에 영향이 큰
+# 관리자급 권한만 조회 대상으로 한정한다.
 QUERY="
 SELECT grantee
 FROM information_schema.user_privileges
@@ -49,13 +51,16 @@ elif [[ "$RESULT" == "ERROR" ]]; then
     STATUS="FAIL"
     EVIDENCE="MySQL 접속 실패로 인해 관리자 권한 부여 상태를 확인할 수 없습니다."
 else
-    # root 계정 제외
+    # [가이드 해석] root는 관리자 목적의 기본 계정으로 보고 예외 처리한다.
+    # root 외 계정에 관리자 권한이 있으면 "최소 권한 원칙 위반 가능성"으로 판정한다.
     NON_ROOT=$(echo "$RESULT" | grep -v "root@" || true)
 
     if [[ -z "$NON_ROOT" ]]; then
+        # 관리자 권한 보유 계정이 root만 존재 -> D-04 요구 충족(PASS)
         STATUS="PASS"
         EVIDENCE="관리자 권한이 필요한 계정에만 권한이 부여되어 있어, 권한 남용으로 인한 계정 탈취 위험이 낮습니다."
     else
+        # root 외 관리자 권한 계정이 존재 -> D-04 요구 미충족(FAIL)
         COUNT=$(echo "$NON_ROOT" | wc -l | tr -d ' ')
         SAMPLE=$(echo "$NON_ROOT" | head -n 1 | tr -d "'")
         STATUS="FAIL"
