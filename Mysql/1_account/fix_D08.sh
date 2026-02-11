@@ -19,8 +19,6 @@ ID="D-08"
 CATEGORY="계정관리"
 TITLE="안전한 암호화 알고리즘 사용"
 IMPORTANCE="상"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 취약하거나 구식 인증 플러그인(mysql_native_password 등)을 사용하는 계정이 caching_sha2_password(SHA-256) 기반 인증으로 전환됩니다. 일반적인 시스템 운영에는 영향이 없으나, 애플리케이션이 해당 계정으로 접속하는 경우 드라이버/클라이언트 호환성에 따라 접속 설정 변경이 필요할 수 있으므로 사전 점검 후 적용해야 합니다."
 
 # 조치 결과 변수
 STATUS="FAIL"
@@ -29,9 +27,9 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 # 무한 로딩 방지
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD_BASE="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} -uroot -N -s -B -e"
+MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
 
 run_mysql() {
     local sql="$1"
@@ -44,81 +42,170 @@ run_mysql() {
     fi
 }
 
+sql_escape_literal() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf "%s" "$s"
+}
+
+in_csv() {
+    local needle="$1"
+    local csv="$2"
+    IFS=',' read -r -a arr <<< "$csv"
+    for item in "${arr[@]}"; do
+        [[ "$needle" == "$item" ]] && return 0
+    done
+    return 1
+}
+
 # 0) 입력값(환경변수) 확인
-# 대상 계정/호스트/비밀번호는 반드시 제공되어야 안전하게 조치 가능합니다.
-# 예)
-#   TARGET_USER='appuser' TARGET_HOST='10.0.0.%' TARGET_PASS='Strong!234' ./FIX_D08.sh
 TARGET_USER="${TARGET_USER:-}"
 TARGET_HOST="${TARGET_HOST:-}"
 TARGET_PASS="${TARGET_PASS:-}"
+TARGET_ACCOUNTS_CSV="${TARGET_ACCOUNTS_CSV:-}"   # 형식: user@host:password,user2@host2:password2
+AUTO_FIX_ALL="${AUTO_FIX_ALL:-N}"                # Y면 취약 계정 전체를 DEFAULT_TARGET_PASS로 일괄 전환
+DEFAULT_TARGET_PASS="${DEFAULT_TARGET_PASS:-}"
+EXCLUDE_USERS_CSV="${EXCLUDE_USERS_CSV:-mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
-if [[ -z "$TARGET_USER" || -z "$TARGET_HOST" || -z "$TARGET_PASS" ]]; then
+# D-08 핵심: 계정별 인증 플러그인을 점검해 SHA-256 미만(비-caching_sha2_password) 계정을 식별한다.
+CHECK_SQL="
+SELECT user, host, plugin
+FROM mysql.user
+WHERE user NOT IN ('mysql.sys','mysql.session','mysql.infoschema','mysqlxsys','mariadb.sys');
+"
+ROWS="$(run_mysql "$CHECK_SQL")"
+RC1=$?
+
+if [[ $RC1 -eq 124 ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
-    ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정 정보 또는 비밀번호가 제공되지 않았습니다."
-    EVIDENCE="TARGET_USER, TARGET_HOST, TARGET_PASS 값이 누락되어 계정의 인증 플러그인 전환 조치를 수행할 수 없습니다."
+    ACTION_LOG="조치가 수행되지 않았습니다. 계정 정보 조회 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
+    EVIDENCE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다."
+elif [[ $RC1 -ne 0 ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. 계정 목록을 조회할 수 없어 인증 방식 전환을 수행하지 못하였습니다."
+    EVIDENCE="mysql.user 조회에 실패하여 계정별 암호화 알고리즘 상태를 점검할 수 없습니다."
 else
-  
-    # 1) 계정별 인증 플러그인 확인
-    
-    CHECK_SQL="SELECT user, host, plugin FROM mysql.user WHERE user='${TARGET_USER}' AND host='${TARGET_HOST}';"
-    ROW="$(run_mysql "$CHECK_SQL")"
-    RC1=$?
+    WEAK_LIST=""
+    WEAK_COUNT=0
 
-    if [[ $RC1 -eq 124 ]]; then
-        STATUS="FAIL"
-        ACTION_RESULT="FAIL"
-        ACTION_LOG="조치가 수행되지 않았습니다. 계정 정보 조회 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-        EVIDENCE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다."
-    elif [[ $RC1 -ne 0 || -z "$ROW" ]]; then
-        STATUS="FAIL"
-        ACTION_RESULT="FAIL"
-        ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정을 조회할 수 없어 인증 방식 전환을 수행하지 못하였습니다."
-        EVIDENCE="mysql.user에서 대상 계정 정보를 확인할 수 없어 계정 존재 여부 또는 권한을 점검해야 합니다."
-    else
-        # 결과: user<TAB>host<TAB>plugin
-        CUR_PLUGIN="$(echo "$ROW" | awk '{print $3}')"
-
-        
-        # 2) caching_sha2_password로 전환 필요 여부 판단
-        
-        if [[ "$CUR_PLUGIN" == "caching_sha2_password" ]]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="대상 계정이 이미 caching_sha2_password(SHA-256) 기반 인증을 사용하고 있어 추가 조치 없이 안전한 인증 상태를 유지하였습니다."
-            EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})의 인증 플러그인이 caching_sha2_password로 확인되었습니다."
-        else
-            
-            # 3) 구식 인증 플러그인 → caching_sha2_password로 전환
-    
-            FIX_SQL="ALTER USER '${TARGET_USER}'@'${TARGET_HOST}' IDENTIFIED WITH caching_sha2_password BY '${TARGET_PASS}';"
-            run_mysql "$FIX_SQL" >/dev/null
-            RC2=$?
-
-            if [[ $RC2 -eq 124 ]]; then
-                STATUS="FAIL"
-                ACTION_RESULT="FAIL"
-                ACTION_LOG="조치가 수행되지 않았습니다. 인증 플러그인 전환 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-                EVIDENCE="인증 플러그인 전환 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
-            elif [[ $RC2 -ne 0 ]]; then
-                STATUS="FAIL"
-                ACTION_RESULT="FAIL"
-                ACTION_LOG="조치가 수행되지 않았습니다. 인증 플러그인 전환에 실패하였습니다."
-                EVIDENCE="ALTER USER 명령 수행에 실패하여 대상 계정의 인증 방식을 caching_sha2_password로 변경할 수 없습니다."
+    while IFS=$'\t' read -r user host plugin; do
+        [[ -z "$user" && -z "$host" ]] && continue
+        if in_csv "$user" "$EXCLUDE_USERS_CSV"; then
+            continue
+        fi
+        if [[ "$plugin" != "caching_sha2_password" ]]; then
+            row="${user}"$'\t'"${host}"$'\t'"${plugin}"
+            if [[ -z "$WEAK_LIST" ]]; then
+                WEAK_LIST="$row"
             else
-                # 재확인
-                VERIFY_SQL="SELECT plugin FROM mysql.user WHERE user='${TARGET_USER}' AND host='${TARGET_HOST}';"
-                NEW_PLUGIN="$(run_mysql "$VERIFY_SQL" | head -n 1)"
-                if [[ "$NEW_PLUGIN" == "caching_sha2_password" ]]; then
+                WEAK_LIST="${WEAK_LIST}"$'\n'"${row}"
+            fi
+            WEAK_COUNT=$((WEAK_COUNT + 1))
+        fi
+    done <<< "$ROWS"
+
+    if [[ "$WEAK_COUNT" -eq 0 ]]; then
+        STATUS="PASS"
+        ACTION_RESULT="SUCCESS"
+        ACTION_LOG="모든 계정이 이미 caching_sha2_password(SHA-256) 기반 인증을 사용하고 있어 추가 조치가 필요하지 않습니다."
+        EVIDENCE="계정별 인증 플러그인 점검 결과 SHA-256 이상 알고리즘 기준을 충족합니다."
+    else
+        TARGETS=""
+
+        if [[ -n "$TARGET_USER" || -n "$TARGET_HOST" || -n "$TARGET_PASS" ]]; then
+            if [[ -z "$TARGET_USER" || -z "$TARGET_HOST" || -z "$TARGET_PASS" ]]; then
+                STATUS="FAIL"
+                ACTION_RESULT="FAIL"
+                ACTION_LOG="조치가 수행되지 않았습니다. 단일 대상 전환을 위한 입력값이 완전하지 않습니다."
+                EVIDENCE="TARGET_USER, TARGET_HOST, TARGET_PASS를 모두 제공해야 대상 계정 전환을 수행할 수 있습니다."
+            else
+                TARGETS="${TARGET_USER}"$'\t'"${TARGET_HOST}"$'\t'"${TARGET_PASS}"
+            fi
+        elif [[ -n "$TARGET_ACCOUNTS_CSV" ]]; then
+            IFS=',' read -r -a entries <<< "$TARGET_ACCOUNTS_CSV"
+            for entry in "${entries[@]}"; do
+                [[ -z "$entry" ]] && continue
+                account_part="${entry%%:*}"
+                pass_part="${entry#*:}"
+                user_part="${account_part%@*}"
+                host_part="${account_part#*@}"
+
+                if [[ -z "$user_part" || -z "$host_part" || -z "$pass_part" || "$account_part" == "$host_part" || "$entry" == "$pass_part" ]]; then
+                    continue
+                fi
+
+                row="${user_part}"$'\t'"${host_part}"$'\t'"${pass_part}"
+                if [[ -z "$TARGETS" ]]; then
+                    TARGETS="$row"
+                else
+                    TARGETS="${TARGETS}"$'\n'"${row}"
+                fi
+            done
+        elif [[ "$AUTO_FIX_ALL" == "Y" && -n "$DEFAULT_TARGET_PASS" ]]; then
+            while IFS=$'\t' read -r user host plugin; do
+                [[ -z "$user" && -z "$host" ]] && continue
+                row="${user}"$'\t'"${host}"$'\t'"${DEFAULT_TARGET_PASS}"
+                if [[ -z "$TARGETS" ]]; then
+                    TARGETS="$row"
+                else
+                    TARGETS="${TARGETS}"$'\n'"${row}"
+                fi
+            done <<< "$WEAK_LIST"
+        else
+            STATUS="FAIL"
+            ACTION_RESULT="FAIL"
+            ACTION_LOG="조치가 수행되지 않았습니다. 취약 계정 전환 대상 정보가 제공되지 않았습니다."
+            EVIDENCE="취약 계정 ${WEAK_COUNT}개가 확인되었습니다. TARGET_USER/TARGET_HOST/TARGET_PASS 또는 TARGET_ACCOUNTS_CSV, AUTO_FIX_ALL+DEFAULT_TARGET_PASS를 제공해야 합니다."
+        fi
+
+        if [[ "$STATUS" != "FAIL" ]]; then
+            # D-08 핵심: 취약 계정의 인증 플러그인을 caching_sha2_password(SHA-256)로 전환한다.
+            APPLIED=0
+            FAILED=0
+            FAIL_SAMPLE="N/A"
+
+            while IFS=$'\t' read -r user host pass; do
+                [[ -z "$user" || -z "$host" || -z "$pass" ]] && continue
+                esc_user="$(sql_escape_literal "$user")"
+                esc_host="$(sql_escape_literal "$host")"
+                esc_pass="$(sql_escape_literal "$pass")"
+
+                FIX_SQL="ALTER USER '${esc_user}'@'${esc_host}' IDENTIFIED WITH caching_sha2_password BY '${esc_pass}';"
+                run_mysql "$FIX_SQL" >/dev/null
+                RC2=$?
+
+                if [[ $RC2 -eq 0 ]]; then
+                    APPLIED=$((APPLIED + 1))
+                else
+                    FAILED=$((FAILED + 1))
+                    [[ "$FAIL_SAMPLE" == "N/A" ]] && FAIL_SAMPLE="${user}@${host}"
+                fi
+            done <<< "$TARGETS"
+
+            # D-08 핵심: 전환 후 전체 계정을 재점검하여 SHA-256 기준 충족 여부를 재검증한다.
+            VERIFY_ROWS="$(run_mysql "$CHECK_SQL")"
+            RCV=$?
+            if [[ $RCV -ne 0 ]]; then
+                STATUS="FAIL"
+                ACTION_RESULT="FAIL"
+                ACTION_LOG="조치가 부분적으로만 수행되었습니다. 전환 후 검증 조회에 실패했습니다."
+                EVIDENCE="인증 플러그인 전환을 수행했지만 재검증을 위한 계정 조회에 실패했습니다."
+            else
+                REMAIN_WEAK="$(echo "$VERIFY_ROWS" | awk -F'\t' '$1!="" && $3!="caching_sha2_password"{print $1"@"$2"(" $3 ")"}')"
+                if [[ -z "$REMAIN_WEAK" && "$FAILED" -eq 0 ]]; then
                     STATUS="PASS"
                     ACTION_RESULT="SUCCESS"
-                    ACTION_LOG="대상 계정의 인증 플러그인을 caching_sha2_password(SHA-256)로 전환하여 안전한 암호화 알고리즘이 적용되도록 조치하였습니다."
-                    EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})의 인증 플러그인이 caching_sha2_password로 변경된 것이 확인되었습니다."
+                    ACTION_LOG="취약 계정의 인증 플러그인을 caching_sha2_password(SHA-256)로 전환해 SHA-256 이상 알고리즘 기준을 충족하도록 조치했습니다."
+                    EVIDENCE="전환 성공 ${APPLIED}건, 재검증 결과 모든 계정이 caching_sha2_password를 사용합니다."
                 else
                     STATUS="FAIL"
                     ACTION_RESULT="FAIL"
-                    ACTION_LOG="조치가 수행되지 않았습니다. 인증 플러그인 전환 후 상태 확인에 실패하였습니다."
-                    EVIDENCE="인증 플러그인 변경을 수행했으나, 변경 결과를 확인할 수 없어 추가 점검이 필요합니다."
+                    SAMPLE_REMAIN="$(echo "$REMAIN_WEAK" | head -n 1)"
+                    [[ -z "$SAMPLE_REMAIN" ]] && SAMPLE_REMAIN="$FAIL_SAMPLE"
+                    ACTION_LOG="조치가 부분적으로만 수행되었습니다. 일부 계정은 SHA-256 기준을 충족하지 못했습니다."
+                    EVIDENCE="전환 성공 ${APPLIED}건, 실패 ${FAILED}건이며 미전환 계정이 남아 있습니다. (예: ${SAMPLE_REMAIN})"
                 fi
             fi
         fi
@@ -133,8 +220,6 @@ cat << EOF
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
     "guide": "KISA 가이드라인 기준 보안 설정 조치 완료",
