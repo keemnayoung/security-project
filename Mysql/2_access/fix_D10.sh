@@ -19,8 +19,6 @@ ID="D-10"
 CATEGORY="DBMS"
 TITLE="원격에서 DB 서버로의 접속 제한"
 IMPORTANCE="상"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="이 조치를 적용하면 허용되지 않은 IP에서의 접속이 차단되어, 기존에 모든 IP에서 접속 가능했던 계정은 지정된 IP에서만 접속할 수 있습니다. 이에 따라 기존 스크립트, 애플리케이션, 원격 관리 도구 등이 변경된 IP 외부에서 접속하려고 하면 실패할 수 있으므로, 적용 전에 영향 범위를 확인하고 필요한 IP를 사전에 반영해야 합니다."
 
 # 조치 결과 변수
 STATUS="FAIL"
@@ -29,9 +27,9 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 # 무한 로딩 방지
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD_BASE="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} -uroot -N -s -B -e"
+MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
 
 run_mysql() {
     local sql="$1"
@@ -44,6 +42,19 @@ run_mysql() {
     fi
 }
 
+sql_escape_literal() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf "%s" "$s"
+}
+
+sed_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\//\\/}"
+    s="${s//&/\\&}"
+    printf "%s" "$s"
+}
 
 # 0) 입력값(환경변수) 확인
 
@@ -52,20 +63,28 @@ run_mysql() {
 #   TARGET_USER='appuser' ALLOW_HOST='203.0.113.10' NEW_PASS='Strong!234' ./FIX_D10.sh
 TARGET_USER="${TARGET_USER:-}"
 ALLOW_HOST="${ALLOW_HOST:-}"     # 허용 IP 또는 대역(예: 10.0.0.%)
-NEW_PASS="${NEW_PASS:-}"         # 새로 생성되는 '<user>'@'<ALLOW_HOST>' 계정 비밀번호
+NEW_PASS="${NEW_PASS:-}"         # fallback 생성이 필요한 경우에만 사용
 MODE="${MODE:-DROP}"             # DROP 또는 LOCK : 기존 '<user>'@'%' 처리 방식
 # LOCK 모드 사용 예: MODE=LOCK ./FIX_D10.sh
 
-if [[ -z "$TARGET_USER" || -z "$ALLOW_HOST" || -z "$NEW_PASS" ]]; then
+MODE="$(echo "$MODE" | tr '[:lower:]' '[:upper:]')"
+if [[ "$MODE" != "DROP" && "$MODE" != "LOCK" ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. MODE 값이 유효하지 않습니다."
+    EVIDENCE="MODE 값은 DROP 또는 LOCK 중 하나여야 합니다."
+elif [[ -z "$TARGET_USER" || -z "$ALLOW_HOST" ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
     ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정 또는 허용 IP 정보가 제공되지 않았습니다."
-    EVIDENCE="TARGET_USER, ALLOW_HOST, NEW_PASS 값이 누락되어 원격 접속 제한 조치를 수행할 수 없습니다."
+    EVIDENCE="TARGET_USER, ALLOW_HOST 값이 누락되어 원격 접속 제한 조치를 수행할 수 없습니다."
 else
+    esc_user="$(sql_escape_literal "$TARGET_USER")"
+    esc_allow_host="$(sql_escape_literal "$ALLOW_HOST")"
     
-    # 1) '<user>'@'%' 존재 여부 확인
+    # D-10 핵심: host='%' 계정 존재 여부를 확인해 모든 IP 허용 계정을 식별한다.
     
-    CHECK_WILD_SQL="SELECT COUNT(*) FROM mysql.user WHERE user='${TARGET_USER}' AND host='%';"
+    CHECK_WILD_SQL="SELECT COUNT(*) FROM mysql.user WHERE user='${esc_user}' AND host='%';"
     WILD_CNT="$(run_mysql "$CHECK_WILD_SQL")"
     RC1=$?
 
@@ -85,10 +104,32 @@ else
         ACTION_LOG="대상 계정은 모든 IP(host='%')에서 접속 가능하도록 설정되어 있지 않아 추가 조치 없이 원격 접속 제한 상태를 유지하였습니다."
         EVIDENCE="mysql.user에서 ${TARGET_USER}@'%' 계정이 확인되지 않았습니다."
     else
+        # D-10 핵심: 가능하면 host='%' 계정을 허용 IP 계정으로 직접 변경한다.
+        RENAME_SQL="RENAME USER '${esc_user}'@'%' TO '${esc_user}'@'${esc_allow_host}';"
+        run_mysql "$RENAME_SQL" >/dev/null
+        RC_RENAME=$?
+
+        if [[ $RC_RENAME -eq 0 ]]; then
+            run_mysql "FLUSH PRIVILEGES;" >/dev/null
+            RC_FLUSH=$?
+            if [[ $RC_FLUSH -eq 0 ]]; then
+                STATUS="PASS"
+                ACTION_RESULT="SUCCESS"
+                ACTION_LOG="모든 IP 접속 허용 계정을 허용된 IP 계정으로 변경하여 원격 접속을 제한하였습니다."
+                EVIDENCE="RENAME USER로 ${TARGET_USER}@'%'를 ${TARGET_USER}@'${ALLOW_HOST}'로 변경하고 FLUSH PRIVILEGES를 적용했습니다."
+            else
+                STATUS="FAIL"
+                ACTION_RESULT="FAIL"
+                ACTION_LOG="조치가 부분적으로만 수행되었습니다. 계정 변경 후 권한 반영에 실패했습니다."
+                EVIDENCE="계정 호스트 변경은 수행했으나 FLUSH PRIVILEGES 실행에 실패했습니다."
+            fi
+        fi
+
+        if [[ "$STATUS" != "PASS" ]]; then
         
-        # 2) 허용 IP 전용 계정 생성(없으면 생성)
+        # D-10 핵심(fallback): 허용 IP 전용 계정을 생성/보정하고 기존 '%' 계정을 제거 또는 잠금한다.
         
-        CHECK_ALLOW_SQL="SELECT COUNT(*) FROM mysql.user WHERE user='${TARGET_USER}' AND host='${ALLOW_HOST}';"
+        CHECK_ALLOW_SQL="SELECT COUNT(*) FROM mysql.user WHERE user='${esc_user}' AND host='${esc_allow_host}';"
         ALLOW_CNT="$(run_mysql "$CHECK_ALLOW_SQL")"
         RC2=$?
 
@@ -104,7 +145,14 @@ else
             EVIDENCE="허용 IP 계정 조회에 실패하여 조치를 진행할 수 없습니다."
         else
             if [[ "$ALLOW_CNT" -eq 0 ]]; then
-                CREATE_SQL="CREATE USER '${TARGET_USER}'@'${ALLOW_HOST}' IDENTIFIED BY '${NEW_PASS}';"
+                if [[ -z "$NEW_PASS" ]]; then
+                    STATUS="FAIL"
+                    ACTION_RESULT="FAIL"
+                    ACTION_LOG="조치가 수행되지 않았습니다. 허용 IP 계정 생성에 필요한 비밀번호가 제공되지 않았습니다."
+                    EVIDENCE="RENAME USER 실패 후 fallback 생성 절차를 위해 NEW_PASS 값이 필요합니다."
+                else
+                esc_new_pass="$(sql_escape_literal "$NEW_PASS")"
+                CREATE_SQL="CREATE USER '${esc_user}'@'${esc_allow_host}' IDENTIFIED BY '${esc_new_pass}';"
                 run_mysql "$CREATE_SQL" >/dev/null
                 RC3=$?
 
@@ -118,6 +166,7 @@ else
                     ACTION_RESULT="FAIL"
                     ACTION_LOG="조치가 수행되지 않았습니다. 허용 IP 전용 계정 생성에 실패하였습니다."
                     EVIDENCE="CREATE USER 명령 수행에 실패하여 ${TARGET_USER}@${ALLOW_HOST} 계정을 생성할 수 없습니다."
+                fi
                 fi
             fi
 
@@ -143,10 +192,12 @@ else
                 else
                     # GRANT 문장을 허용 호스트로 치환하여 실행
                     APPLY_FAIL=0
+                    sed_user="$(sed_escape "$TARGET_USER")"
+                    sed_host="$(sed_escape "$ALLOW_HOST")"
                     while read -r line; do
                         [[ -z "$line" ]] && continue
                         # GRANT ... TO 'user'@'%'  형태를 'user'@'ALLOW_HOST' 로 변경
-                        NEW_LINE="$(echo "$line" | sed "s/'${TARGET_USER}'@'%'\$/'${TARGET_USER}'@'${ALLOW_HOST}'/")"
+                        NEW_LINE="$(echo "$line" | sed "s/'${sed_user}'@'%'\$/'${sed_user}'@'${sed_host}'/")"
                         run_mysql "$NEW_LINE" >/dev/null
                         if [[ $? -ne 0 ]]; then
                             APPLY_FAIL=1
@@ -164,10 +215,10 @@ else
                         
                         if [[ "$MODE" == "LOCK" ]]; then
                             # 계정 잠금(로그인 차단)
-                            DISABLE_SQL="ALTER USER '${TARGET_USER}'@'%' ACCOUNT LOCK;"
+                            DISABLE_SQL="ALTER USER '${esc_user}'@'%' ACCOUNT LOCK;"
                         else
                             # 계정 삭제(권한 포함 제거)
-                            DISABLE_SQL="DROP USER '${TARGET_USER}'@'%';"
+                            DISABLE_SQL="DROP USER '${esc_user}'@'%';"
                         fi
 
                         run_mysql "$DISABLE_SQL" >/dev/null
@@ -186,6 +237,7 @@ else
                         else
                             STATUS="PASS"
                             ACTION_RESULT="SUCCESS"
+                            run_mysql "FLUSH PRIVILEGES;" >/dev/null
                             ACTION_LOG="모든 IP에서 접속 가능했던 계정을 허용된 IP에서만 접속 가능하도록 변경하여 원격 접속을 제한하였습니다."
                             if [[ "$MODE" == "LOCK" ]]; then
                                 EVIDENCE="기존 ${TARGET_USER}@'%' 계정을 잠금 처리하고, ${TARGET_USER}@'${ALLOW_HOST}' 계정을 생성하여 권한을 복제하였습니다."
@@ -196,6 +248,7 @@ else
                     fi
                 fi
             fi
+        fi
         fi
     fi
 fi
@@ -208,8 +261,6 @@ cat << EOF
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
     "guide": "KISA 가이드라인 기준 보안 설정 조치 완료",
