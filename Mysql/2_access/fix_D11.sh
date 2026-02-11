@@ -3,7 +3,7 @@
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-11
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-11
@@ -19,151 +19,198 @@ ID="D-11"
 CATEGORY="접근통제"
 TITLE="DBA 이외의 인가되지 않은 사용자가 시스템 테이블에 접근할 수 없도록 설정"
 IMPORTANCE="상"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 일반 사용자 계정은 시스템 테이블에 접근할 수 없게 되지만, 지정된 데이터베이스 및 테이블에 대한 권한은 그대로 유지됩니다. 따라서 일반적인 시스템 운영 및 애플리케이션 동작에는 영향이 없으며, 권한 범위를 벗어난 작업 시에만 접근이 제한됩니다."
 
-# 조치 결과 변수
 STATUS="FAIL"
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
-# 무한 로딩 방지
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD_BASE="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} -uroot -N -s -B -e"
+MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
 
 run_mysql() {
     local sql="$1"
     if [[ -n "$TIMEOUT_BIN" ]]; then
         $TIMEOUT_BIN ${MYSQL_TIMEOUT_SEC}s $MYSQL_CMD_BASE "$sql" 2>/dev/null
-        return $?
     else
         $MYSQL_CMD_BASE "$sql" 2>/dev/null
-        return $?
     fi
+    return $?
 }
 
-# 0) 입력값(환경변수) 확인
+sql_escape_literal() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf "%s" "$s"
+}
 
-# 예1) 특정 테이블에만 최소 권한 부여
-#   TARGET_USER='appuser' TARGET_HOST='10.0.0.%' \
-#   KEEP_SCOPE='TABLE' KEEP_DB='appdb' KEEP_TABLE='orders' KEEP_PRIV_LIST='SELECT,INSERT' \
-#   ./FIX_D11.sh
-#
-# 예2) 특정 DB 전체 테이블에 권한 부여(필요 최소 권한 권장)
-#   TARGET_USER='appuser' TARGET_HOST='10.0.0.%' \
-#   KEEP_SCOPE='DB' KEEP_DB='appdb' KEEP_PRIV_LIST='SELECT,INSERT,UPDATE' \
-#   ./FIX_D11.sh
-#
-# 예3) 시스템 테이블 권한 회수만 수행(권한 부여 생략)
-#   TARGET_USER='appuser' TARGET_HOST='10.0.0.%' \
-#   KEEP_SCOPE='NONE' \
-#   ./FIX_D11.sh
+ident_escape() {
+    local s="$1"
+    s="${s//\`/\`\`}"
+    printf "%s" "$s"
+}
 
 TARGET_USER="${TARGET_USER:-}"
 TARGET_HOST="${TARGET_HOST:-}"
 
-KEEP_SCOPE="${KEEP_SCOPE:-}"          # TABLE | DB | NONE
+# TABLE | DB | NONE
+KEEP_SCOPE="${KEEP_SCOPE:-}"
 KEEP_DB="${KEEP_DB:-}"
 KEEP_TABLE="${KEEP_TABLE:-}"
-KEEP_PRIV_LIST="${KEEP_PRIV_LIST:-}"  # 예: SELECT,INSERT
+KEEP_PRIV_LIST="${KEEP_PRIV_LIST:-}"
+
+KEEP_SCOPE="$(echo "$KEEP_SCOPE" | tr '[:lower:]' '[:upper:]')"
 
 if [[ -z "$TARGET_USER" || -z "$TARGET_HOST" || -z "$KEEP_SCOPE" ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
-    ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정 또는 권한 유지 범위 정보가 제공되지 않았습니다."
-    EVIDENCE="TARGET_USER, TARGET_HOST, KEEP_SCOPE 값이 누락되어 시스템 테이블 접근 제한 조치를 수행할 수 없습니다."
+    ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정/권한 유지 범위 정보가 누락되었습니다."
+    EVIDENCE="TARGET_USER, TARGET_HOST, KEEP_SCOPE 값이 필요합니다."
+elif [[ "$TARGET_USER" == *"'"* || "$TARGET_HOST" == *"'"* ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. 입력값 검증에 실패했습니다."
+    EVIDENCE="TARGET_USER 또는 TARGET_HOST에 작은따옴표(')가 포함되어 조치를 중단합니다."
+elif [[ "$KEEP_SCOPE" == "TABLE" && ( -z "$KEEP_DB" || -z "$KEEP_TABLE" || -z "$KEEP_PRIV_LIST" ) ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. 테이블 단위 재부여 정보가 부족합니다."
+    EVIDENCE="KEEP_SCOPE=TABLE 설정 시 KEEP_DB, KEEP_TABLE, KEEP_PRIV_LIST가 필요합니다."
+elif [[ "$KEEP_SCOPE" == "DB" && ( -z "$KEEP_DB" || -z "$KEEP_PRIV_LIST" ) ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. DB 단위 재부여 정보가 부족합니다."
+    EVIDENCE="KEEP_SCOPE=DB 설정 시 KEEP_DB, KEEP_PRIV_LIST가 필요합니다."
+elif [[ "$KEEP_SCOPE" != "TABLE" && "$KEEP_SCOPE" != "DB" && "$KEEP_SCOPE" != "NONE" ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. KEEP_SCOPE 값이 유효하지 않습니다."
+    EVIDENCE="KEEP_SCOPE 값은 TABLE, DB, NONE 중 하나여야 합니다."
 else
-    if [[ "$KEEP_SCOPE" == "TABLE" && ( -z "$KEEP_DB" || -z "$KEEP_TABLE" || -z "$KEEP_PRIV_LIST" ) ]]; then
+    esc_user="$(sql_escape_literal "$TARGET_USER")"
+    esc_host="$(sql_escape_literal "$TARGET_HOST")"
+    GRANTEE="'${esc_user}'@'${esc_host}'"
+
+    # D-11 핵심: 대상 계정 권한을 확인해 조치 대상을 검증한다.
+    CHECK_SQL="SHOW GRANTS FOR ${GRANTEE};"
+    CHECK_OUT="$(run_mysql "$CHECK_SQL")"
+    RC0=$?
+
+    if [[ $RC0 -eq 124 ]]; then
         STATUS="FAIL"
         ACTION_RESULT="FAIL"
-        ACTION_LOG="조치가 수행되지 않았습니다. 테이블 단위 권한 부여에 필요한 정보가 제공되지 않았습니다."
-        EVIDENCE="KEEP_SCOPE=TABLE 설정 시 KEEP_DB, KEEP_TABLE, KEEP_PRIV_LIST 값이 필요합니다."
-    elif [[ "$KEEP_SCOPE" == "DB" && ( -z "$KEEP_DB" || -z "$KEEP_PRIV_LIST" ) ]]; then
+        ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정 권한 조회가 제한 시간 내 완료되지 않았습니다."
+        EVIDENCE="SHOW GRANTS 실행이 ${MYSQL_TIMEOUT_SEC}초를 초과했습니다."
+    elif [[ $RC0 -ne 0 || -z "$CHECK_OUT" ]]; then
         STATUS="FAIL"
         ACTION_RESULT="FAIL"
-        ACTION_LOG="조치가 수행되지 않았습니다. DB 단위 권한 부여에 필요한 정보가 제공되지 않았습니다."
-        EVIDENCE="KEEP_SCOPE=DB 설정 시 KEEP_DB, KEEP_PRIV_LIST 값이 필요합니다."
+        ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정 권한을 조회할 수 없습니다."
+        EVIDENCE="SHOW GRANTS 실패: 대상 계정 존재 여부 또는 권한을 확인하세요."
     else
-
-        # 1) 기존 권한 확인 (SHOW GRANTS)
-
-        GRANTS_SQL="SHOW GRANTS FOR '${TARGET_USER}'@'${TARGET_HOST}';"
-        GRANTS_OUT="$(run_mysql "$GRANTS_SQL")"
+        # D-11 핵심: 일반 계정의 시스템 테이블 접근 가능성을 제거하기 위해 권한을 최소 상태로 초기화한다.
+        RESET_SQL="REVOKE ALL PRIVILEGES, GRANT OPTION FROM ${GRANTEE};"
+        run_mysql "$RESET_SQL" >/dev/null
         RC1=$?
 
         if [[ $RC1 -eq 124 ]]; then
             STATUS="FAIL"
             ACTION_RESULT="FAIL"
-            ACTION_LOG="조치가 수행되지 않았습니다. 권한 확인 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-            EVIDENCE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다."
-        elif [[ $RC1 -ne 0 || -z "$GRANTS_OUT" ]]; then
+            ACTION_LOG="조치가 수행되지 않았습니다. 권한 초기화 명령이 제한 시간을 초과했습니다."
+            EVIDENCE="권한 초기화 명령이 ${MYSQL_TIMEOUT_SEC}초 내 완료되지 않았습니다."
+        elif [[ $RC1 -ne 0 ]]; then
             STATUS="FAIL"
             ACTION_RESULT="FAIL"
-            ACTION_LOG="조치가 수행되지 않았습니다. 대상 계정의 권한을 확인할 수 없어 조치를 진행하지 못하였습니다."
-            EVIDENCE="SHOW GRANTS 수행에 실패하여 시스템 테이블 접근 권한 회수 여부를 판단할 수 없습니다."
+            ACTION_LOG="조치가 수행되지 않았습니다. 권한 초기화에 실패했습니다."
+            EVIDENCE="REVOKE ALL PRIVILEGES, GRANT OPTION 수행에 실패하여 최소 권한 상태로 전환하지 못했습니다."
         else
+            # D-11 핵심: 역할(Role)을 통한 간접 접근도 차단하기 위해 계정에 부여된 역할을 회수한다.
+            ROLE_SQL="
+SELECT FROM_USER, FROM_HOST
+FROM mysql.role_edges
+WHERE TO_USER='${esc_user}' AND TO_HOST='${esc_host}';
+"
+            ROLE_ROWS="$(run_mysql "$ROLE_SQL")"
+            RC2=$?
 
-            # 2) 시스템 스키마 접근 권한 회수
-
-            # 시스템 스키마 목록(MySQL 8.0 기준)
-            SYS_SCHEMAS=("mysql" "information_schema" "performance_schema" "sys")
-
-            REVOKE_FAIL=0
-            for schema in "${SYS_SCHEMAS[@]}"; do
-                # 스키마 단위로 가능한 권한을 회수 (ALL, GRANT OPTION 포함)
-                # - 실제로 부여되어 있지 않으면 에러가 날 수 있으므로, 실패해도 계속 진행하되 최종 결과에 반영
-                REVOKE_SQL="REVOKE ALL PRIVILEGES, GRANT OPTION ON \`${schema}\`.* FROM '${TARGET_USER}'@'${TARGET_HOST}';"
-                run_mysql "$REVOKE_SQL" >/dev/null
-                RC2=$?
-                if [[ $RC2 -eq 124 ]]; then
-                    REVOKE_FAIL=1
-                    break
-                fi
-            done
-
-            if [[ $REVOKE_FAIL -eq 1 ]]; then
+            if [[ $RC2 -eq 124 ]]; then
                 STATUS="FAIL"
                 ACTION_RESULT="FAIL"
-                ACTION_LOG="조치가 수행되지 않았습니다. 시스템 테이블 권한 회수 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-                EVIDENCE="시스템 스키마 권한 회수 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
+                ACTION_LOG="조치가 수행되지 않았습니다. 역할 권한 조회가 제한 시간을 초과했습니다."
+                EVIDENCE="mysql.role_edges 조회가 ${MYSQL_TIMEOUT_SEC}초 내 완료되지 않았습니다."
+            elif [[ $RC2 -ne 0 ]]; then
+                STATUS="FAIL"
+                ACTION_RESULT="FAIL"
+                ACTION_LOG="조치가 수행되지 않았습니다. 역할 권한 조회에 실패했습니다."
+                EVIDENCE="간접 권한(ROLE) 회수를 위한 대상 조회에 실패했습니다."
             else
+                ROLE_FAIL=0
+                ROLE_FAIL_SAMPLE="N/A"
+                ROLE_REVOKE_COUNT=0
 
-                # 3) 필요한 DB/테이블에만 최소 권한 부여(선택)
-  
-                if [[ "$KEEP_SCOPE" == "NONE" ]]; then
-                    STATUS="PASS"
-                    ACTION_RESULT="SUCCESS"
-                    ACTION_LOG="시스템 테이블에 대한 불필요한 접근 권한을 회수하여 일반 계정의 시스템 테이블 접근을 제한하였습니다."
-                    EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})에서 시스템 스키마(mysql, information_schema, performance_schema, sys) 접근 권한 회수를 수행하였습니다."
+                while IFS=$'\t' read -r role_user role_host; do
+                    [[ -z "$role_user" || -z "$role_host" ]] && continue
+                    esc_role_user="$(sql_escape_literal "$role_user")"
+                    esc_role_host="$(sql_escape_literal "$role_host")"
+                    REVOKE_ROLE_SQL="REVOKE '${esc_role_user}'@'${esc_role_host}' FROM ${GRANTEE};"
+                    run_mysql "$REVOKE_ROLE_SQL" >/dev/null
+                    rc_role=$?
+                    ROLE_REVOKE_COUNT=$((ROLE_REVOKE_COUNT + 1))
+                    if [[ $rc_role -ne 0 ]]; then
+                        ROLE_FAIL=1
+                        [[ "$ROLE_FAIL_SAMPLE" == "N/A" ]] && ROLE_FAIL_SAMPLE="${role_user}@${role_host}"
+                    fi
+                done <<< "$ROLE_ROWS"
+
+                if [[ "$ROLE_FAIL" -eq 1 ]]; then
+                    STATUS="FAIL"
+                    ACTION_RESULT="FAIL"
+                    ACTION_LOG="조치가 부분 실패했습니다. 일부 역할 권한 회수에 실패했습니다."
+                    EVIDENCE="역할 권한 회수 중 실패가 발생했습니다. (예: ${ROLE_FAIL_SAMPLE})"
                 else
+                    # D-11 핵심: 접근이 필요한 업무 DB/테이블 범위에만 최소 권한을 재부여한다.
                     if [[ "$KEEP_SCOPE" == "TABLE" ]]; then
-                        GRANT_SQL="GRANT ${KEEP_PRIV_LIST} ON \`${KEEP_DB}\`.\`${KEEP_TABLE}\` TO '${TARGET_USER}'@'${TARGET_HOST}';"
-                        KEEP_DESC="필요한 테이블(${KEEP_DB}.${KEEP_TABLE})에만 권한을 부여"
+                        esc_keep_db="$(ident_escape "$KEEP_DB")"
+                        esc_keep_table="$(ident_escape "$KEEP_TABLE")"
+                        GRANT_SQL="GRANT ${KEEP_PRIV_LIST} ON \`${esc_keep_db}\`.\`${esc_keep_table}\` TO ${GRANTEE};"
+                        KEEP_DESC="${KEEP_DB}.${KEEP_TABLE}"
+                        run_mysql "$GRANT_SQL" >/dev/null
+                        RC3=$?
+                    elif [[ "$KEEP_SCOPE" == "DB" ]]; then
+                        esc_keep_db="$(ident_escape "$KEEP_DB")"
+                        GRANT_SQL="GRANT ${KEEP_PRIV_LIST} ON \`${esc_keep_db}\`.* TO ${GRANTEE};"
+                        KEEP_DESC="${KEEP_DB}.*"
+                        run_mysql "$GRANT_SQL" >/dev/null
+                        RC3=$?
                     else
-                        GRANT_SQL="GRANT ${KEEP_PRIV_LIST} ON \`${KEEP_DB}\`.* TO '${TARGET_USER}'@'${TARGET_HOST}';"
-                        KEEP_DESC="필요한 데이터베이스(${KEEP_DB}) 범위 내에서만 권한을 부여"
+                        KEEP_DESC="NONE"
+                        RC3=0
                     fi
 
-                    run_mysql "$GRANT_SQL" >/dev/null
-                    RC3=$?
-
-                    if [[ $RC3 -eq 124 ]]; then
-                        STATUS="FAIL"
-                        ACTION_RESULT="FAIL"
-                        ACTION_LOG="조치가 수행되지 않았습니다. 필요 권한 부여 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-                        EVIDENCE="권한 부여 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
-                    elif [[ $RC3 -ne 0 ]]; then
-                        STATUS="FAIL"
-                        ACTION_RESULT="FAIL"
-                        ACTION_LOG="조치가 수행되지 않았습니다. 필요한 데이터베이스/테이블 권한 부여에 실패하였습니다."
-                        EVIDENCE="시스템 스키마 권한 회수는 수행되었으나, 업무에 필요한 권한 부여에 실패하여 정상 동작을 보장할 수 없습니다."
+                    if [[ $RC3 -eq 0 ]]; then
+                        run_mysql "FLUSH PRIVILEGES;" >/dev/null
+                        RC4=$?
+                        if [[ $RC4 -ne 0 ]]; then
+                            STATUS="FAIL"
+                            ACTION_RESULT="FAIL"
+                            ACTION_LOG="조치가 부분 실패했습니다. 권한 반영에 실패했습니다."
+                            EVIDENCE="권한 조정은 수행했으나 FLUSH PRIVILEGES 실행에 실패했습니다."
+                        elif [[ "$KEEP_SCOPE" == "NONE" ]]; then
+                            STATUS="PASS"
+                            ACTION_RESULT="SUCCESS"
+                            ACTION_LOG="시스템 테이블 접근 권한을 제거하고 불필요한 역할 권한을 회수했습니다."
+                            EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})을 최소 권한 상태로 조정했습니다. (회수 역할 ${ROLE_REVOKE_COUNT}건)"
+                        else
+                            STATUS="PASS"
+                            ACTION_RESULT="SUCCESS"
+                            ACTION_LOG="시스템 테이블 접근 권한 제거 후 업무 범위 최소 권한만 재부여했습니다."
+                            EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})에 ${KEEP_DESC} 범위 ${KEEP_PRIV_LIST}만 재부여했습니다. (회수 역할 ${ROLE_REVOKE_COUNT}건)"
+                        fi
                     else
-                        STATUS="PASS"
-                        ACTION_RESULT="SUCCESS"
-                        ACTION_LOG="시스템 테이블 접근 권한을 회수하고, ${KEEP_DESC}하여 일반 사용자 계정의 접근 범위를 최소화하였습니다."
-                        EVIDENCE="대상 계정(${TARGET_USER}@${TARGET_HOST})의 시스템 스키마 접근 권한을 제한하고, 지정된 범위에 필요한 권한만 부여하였습니다."
+                        STATUS="FAIL"
+                        ACTION_RESULT="FAIL"
+                        ACTION_LOG="조치가 부분 실패했습니다. 업무 권한 재부여에 실패했습니다."
+                        EVIDENCE="최소 권한 상태로 초기화는 완료했으나 업무 권한 재부여(${KEEP_DESC})에 실패했습니다."
                     fi
                 fi
             fi
@@ -171,16 +218,13 @@ else
     fi
 fi
 
-# JSON 표준 출력 (고정 구조)
 echo ""
-cat << EOF
+cat << EOF_JSON
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
     "guide": "KISA 가이드라인 기준 보안 설정 조치 완료",
@@ -189,4 +233,4 @@ cat << EOF
     "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
-EOF
+EOF_JSON
