@@ -19,17 +19,15 @@ ID="D-01"
 CATEGORY="계정관리"
 TITLE="기본 계정의 비밀번호, 정책 등을 변경하여 사용"
 IMPORTANCE="상"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="이 조치를 적용하면 root 계정 비밀번호가 변경되어 기존에 저장되어 있던 자동화 스크립트, 애플리케이션 설정 파일, 배치 작업, 모니터링 도구 등에서 사용 중이던 기존 비밀번호로는 더 이상 접속이 불가능해집니다. 이로 인해 DB 연동 서비스 또는 관리 작업이 일시적으로 실패할 수 있으며, 관련 시스템 전반에 비밀번호 변경 사항을 반영해야 정상 운영이 가능합니다."
 
 STATUS="FAIL"
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
 run_mysql_query() {
     local sql="$1"
@@ -38,6 +36,38 @@ run_mysql_query() {
         return $?
     fi
     $MYSQL_CMD "$sql" 2>/dev/null
+    return $?
+}
+
+sql_escape_literal() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf "%s" "$s"
+}
+
+change_root_password() {
+    local user="$1"
+    local host="$2"
+    local esc_user esc_host esc_pass
+    esc_user="$(sql_escape_literal "$user")"
+    esc_host="$(sql_escape_literal "$host")"
+    esc_pass="$(sql_escape_literal "$NEW_PASS")"
+
+    # 우선 최신 문법(5.7+/8.0)인 ALTER USER를 시도한다.
+    run_mysql_query "ALTER USER '${esc_user}'@'${esc_host}' IDENTIFIED BY '${esc_pass}';" >/dev/null
+    local rc=$?
+    if [[ $rc -eq 0 || $rc -eq 124 ]]; then
+        return $rc
+    fi
+
+    # 구버전/정책 환경 호환을 위해 UPDATE + FLUSH PRIVILEGES를 대체 경로로 시도한다.
+    run_mysql_query "UPDATE mysql.user SET authentication_string=PASSWORD('${esc_pass}') WHERE user='${esc_user}' AND host='${esc_host}';" >/dev/null
+    rc=$?
+    if [[ $rc -eq 124 || $rc -ne 0 ]]; then
+        return $rc
+    fi
+
+    run_mysql_query "FLUSH PRIVILEGES;" >/dev/null
     return $?
 }
 
@@ -69,7 +99,7 @@ else
         while IFS=$'\t' read -r user host; do
             [[ -z "$user" && -z "$host" ]] && continue
 
-            run_mysql_query "ALTER USER '${user}'@'${host}' IDENTIFIED BY '${NEW_PASS}';" >/dev/null
+            change_root_password "$user" "$host"
             RC=$?
             if [[ $RC -eq 124 ]]; then
                 FAIL_REASON="root@${host} 비밀번호 변경 명령이 시간 초과되었습니다."
@@ -135,8 +165,6 @@ fi
 cat << EOF
 {
     "check_id": "$ID",
-    "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
