@@ -26,9 +26,9 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 
 # 실행 안정성: DB 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD_BASE="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
 
 # 유효성 체크: 숫자 비교 전 정수값 여부 확인
 is_integer() {
@@ -148,6 +148,9 @@ fi
 # 시스템 변수 점검 항목이므로 파일 해시는 N/A 처리
 FILE_HASH="N/A(VARIABLE_CHECK)"
 
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하면 MySQL의 비밀번호 복잡도 정책이 강화되어 이후 생성되거나 변경되는 계정의 비밀번호가 정책에 맞게 설정되어야 합니다. 기존 계정의 비밀번호에는 즉각적인 영향이 없으나, 정책에 맞지 않는 비밀번호로 변경 시에는 거부되므로 비밀번호 변경 작업 시 주의가 필요합니다. 일반적인 시스템 운영에는 직접적인 영향이 없습니다."
+
 # 표준 JSON 결과 출력 (수집 파이프라인 연계 포맷)
 cat << EOF
 {
@@ -160,6 +163,8 @@ cat << EOF
     "guide": "1) 복잡도 정책: INSTALL COMPONENT 'file://component_validate_password'; 2) 정책값 설정: SET GLOBAL validate_password.policy='MEDIUM'; SET GLOBAL validate_password.length=8; SET GLOBAL validate_password.mixed_case_count=1; SET GLOBAL validate_password.number_count=1; SET GLOBAL validate_password.special_char_count=1; 3) 사용기간 설정: SET GLOBAL default_password_lifetime=90;",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
