@@ -26,9 +26,9 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 
 # 실행 안정성: DB 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD_BASE="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
 
 # [가이드 3~5p 대응] 기본 계정(root) + 익명 계정(user='')의 비밀번호/잠금 상태 조회
 QUERY_PRIMARY="SELECT user, host, COALESCE(authentication_string,''), COALESCE(account_locked,'N') FROM mysql.user WHERE user='root' OR user='';"
@@ -121,6 +121,9 @@ fi
 # 시스템 테이블 점검이므로 파일 해시는 N/A 처리
 FILE_HASH="N/A(TABLE_CHECK)"
 
+IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="이 조치를 적용하면 root 계정 비밀번호가 변경되어 기존에 저장되어 있던 자동화 스크립트, 애플리케이션 설정 파일, 배치 작업, 모니터링 도구 등에서 사용 중이던 기존 비밀번호로는 더 이상 접속이 불가능해집니다. 이로 인해 DB 연동 서비스 또는 관리 작업이 일시적으로 실패할 수 있으며, 관련 시스템 전반에 비밀번호 변경 사항을 반영해야 정상 운영이 가능합니다."
+
 # 표준 JSON 결과 출력 (수집 파이프라인 연계 포맷)
 cat << EOF
 {
@@ -133,6 +136,8 @@ cat << EOF
     "guide": "1) root 비밀번호 변경: ALTER USER 'root'@'localhost' IDENTIFIED BY '신규비밀번호'; 2) 원격 root 제거/잠금: DROP USER 'root'@'%'; 또는 ALTER USER 'root'@'원격호스트' ACCOUNT LOCK; 3) 익명 계정 잠금/삭제: ALTER USER ''@'localhost' ACCOUNT LOCK; 또는 DROP USER ''@'localhost';",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
