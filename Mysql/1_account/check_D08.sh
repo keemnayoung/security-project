@@ -24,9 +24,9 @@ TARGET_FILE="mysql.user.plugin"
 STATUS="FAIL"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
 # 사용자 계정의 인증 플러그인 확인
 QUERY="
@@ -70,6 +70,9 @@ else
     FILE_HASH="NOT_FOUND"
 fi
 
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없습니다. 계정별 암호화 알고리즘 및 비밀번호 설정을 확인하고 필요한 경우 업데이트하더라도 기존 서비스나 사용자 접근에는 지장이 없으며, MySQL 5.7에서는 기본적으로 mysql_native_password가 사용되어 추가 설정이 필요하지 않습니다."
+
 cat << EOF
 {
     "check_id": "$ID",
@@ -81,6 +84,8 @@ cat << EOF
     "guide": "계정의 인증 플러그인을 SHA-256 기반(caching_sha2_password)으로 변경하세요. 예) ALTER USER '계정'@'호스트' IDENTIFIED WITH caching_sha2_password BY '비밀번호';",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
