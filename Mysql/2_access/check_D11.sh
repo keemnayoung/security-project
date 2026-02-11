@@ -25,16 +25,29 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 ACTION_LOG="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
-# DBA 제외 시스템 DB 접근 계정 조회
+# 점검 전용 스크립트:
+# D-11은 "일반 계정의 시스템 테이블 접근 가능 여부"를 확인해야 하므로
+# check 단계에서는 권한 변경(REVOKE/GRANT)을 수행하지 않는다.
+#
+# 조회 범위
+# 1) 시스템 스키마 대상 스키마/테이블 권한
+# 2) 전역(*.*) 권한(USAGE 제외) - 전역 권한은 시스템 스키마 접근으로 이어질 수 있음
 QUERY="
-SELECT Db, User, Host
-FROM mysql.db
-WHERE Db IN ('mysql','performance_schema','sys')
-  AND User NOT IN ('root','mysql.sys','mysql.session','mysql.infoschema');
+SELECT GRANTEE, 'SCHEMA' AS SCOPE, TABLE_SCHEMA AS OBJ, PRIVILEGE_TYPE
+FROM information_schema.schema_privileges
+WHERE TABLE_SCHEMA IN ('mysql','performance_schema','sys','information_schema')
+UNION ALL
+SELECT GRANTEE, 'TABLE' AS SCOPE, CONCAT(TABLE_SCHEMA,'.',TABLE_NAME) AS OBJ, PRIVILEGE_TYPE
+FROM information_schema.table_privileges
+WHERE TABLE_SCHEMA IN ('mysql','performance_schema','sys','information_schema')
+UNION ALL
+SELECT GRANTEE, 'GLOBAL' AS SCOPE, '*.*' AS OBJ, PRIVILEGE_TYPE
+FROM information_schema.user_privileges
+WHERE PRIVILEGE_TYPE <> 'USAGE';
 "
 
 if [[ -n "$TIMEOUT_BIN" ]]; then
@@ -43,42 +56,62 @@ else
     LIST=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
 fi
 
-MODIFIED_COUNT=0
+# DBA/시스템 계정 예외 목록 (기관 정책에 따라 확장 가능)
+ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+
+is_allowed_user() {
+    local user="$1"
+    IFS=',' read -r -a arr <<< "$ALLOWED_USERS_CSV"
+    for u in "${arr[@]}"; do
+        [[ "$user" == "$u" ]] && return 0
+    done
+    return 1
+}
+
+extract_user_from_grantee() {
+    # 입력 예: 'appuser'@'10.0.0.%'
+    # 출력 예: appuser
+    echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
+}
 
 if [[ "$LIST" == "ERROR_TIMEOUT" ]]; then
     STATUS="FAIL"
-    EVIDENCE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 조치를 수행하지 못했습니다."
-    ACTION_LOG="DB 응답 지연으로 인해 시스템 테이블 접근 권한 회수 조치를 수행하지 못했습니다."
+    EVIDENCE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 수행하지 못했습니다."
+    ACTION_LOG="DB 응답 지연으로 인해 D-11 점검을 완료하지 못했습니다."
 elif [[ "$LIST" == "ERROR" ]]; then
     STATUS="FAIL"
-    EVIDENCE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 회수 조치를 수행할 수 없습니다."
-    ACTION_LOG="MySQL 접속 실패로 시스템 테이블 접근 권한 회수 조치를 수행하지 못했습니다."
+    EVIDENCE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 점검을 수행할 수 없습니다."
+    ACTION_LOG="MySQL 접속 실패로 D-11 점검을 수행하지 못했습니다."
 else
     if [[ -z "$LIST" ]]; then
         STATUS="PASS"
-        EVIDENCE="일반 사용자에게 시스템 테이블 접근 권한이 부여되어 있지 않아 추가 조치가 필요하지 않습니다."
-        ACTION_LOG="시스템 테이블 접근 권한이 DBA 계정으로만 제한되어 있어 별도의 조치를 수행하지 않았습니다."
+        EVIDENCE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
+        ACTION_LOG="점검 결과, 시스템 테이블 접근 권한은 허용 계정으로만 제한되어 있습니다."
     else
-        while IFS=$'\t' read -r db user host; do
-            [[ -z "$user" ]] && continue
-            SQL="
-REVOKE ALL PRIVILEGES ON ${db}.* FROM '${user}'@'${host}';
-"
-            if [[ -n "$TIMEOUT_BIN" ]]; then
-                $TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$SQL" >/dev/null 2>&1 && MODIFIED_COUNT=$((MODIFIED_COUNT + 1))
-            else
-                $MYSQL_CMD "$SQL" >/dev/null 2>&1 && MODIFIED_COUNT=$((MODIFIED_COUNT + 1))
+        VIOLATION_COUNT=0
+        SAMPLE="N/A"
+
+        while IFS=$'\t' read -r grantee scope obj priv; do
+            [[ -z "$grantee" ]] && continue
+            user="$(extract_user_from_grantee "$grantee")"
+            if is_allowed_user "$user"; then
+                continue
+            fi
+
+            VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
+            if [[ "$SAMPLE" == "N/A" ]]; then
+                SAMPLE="${grantee} (${scope}:${obj}, ${priv})"
             fi
         done <<< "$LIST"
 
-        if [[ "$MODIFIED_COUNT" -gt 0 ]]; then
+        if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
             STATUS="PASS"
-            EVIDENCE="일반 사용자 계정에서 시스템 테이블 접근 권한을 회수하여, 사용자·권한·시스템 정보 노출 위험을 줄였습니다."
-            ACTION_LOG="DBA가 아닌 계정(${MODIFIED_COUNT}개)에서 시스템 테이블 접근 권한을 회수하여 보안 정책을 적용했습니다."
+            EVIDENCE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
+            ACTION_LOG="점검 결과, 시스템 테이블 접근 권한은 허용 계정으로만 제한되어 있습니다."
         else
             STATUS="FAIL"
-            EVIDENCE="시스템 테이블 접근 권한 회수를 시도했으나 정상적으로 적용되지 않았습니다."
-            ACTION_LOG="시스템 테이블 접근 권한 회수 조치를 시도했으나 권한 또는 설정 문제로 완료하지 못했습니다."
+            EVIDENCE="DBA 외 계정에 시스템 테이블 접근 가능 권한이 확인되었습니다. (${VIOLATION_COUNT}건, 예: ${SAMPLE})"
+            ACTION_LOG="D-11 점검 결과 취약: 일반 계정 권한 회수(REVOKE) 조치가 필요합니다."
         fi
     fi
 fi
@@ -90,6 +123,9 @@ if [ -f "$TARGET_FILE" ]; then
 else
     FILE_HASH="NOT_FOUND"
 fi
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하면 일반 사용자 계정은 시스템 테이블에 접근할 수 없게 되지만, 지정된 데이터베이스 및 테이블에 대한 권한은 그대로 유지됩니다. 따라서 일반적인 시스템 운영 및 애플리케이션 동작에는 영향이 없으며, 권한 범위를 벗어난 작업 시에만 접근이 제한됩니다."
 
 cat << EOF
 {
@@ -103,6 +139,8 @@ cat << EOF
     "guide": "시스템 테이블(mysql, performance_schema, sys)은 DBA 계정만 접근 가능하도록 권한을 최소화하고, 일반 사용자 권한은 업무 DB로만 제한하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
