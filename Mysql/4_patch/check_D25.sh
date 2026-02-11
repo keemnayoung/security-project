@@ -3,12 +3,12 @@
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-11
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-25
 # @Category    : DBMS (Database Management System)
-# @Platform    : MySQL 
+# @Platform    : MySQL
 # @IMPORTANCE  : 상
 # @Title       : 주기적 보안 패치 및 벤더 권고 사항 적용
 # @Description : 안전한 버전의 데이터베이스를 사용하고 있는지 점검
@@ -24,45 +24,126 @@ TARGET_FILE="mysql_binary"
 STATUS="FAIL"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+CMD_TIMEOUT=8
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
-# MySQL 버전 확인
-QUERY="SELECT VERSION();"
+run_cmd() {
+    local cmd="$1"
+    if [[ -n "$TIMEOUT_BIN" ]]; then
+        $TIMEOUT_BIN ${CMD_TIMEOUT}s bash -lc "$cmd" 2>/dev/null
+    else
+        bash -lc "$cmd" 2>/dev/null
+    fi
+    return $?
+}
 
+extract_semver() {
+    # 문자열에서 첫 번째 x.y.z 형태 추출
+    echo "$1" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1
+}
+
+version_ge() {
+    # $1 >= $2 이면 0
+    local current="$1"
+    local candidate="$2"
+    [[ -z "$current" || -z "$candidate" ]] && return 1
+    local top
+    top=$(printf '%s\n%s\n' "$current" "$candidate" | sort -V | tail -n 1)
+    [[ "$top" == "$current" ]]
+}
+
+# 1) 현재 MySQL 버전 조회
 if [[ -n "$TIMEOUT_BIN" ]]; then
-    VERSION_RAW=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
+    VERSION_RAW=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "SELECT VERSION();" 2>/dev/null || echo "ERROR_TIMEOUT")
 else
-    VERSION_RAW=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
+    VERSION_RAW=$($MYSQL_CMD "SELECT VERSION();" 2>/dev/null || echo "ERROR")
 fi
 
 if [[ "$VERSION_RAW" == "ERROR_TIMEOUT" ]]; then
     STATUS="FAIL"
-    EVIDENCE="DB 버전 정보를 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 진단에 실패했습니다. DB 응답 상태를 확인해야 합니다."
+    EVIDENCE="DB 버전 정보 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-25 점검에 실패했습니다."
 elif [[ "$VERSION_RAW" == "ERROR" || -z "$VERSION_RAW" ]]; then
     STATUS="FAIL"
-    EVIDENCE="MySQL 접속 실패로 인해 DB 버전 정보를 확인할 수 없습니다."
+    EVIDENCE="MySQL 접속 실패로 인해 현재 제품 버전을 확인할 수 없습니다."
 else
-    # 버전 파싱 (예: 8.0.32)
-    VERSION=$(echo "$VERSION_RAW" | cut -d'-' -f1)
-    MAJOR=$(echo "$VERSION" | cut -d'.' -f1)
-    MINOR=$(echo "$VERSION" | cut -d'.' -f2)
-    PATCH=$(echo "$VERSION" | cut -d'.' -f3)
+    CURRENT_SEMVER="$(extract_semver "$VERSION_RAW")"
 
-    # 기준 버전 (기관 정책에 맞게 조정 가능)
-    BASE_MAJOR=8
-    BASE_MINOR=0
-    BASE_PATCH=34
+    # 2) 패키지 관리자 및 최신 후보 버전 조회 (하드코딩 기준 제거)
+    PM="unknown"
+    if command -v apt-cache >/dev/null 2>&1; then
+        PM="apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        PM="dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        PM="yum"
+    elif command -v zypper >/dev/null 2>&1; then
+        PM="zypper"
+    fi
 
-    if [[ "$MAJOR" -lt "$BASE_MAJOR" ]] \
-       || [[ "$MAJOR" -eq "$BASE_MAJOR" && "$MINOR" -lt "$BASE_MINOR" ]] \
-       || [[ "$MAJOR" -eq "$BASE_MAJOR" && "$MINOR" -eq "$BASE_MINOR" && "$PATCH" -lt "$BASE_PATCH" ]]; then
+    CANDIDATE_RAW=""
+    PACKAGE_NAME=""
+
+    case "$PM" in
+        apt)
+            for p in mysql-server mysql-community-server mysql-server-8.0; do
+                c="$(run_cmd "apt-cache policy ${p} | awk '/Candidate:/{print \\\$2; exit}'")"
+                if [[ -n "$c" && "$c" != "(none)" ]]; then
+                    PACKAGE_NAME="$p"
+                    CANDIDATE_RAW="$c"
+                    break
+                fi
+            done
+            ;;
+        dnf)
+            for p in mysql-community-server mysql-server; do
+                c="$(run_cmd "dnf -q info ${p} | awk -F': ' '/^Version/{v=\\$2} /^Release/{r=\\$2} END{if(v!=""){print v"-"r}}'")"
+                if [[ -n "$c" ]]; then
+                    PACKAGE_NAME="$p"
+                    CANDIDATE_RAW="$c"
+                    break
+                fi
+            done
+            ;;
+        yum)
+            for p in mysql-community-server mysql-server; do
+                c="$(run_cmd "yum -q info ${p} | awk -F': ' '/^Version/{v=\\$2} /^Release/{r=\\$2} END{if(v!=""){print v"-"r}}'")"
+                if [[ -n "$c" ]]; then
+                    PACKAGE_NAME="$p"
+                    CANDIDATE_RAW="$c"
+                    break
+                fi
+            done
+            ;;
+        zypper)
+            for p in mysql-community-server mysql-server; do
+                c="$(run_cmd "zypper -q info ${p} | awk -F': ' '/^Version/{print \\\$2; exit}'")"
+                if [[ -n "$c" ]]; then
+                    PACKAGE_NAME="$p"
+                    CANDIDATE_RAW="$c"
+                    break
+                fi
+            done
+            ;;
+    esac
+
+    CANDIDATE_SEMVER="$(extract_semver "$CANDIDATE_RAW")"
+
+    if [[ -z "$CURRENT_SEMVER" ]]; then
         STATUS="FAIL"
-        EVIDENCE="현재 MySQL 버전(${VERSION})이 보안 패치가 충분히 반영되지 않은 구버전으로 판단되어, 알려진 취약점을 통한 공격에 노출될 위험이 있습니다."
+        EVIDENCE="현재 MySQL 버전 문자열(${VERSION_RAW})에서 비교 가능한 버전 정보를 추출하지 못했습니다."
+    elif [[ "$PM" == "unknown" || -z "$CANDIDATE_SEMVER" ]]; then
+        STATUS="FAIL"
+        EVIDENCE="현재 버전은 ${VERSION_RAW}(${CURRENT_SEMVER})로 확인되나, 패키지 저장소/벤더 채널에서 최신 후보 버전을 확인할 수 없어 D-25 판정을 완료하지 못했습니다."
     else
-        STATUS="PASS"
-        EVIDENCE="현재 MySQL 버전(${VERSION})이 비교적 최신 보안 패치가 적용된 버전으로 확인되어, 알려진 취약점에 대한 위험이 낮습니다."
+        if version_ge "$CURRENT_SEMVER" "$CANDIDATE_SEMVER"; then
+            STATUS="PASS"
+            EVIDENCE="현재 버전(${CURRENT_SEMVER})이 저장소 최신 후보(${CANDIDATE_SEMVER}, ${PM}/${PACKAGE_NAME}) 이상으로 확인되어 보안 패치 기준을 충족합니다."
+        else
+            STATUS="FAIL"
+            EVIDENCE="현재 버전(${CURRENT_SEMVER})이 저장소 최신 후보(${CANDIDATE_SEMVER}, ${PM}/${PACKAGE_NAME})보다 낮아 보안 패치 적용이 필요합니다."
+        fi
     fi
 fi
 
@@ -75,7 +156,10 @@ else
     FILE_HASH="NOT_FOUND"
 fi
 
-cat << EOF
+IMPACT_LEVEL="HIGH"
+ACTION_IMPACT="이 조치를 적용하면 MySQL을 최신 버전으로 업데이트하게 되므로, 기존 시스템에서 사용되던 애플리케이션, 스크립트, 드라이버 등과 호환성 문제가 발생할 수 있습니다. 따라서 업데이트 전에는 영향 범위를 충분히 검토하고, 테스트 환경에서 사전 검증을 수행한 후 운영 환경에 적용해야 합니다."
+
+cat << EOF_JSON
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
@@ -83,9 +167,11 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "DB 벤더에서 제공하는 최신 보안 패치가 적용된 버전으로 주기적으로 업데이트하고, 패치 적용 전·후 서비스 영향도를 점검하세요.",
+    "guide": "현재 제품 버전(SELECT VERSION())과 벤더/저장소 최신 후보 버전을 비교해 주기적으로 보안 패치를 적용하세요. 참조: https://downloads.mysql.com/archives.php",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
-EOF
+EOF_JSON
