@@ -6,19 +6,19 @@
 # @Last Updated: 2026-02-07
 # ============================================================================
 # [점검 항목 상세]
-# @ID          : D-08
+# @ID          : D-07
 # @Category    : DBMS (Database Management System)
 # @Platform    : MySQL 8.0.44
-# @IMPORTANCE  : 상
-# @Title       : 안전한 암호화 알고리즘 사용
-# @Description : SHA-256 이상 기반 인증 암호 알고리즘 사용 여부 점검
+# @IMPORTANCE  : 중
+# @Title       : root 권한으로 서비스 구동 제한
+# @Description : DBMS 서비스가 root 권한이 아닌 전용 계정으로 실행되는지 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-ID="D-08"
+ID="D-07"
 CATEGORY="계정관리"
-TITLE="안전한 암호화 알고리즘 사용"
-IMPORTANCE="상"
+TITLE="root 권한으로 서비스 구동 제한"
+IMPORTANCE="중"
 
 # 조치 결과 변수
 STATUS="FAIL"
@@ -26,186 +26,231 @@ ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
-# 무한 로딩 방지
+# 무한 로딩 방지(프로세스/파일 조작은 빠르지만 형식 통일)
 TIMEOUT_BIN=""
-MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD_BASE="mysql --protocol=TCP -uroot -N -s -B -e"
+CMD_TIMEOUT_SEC=5
 
-run_mysql() {
-    local sql="$1"
+run_cmd() {
+    # 사용: run_cmd "명령"
+    local cmd="$1"
     if [[ -n "$TIMEOUT_BIN" ]]; then
-        $TIMEOUT_BIN ${MYSQL_TIMEOUT_SEC}s $MYSQL_CMD_BASE "$sql" 2>/dev/null
+        $TIMEOUT_BIN ${CMD_TIMEOUT_SEC}s bash -lc "$cmd" 2>/dev/null
         return $?
     else
-        $MYSQL_CMD_BASE "$sql" 2>/dev/null
+        bash -lc "$cmd" 2>/dev/null
         return $?
     fi
 }
 
-sql_escape_literal() {
-    local s="$1"
-    s="${s//\'/\'\'}"
-    printf "%s" "$s"
-}
+# 0) 설정값(환경변수로 조정 가능)
+# MySQL을 구동할 일반 사용자 계정(기본: mysql)
+MYSQL_RUN_USER="${MYSQL_RUN_USER:-mysql}"
 
-in_csv() {
-    local needle="$1"
-    local csv="$2"
-    IFS=',' read -r -a arr <<< "$csv"
-    for item in "${arr[@]}"; do
-        [[ "$needle" == "$item" ]] && return 0
+# 설정 파일 위치를 지정하려면 MY_CNF 사용
+# 예) MY_CNF="/etc/mysql/my.cnf" ./FIX_D07.sh
+MY_CNF="${MY_CNF:-}"
+
+if [[ "$MYSQL_RUN_USER" == "root" ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. MYSQL_RUN_USER 값이 root로 설정되어 있습니다."
+    EVIDENCE="D-07 기준상 DBMS는 root 권한으로 구동되면 안 되므로 MYSQL_RUN_USER는 일반 계정이어야 합니다."
+fi
+
+# 1) 실행 중 프로세스 확인 (root 구동 여부)
+# mysqld 프로세스가 없으면 조치 대상이 아닐 수 있으나, 설정은 사전 반영 가능하므로 계속 진행
+PROC_USER="$(run_cmd "ps -eo user,comm | awk '\$2==\"mysqld\"{print \$1; exit}'")"
+RC1=$?
+
+if [[ "$STATUS" != "FAIL" && $RC1 -eq 124 ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. 프로세스 확인 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
+    EVIDENCE="프로세스 확인 명령 실행이 ${CMD_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
+elif [[ "$STATUS" != "FAIL" ]]; then
+    # 프로세스가 실행 중이 아닌 경우 PROC_USER는 비어있을 수 있음
+    if [[ -n "$PROC_USER" && "$PROC_USER" == "root" ]]; then
+        NEED_FIX="Y"
+        PROC_EVID="현재 mysqld 프로세스가 root 권한으로 실행되고 있어 권한 남용 위험이 있습니다."
+    else
+        NEED_FIX="N"
+        if [[ -n "$PROC_USER" ]]; then
+            PROC_EVID="현재 mysqld 프로세스가 ${PROC_USER} 계정으로 실행되고 있습니다."
+        else
+            PROC_EVID="현재 mysqld 프로세스가 실행 중인지 확인되지 않으나, 설정 파일 기준으로 구동 계정을 점검합니다."
+        fi
+    fi
+fi
+
+# 2) 설정 파일 탐지 및 [mysqld] user 지시자 확인
+detect_cnf() {
+    # 우선순위: 사용자가 지정(MY_CNF) > 일반 경로 탐지
+    if [[ -n "$MY_CNF" && -f "$MY_CNF" ]]; then
+        echo "$MY_CNF"
+        return 0
+    fi
+
+    # 대표 경로 후보(환경별)
+    local candidates=(
+        "/etc/my.cnf"
+        "/etc/mysql/my.cnf"
+        "/etc/mysql/mysql.conf.d/mysqld.cnf"
+        "/etc/my.cnf.d/mysql-server.cnf"
+        "/etc/my.cnf.d/mysqld.cnf"
+        "/etc/mysql/conf.d/my.cnf"
+    )
+
+    for f in "${candidates[@]}"; do
+        if [[ -f "$f" ]]; then
+            echo "$f"
+            return 0
+        fi
     done
+
     return 1
 }
 
-# 0) 입력값(환경변수) 확인
-TARGET_USER="${TARGET_USER:-}"
-TARGET_HOST="${TARGET_HOST:-}"
-TARGET_PASS="${TARGET_PASS:-}"
-TARGET_ACCOUNTS_CSV="${TARGET_ACCOUNTS_CSV:-}"   # 형식: user@host:password,user2@host2:password2
-AUTO_FIX_ALL="${AUTO_FIX_ALL:-N}"                # Y면 취약 계정 전체를 DEFAULT_TARGET_PASS로 일괄 전환
-DEFAULT_TARGET_PASS="${DEFAULT_TARGET_PASS:-}"
-EXCLUDE_USERS_CSV="${EXCLUDE_USERS_CSV:-mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
-
-# D-08 핵심: 계정별 인증 플러그인을 점검해 SHA-256 미만(비-caching_sha2_password) 계정을 식별한다.
-CHECK_SQL="
-SELECT user, host, plugin
-FROM mysql.user
-WHERE user NOT IN ('mysql.sys','mysql.session','mysql.infoschema','mysqlxsys','mariadb.sys');
-"
-ROWS="$(run_mysql "$CHECK_SQL")"
-RC1=$?
-
-if [[ $RC1 -eq 124 ]]; then
+CNF_FILE="$(detect_cnf)"
+if [[ "$STATUS" != "FAIL" && -z "$CNF_FILE" ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
-    ACTION_LOG="조치가 수행되지 않았습니다. 계정 정보 조회 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
-    EVIDENCE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다."
-elif [[ $RC1 -ne 0 ]]; then
-    STATUS="FAIL"
-    ACTION_RESULT="FAIL"
-    ACTION_LOG="조치가 수행되지 않았습니다. 계정 목록을 조회할 수 없어 인증 방식 전환을 수행하지 못하였습니다."
-    EVIDENCE="mysql.user 조회에 실패하여 계정별 암호화 알고리즘 상태를 점검할 수 없습니다."
-else
-    WEAK_LIST=""
-    WEAK_COUNT=0
+    ACTION_LOG="조치가 수행되지 않았습니다. MySQL 설정 파일을 자동으로 찾을 수 없습니다."
+    EVIDENCE="${PROC_EVID} MySQL 설정 파일 경로를 MY_CNF 환경변수로 지정해야 합니다."
+elif [[ "$STATUS" != "FAIL" ]]; then
+    # D-07 핵심: 구동 계정으로 사용할 일반 사용자 계정이 실제 시스템에 존재하는지 확인한다.
+    run_cmd "id -u '${MYSQL_RUN_USER}'"
+    RC_USER=$?
+    if [[ $RC_USER -ne 0 ]]; then
+        STATUS="FAIL"
+        ACTION_RESULT="FAIL"
+        ACTION_LOG="조치가 수행되지 않았습니다. 지정된 MySQL 구동 계정이 시스템에 존재하지 않습니다."
+        EVIDENCE="MYSQL_RUN_USER=${MYSQL_RUN_USER} 계정이 없어 [mysqld] user 지시자를 안전하게 변경할 수 없습니다."
+    fi
+fi
 
-    while IFS=$'\t' read -r user host plugin; do
-        [[ -z "$user" && -z "$host" ]] && continue
-        if in_csv "$user" "$EXCLUDE_USERS_CSV"; then
-            continue
-        fi
-        if [[ "$plugin" != "caching_sha2_password" ]]; then
-            row="${user}"$'\t'"${host}"$'\t'"${plugin}"
-            if [[ -z "$WEAK_LIST" ]]; then
-                WEAK_LIST="$row"
-            else
-                WEAK_LIST="${WEAK_LIST}"$'\n'"${row}"
-            fi
-            WEAK_COUNT=$((WEAK_COUNT + 1))
-        fi
-    done <<< "$ROWS"
+if [[ "$STATUS" != "FAIL" ]]; then
+    # [mysqld] 섹션에서 user 지시자 값 추출(주석 제외)
+    # - [mysqld] 시작 후 다음 [섹션] 전까지 탐색
+    CNF_USER="$(run_cmd "awk '
+        BEGIN{in=0}
+        /^\[mysqld\]/{in=1; next}
+        /^\[/{in=0}
+        in==1 && \$0 ~ /^[[:space:]]*user[[:space:]]*=/ {
+            line=\$0
+            sub(/^[[:space:]]*/, \"\", line)
+            if(line !~ /^user[[:space:]]*=[[:space:]]*#/){
+                split(line,a,\"=\"); gsub(/[[:space:]]/,\"\",a[2]); print a[2]; exit
+            }
+        }
+    ' \"$CNF_FILE\"")"
+    RC2=$?
 
-    if [[ "$WEAK_COUNT" -eq 0 ]]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="모든 계정이 이미 caching_sha2_password(SHA-256) 기반 인증을 사용하고 있어 추가 조치가 필요하지 않습니다."
-        EVIDENCE="계정별 인증 플러그인 점검 결과 SHA-256 이상 알고리즘 기준을 충족합니다."
+    if [[ $RC2 -eq 124 ]]; then
+        STATUS="FAIL"
+        ACTION_RESULT="FAIL"
+        ACTION_LOG="조치가 수행되지 않았습니다. 설정 파일 확인 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
+        EVIDENCE="설정 파일 확인 명령 실행이 ${CMD_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
     else
-        TARGETS=""
-
-        if [[ -n "$TARGET_USER" || -n "$TARGET_HOST" || -n "$TARGET_PASS" ]]; then
-            if [[ -z "$TARGET_USER" || -z "$TARGET_HOST" || -z "$TARGET_PASS" ]]; then
-                STATUS="FAIL"
-                ACTION_RESULT="FAIL"
-                ACTION_LOG="조치가 수행되지 않았습니다. 단일 대상 전환을 위한 입력값이 완전하지 않습니다."
-                EVIDENCE="TARGET_USER, TARGET_HOST, TARGET_PASS를 모두 제공해야 대상 계정 전환을 수행할 수 있습니다."
-            else
-                TARGETS="${TARGET_USER}"$'\t'"${TARGET_HOST}"$'\t'"${TARGET_PASS}"
-            fi
-        elif [[ -n "$TARGET_ACCOUNTS_CSV" ]]; then
-            IFS=',' read -r -a entries <<< "$TARGET_ACCOUNTS_CSV"
-            for entry in "${entries[@]}"; do
-                [[ -z "$entry" ]] && continue
-                account_part="${entry%%:*}"
-                pass_part="${entry#*:}"
-                user_part="${account_part%@*}"
-                host_part="${account_part#*@}"
-
-                if [[ -z "$user_part" || -z "$host_part" || -z "$pass_part" || "$account_part" == "$host_part" || "$entry" == "$pass_part" ]]; then
-                    continue
-                fi
-
-                row="${user_part}"$'\t'"${host_part}"$'\t'"${pass_part}"
-                if [[ -z "$TARGETS" ]]; then
-                    TARGETS="$row"
-                else
-                    TARGETS="${TARGETS}"$'\n'"${row}"
-                fi
-            done
-        elif [[ "$AUTO_FIX_ALL" == "Y" && -n "$DEFAULT_TARGET_PASS" ]]; then
-            while IFS=$'\t' read -r user host plugin; do
-                [[ -z "$user" && -z "$host" ]] && continue
-                row="${user}"$'\t'"${host}"$'\t'"${DEFAULT_TARGET_PASS}"
-                if [[ -z "$TARGETS" ]]; then
-                    TARGETS="$row"
-                else
-                    TARGETS="${TARGETS}"$'\n'"${row}"
-                fi
-            done <<< "$WEAK_LIST"
+        # D-07 핵심: [mysqld] user 지시자가 없거나 root면 root 구동 위험이 있으므로 조치 필요
+        if [[ -z "$CNF_USER" ]]; then
+            NEED_FIX="Y"
+            CNF_EVID="MySQL 설정 파일(${CNF_FILE})의 [mysqld] 섹션에 user 지시자가 설정되어 있지 않습니다."
+        elif [[ "$CNF_USER" == "root" ]]; then
+            NEED_FIX="Y"
+            CNF_EVID="MySQL 설정 파일(${CNF_FILE})의 [mysqld] user 값이 root로 설정되어 있어 권한 남용 위험이 있습니다."
         else
-            STATUS="FAIL"
-            ACTION_RESULT="FAIL"
-            ACTION_LOG="조치가 수행되지 않았습니다. 취약 계정 전환 대상 정보가 제공되지 않았습니다."
-            EVIDENCE="취약 계정 ${WEAK_COUNT}개가 확인되었습니다. TARGET_USER/TARGET_HOST/TARGET_PASS 또는 TARGET_ACCOUNTS_CSV, AUTO_FIX_ALL+DEFAULT_TARGET_PASS를 제공해야 합니다."
+            CNF_EVID="MySQL 설정 파일(${CNF_FILE})의 [mysqld] user 값이 ${CNF_USER}로 설정되어 있습니다."
         fi
 
-        if [[ "$STATUS" != "FAIL" ]]; then
-            # D-08 핵심: 취약 계정의 인증 플러그인을 caching_sha2_password(SHA-256)로 전환한다.
-            APPLIED=0
-            FAILED=0
-            FAIL_SAMPLE="N/A"
+        # 3) [mysqld] user 지시자 설정(필요 시)
+        if [[ "${NEED_FIX}" != "Y" ]]; then
+            STATUS="PASS"
+            ACTION_RESULT="SUCCESS"
+            ACTION_LOG="MySQL 서버가 root 권한으로 구동되지 않도록 설정되어 있어 추가 조치 없이 보안 설정을 유지하였습니다."
+            EVIDENCE="${PROC_EVID} ${CNF_EVID}"
+        else
+            # D-07 핵심: 조치 전 원복 가능하도록 설정 파일을 백업한다.
+            BACKUP_FILE="${CNF_FILE}.bak_$(date '+%Y%m%d%H%M%S')"
+            run_cmd "cp -p \"$CNF_FILE\" \"$BACKUP_FILE\""
+            RC3=$?
 
-            while IFS=$'\t' read -r user host pass; do
-                [[ -z "$user" || -z "$host" || -z "$pass" ]] && continue
-                esc_user="$(sql_escape_literal "$user")"
-                esc_host="$(sql_escape_literal "$host")"
-                esc_pass="$(sql_escape_literal "$pass")"
-
-                FIX_SQL="ALTER USER '${esc_user}'@'${esc_host}' IDENTIFIED WITH caching_sha2_password BY '${esc_pass}';"
-                run_mysql "$FIX_SQL" >/dev/null
-                RC2=$?
-
-                if [[ $RC2 -eq 0 ]]; then
-                    APPLIED=$((APPLIED + 1))
-                else
-                    FAILED=$((FAILED + 1))
-                    [[ "$FAIL_SAMPLE" == "N/A" ]] && FAIL_SAMPLE="${user}@${host}"
-                fi
-            done <<< "$TARGETS"
-
-            # D-08 핵심: 전환 후 전체 계정을 재점검하여 SHA-256 기준 충족 여부를 재검증한다.
-            VERIFY_ROWS="$(run_mysql "$CHECK_SQL")"
-            RCV=$?
-            if [[ $RCV -ne 0 ]]; then
+            if [[ $RC3 -ne 0 ]]; then
                 STATUS="FAIL"
                 ACTION_RESULT="FAIL"
-                ACTION_LOG="조치가 부분적으로만 수행되었습니다. 전환 후 검증 조회에 실패했습니다."
-                EVIDENCE="인증 플러그인 전환을 수행했지만 재검증을 위한 계정 조회에 실패했습니다."
+                ACTION_LOG="조치가 수행되지 않았습니다. 설정 파일 백업에 실패하였습니다."
+                EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일 백업에 실패하여 안전을 위해 조치를 중단하였습니다."
             else
-                REMAIN_WEAK="$(echo "$VERIFY_ROWS" | awk -F'\t' '$1!="" && $3!="caching_sha2_password"{print $1"@"$2"(" $3 ")"}')"
-                if [[ -z "$REMAIN_WEAK" && "$FAILED" -eq 0 ]]; then
-                    STATUS="PASS"
-                    ACTION_RESULT="SUCCESS"
-                    ACTION_LOG="취약 계정의 인증 플러그인을 caching_sha2_password(SHA-256)로 전환해 SHA-256 이상 알고리즘 기준을 충족하도록 조치했습니다."
-                    EVIDENCE="전환 성공 ${APPLIED}건, 재검증 결과 모든 계정이 caching_sha2_password를 사용합니다."
-                else
+                # D-07 핵심: [mysqld] user 지시자를 일반 계정으로 설정한다.
+                # [mysqld] 섹션 내 user= 라인이 있으면 교체, 없으면 [mysqld] 다음 줄에 추가
+                # sed -i는 플랫폼 차이가 있어 임시 파일 방식 사용
+                TMP_FILE="$(mktemp)"
+
+                run_cmd "awk -v newuser=\"${MYSQL_RUN_USER}\" '
+                    BEGIN{in=0; done=0}
+                    {
+                        if(\$0 ~ /^\[mysqld\]/){in=1; print; next}
+                        if(\$0 ~ /^\[/ && \$0 !~ /^\[mysqld\]/){
+                            if(in==1 && done==0){
+                                print \"user=\" newuser
+                                done=1
+                            }
+                            in=0
+                        }
+                        if(in==1 && \$0 ~ /^[[:space:]]*user[[:space:]]*=/ && done==0){
+                            print \"user=\" newuser
+                            done=1
+                            next
+                        }
+                        print
+                    }
+                    END{
+                        if(in==1 && done==0){
+                            print \"user=\" newuser
+                        }
+                    }
+                ' \"$CNF_FILE\" > \"$TMP_FILE\" && mv \"$TMP_FILE\" \"$CNF_FILE\""
+                RC4=$?
+
+                if [[ $RC4 -eq 124 ]]; then
                     STATUS="FAIL"
                     ACTION_RESULT="FAIL"
-                    SAMPLE_REMAIN="$(echo "$REMAIN_WEAK" | head -n 1)"
-                    [[ -z "$SAMPLE_REMAIN" ]] && SAMPLE_REMAIN="$FAIL_SAMPLE"
-                    ACTION_LOG="조치가 부분적으로만 수행되었습니다. 일부 계정은 SHA-256 기준을 충족하지 못했습니다."
-                    EVIDENCE="전환 성공 ${APPLIED}건, 실패 ${FAILED}건이며 미전환 계정이 남아 있습니다. (예: ${SAMPLE_REMAIN})"
+                    ACTION_LOG="조치가 수행되지 않았습니다. 설정 파일 수정 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
+                    EVIDENCE="설정 파일 수정 명령 실행이 ${CMD_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
+                elif [[ $RC4 -ne 0 ]]; then
+                    STATUS="FAIL"
+                    ACTION_RESULT="FAIL"
+                    ACTION_LOG="조치가 수행되지 않았습니다. MySQL 구동 계정 설정 변경에 실패하였습니다."
+                    EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일 수정에 실패하여 구동 계정 변경을 완료할 수 없습니다."
+                else
+                    # D-07 핵심: 실행 중 프로세스가 root였던 경우 재시작 후 비root 구동 여부를 재검증한다.
+                    if [[ -n "$PROC_USER" && "$PROC_USER" == "root" ]]; then
+                        run_cmd "systemctl restart mysqld || systemctl restart mysql || systemctl restart mariadb || service mysqld restart || service mysql restart || service mariadb restart"
+                        RC_RESTART=$?
+                        if [[ $RC_RESTART -ne 0 ]]; then
+                            STATUS="FAIL"
+                            ACTION_RESULT="FAIL"
+                            ACTION_LOG="조치가 부분적으로만 수행되었습니다. 설정은 변경했으나 MySQL 재시작에 실패했습니다."
+                            EVIDENCE="${PROC_EVID} 설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER}를 반영했지만 서비스 재시작 실패로 실제 구동 계정 재검증을 완료하지 못했습니다."
+                        else
+                            PROC_USER_POST="$(run_cmd "ps -eo user,comm | awk '\$2==\"mysqld\"{print \$1; exit}'")"
+                            if [[ "$PROC_USER_POST" == "root" ]]; then
+                                STATUS="FAIL"
+                                ACTION_RESULT="FAIL"
+                                ACTION_LOG="조치가 부분적으로만 수행되었습니다. 설정 변경 후에도 mysqld가 root 권한으로 구동 중입니다."
+                                EVIDENCE="설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER}를 반영했으나 실행 프로세스가 여전히 root입니다."
+                            else
+                                STATUS="PASS"
+                                ACTION_RESULT="SUCCESS"
+                                ACTION_LOG="MySQL 서버 구동 계정을 일반 사용자(${MYSQL_RUN_USER})로 변경하고 재시작 후 비root 구동을 확인했습니다."
+                                EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 반영 및 재시작 후 mysqld 프로세스가 root가 아님을 확인했습니다."
+                            fi
+                        fi
+                    else
+                        STATUS="PASS"
+                        ACTION_RESULT="SUCCESS"
+                        ACTION_LOG="MySQL 서버가 root 권한으로 구동되지 않도록 [mysqld] 구동 계정을 일반 사용자(${MYSQL_RUN_USER})로 설정하였습니다."
+                        EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER} 설정을 적용하였습니다."
+                    fi
                 fi
             fi
         fi
@@ -229,3 +274,4 @@ cat << EOF
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
+
