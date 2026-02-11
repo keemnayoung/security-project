@@ -24,9 +24,9 @@ TARGET_FILE="mysql.user.grant_priv"
 STATUS="FAIL"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT} --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
 # DBA 계정(root 등) 제외, 직접 GRANT OPTION 보유 계정 조회
 QUERY="
@@ -68,6 +68,9 @@ else
     FILE_HASH="NOT_FOUND"
 fi
 
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없습니다. 불필요하거나 과도하게 부여된 권한만 회수되며, 해당 권한을 실제로 사용하지 않던 계정의 정상 업무에는 지장이 없습니다. 다만 회수된 권한이 필요한 특정 관리 작업을 수행할 경우에는 권한 부족으로 작업이 제한될 수 있습니다."
+
 cat << EOF
 {
     "check_id": "$ID",
@@ -79,6 +82,8 @@ cat << EOF
     "guide": "일반 사용자에게 직접 부여된 GRANT OPTION을 회수하고, 필요한 경우 ROLE을 통해 간접적으로 권한을 부여하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
