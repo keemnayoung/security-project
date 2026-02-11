@@ -19,17 +19,25 @@ ID="D-03"
 CATEGORY="계정관리"
 TITLE="비밀번호 사용 기간 및 복잡도를 기관의 정책에 맞도록 설정"
 IMPORTANCE="중"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 MySQL의 비밀번호 복잡도 정책이 강화되어 이후 생성되거나 변경되는 계정의 비밀번호가 정책에 맞게 설정되어야 합니다. 기존 계정의 비밀번호에는 즉각적인 영향이 없으나, 정책에 맞지 않는 비밀번호로 변경 시에는 거부되므로 비밀번호 변경 작업 시 주의가 필요합니다. 일반적인 시스템 운영에는 직접적인 영향이 없습니다."
 
 STATUS="FAIL"
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 MYSQL_TIMEOUT_SEC=5
-MYSQL_CMD="mysql --connect-timeout=${MYSQL_TIMEOUT_SEC} -uroot -N -s -B -e"
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+
+# 기관 정책 기본값(필요 시 환경변수로 조정)
+PW_POLICY="${PW_POLICY:-MEDIUM}"
+PW_LENGTH="${PW_LENGTH:-8}"
+PW_MIXED_CASE_COUNT="${PW_MIXED_CASE_COUNT:-1}"
+PW_NUMBER_COUNT="${PW_NUMBER_COUNT:-1}"
+PW_SPECIAL_CHAR_COUNT="${PW_SPECIAL_CHAR_COUNT:-1}"
+PW_LIFETIME_DAYS="${PW_LIFETIME_DAYS:-90}"
+EXISTING_USERS_EXPIRE_DAYS="${EXISTING_USERS_EXPIRE_DAYS:-91}"
+EXCLUDE_USERS_CSV="${EXCLUDE_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
 run_sql() {
     local sql="$1"
@@ -41,6 +49,23 @@ run_sql() {
     return $?
 }
 
+sql_escape_literal() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf "%s" "$s"
+}
+
+in_csv() {
+    local needle="$1"
+    local csv="$2"
+    IFS=',' read -r -a arr <<< "$csv"
+    for item in "${arr[@]}"; do
+        [[ "$needle" == "$item" ]] && return 0
+    done
+    return 1
+}
+
+# D-03 핵심: validate_password 설정 가능 여부(컴포넌트 설치 여부) 확인
 CHECK_SQL="SHOW VARIABLES LIKE 'validate_password%';"
 CHECK_OUT="$(run_sql "$CHECK_SQL")"
 RC=$?
@@ -65,21 +90,62 @@ else
     fi
 
     if [[ "$EVIDENCE" == "N/A" ]]; then
+        # D-03 핵심: 기관 기준 비밀번호 복잡도 정책과 비밀번호 사용기간 정책을 적용
         SET_SQL="
-SET GLOBAL validate_password.policy = 'MEDIUM';
-SET GLOBAL validate_password.length = 8;
-SET GLOBAL validate_password.mixed_case_count = 1;
-SET GLOBAL validate_password.number_count = 1;
-SET GLOBAL validate_password.special_char_count = 1;
-SET GLOBAL default_password_lifetime = 90;
+SET GLOBAL validate_password.policy = '$(sql_escape_literal "$PW_POLICY")';
+SET GLOBAL validate_password.length = ${PW_LENGTH};
+SET GLOBAL validate_password.mixed_case_count = ${PW_MIXED_CASE_COUNT};
+SET GLOBAL validate_password.number_count = ${PW_NUMBER_COUNT};
+SET GLOBAL validate_password.special_char_count = ${PW_SPECIAL_CHAR_COUNT};
+SET GLOBAL default_password_lifetime = ${PW_LIFETIME_DAYS};
 "
         run_sql "$SET_SQL"
         RC=$?
         if [[ $RC -eq 0 ]]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="비밀번호 복잡도 및 사용 기간 정책을 기관 기준에 맞게 설정하였습니다."
-            EVIDENCE="validate_password 정책 및 default_password_lifetime 설정이 적용되었습니다."
+            # D-03 핵심: 정책 적용 이전에 생성된 계정에도 만료 주기 적용
+            USERS_SQL="SELECT user, host FROM mysql.user;"
+            USER_ROWS="$(run_sql "$USERS_SQL")"
+            RC_USERS=$?
+
+            if [[ $RC_USERS -eq 124 ]]; then
+                ACTION_LOG="조치가 수행되지 않았습니다. 기존 계정 목록 조회가 제한 시간 내 완료되지 않아 중단하였습니다."
+                EVIDENCE="기존 계정의 PASSWORD EXPIRE INTERVAL 적용을 위한 계정 목록 조회가 시간 초과되었습니다."
+            elif [[ $RC_USERS -ne 0 ]]; then
+                ACTION_LOG="조치가 수행되지 않았습니다. 기존 계정 목록 조회에 실패하였습니다."
+                EVIDENCE="mysql.user 조회 실패로 기존 계정 만료 주기 적용을 완료하지 못했습니다."
+            else
+                APPLY_FAIL=0
+                APPLY_FAIL_SAMPLE="N/A"
+                APPLY_COUNT=0
+
+                while IFS=$'\t' read -r user host; do
+                    [[ -z "$user" && -z "$host" ]] && continue
+                    if in_csv "$user" "$EXCLUDE_USERS_CSV"; then
+                        continue
+                    fi
+
+                    esc_user="$(sql_escape_literal "$user")"
+                    esc_host="$(sql_escape_literal "$host")"
+                    run_sql "ALTER USER '${esc_user}'@'${esc_host}' PASSWORD EXPIRE INTERVAL ${EXISTING_USERS_EXPIRE_DAYS} DAY;"
+                    RC_APPLY=$?
+                    APPLY_COUNT=$((APPLY_COUNT + 1))
+
+                    if [[ $RC_APPLY -ne 0 ]]; then
+                        APPLY_FAIL=1
+                        [[ "$APPLY_FAIL_SAMPLE" == "N/A" ]] && APPLY_FAIL_SAMPLE="${user}@${host}"
+                    fi
+                done <<< "$USER_ROWS"
+
+                if [[ $APPLY_FAIL -eq 0 ]]; then
+                    STATUS="PASS"
+                    ACTION_RESULT="SUCCESS"
+                    ACTION_LOG="비밀번호 복잡도/사용기간 정책을 적용하고 기존 계정의 만료 주기까지 설정했습니다."
+                    EVIDENCE="validate_password 정책, default_password_lifetime(${PW_LIFETIME_DAYS}), 기존 계정 PASSWORD EXPIRE INTERVAL(${EXISTING_USERS_EXPIRE_DAYS}) 적용이 완료되었습니다."
+                else
+                    ACTION_LOG="조치가 부분 실패했습니다. 기존 계정 일부에 만료 주기 적용이 실패했습니다."
+                    EVIDENCE="정책 설정은 완료했으나 기존 계정 만료 주기 적용 중 실패 계정이 있습니다. (예: ${APPLY_FAIL_SAMPLE})"
+                fi
+            fi
         elif [[ $RC -eq 124 ]]; then
             ACTION_LOG="조치가 수행되지 않았습니다. 정책 설정 명령 실행이 제한 시간 내 완료되지 않아 중단하였습니다."
             EVIDENCE="정책 설정 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
@@ -96,8 +162,6 @@ cat << EOF
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
     "guide": "KISA 가이드라인 기준 보안 설정 조치 완료",
