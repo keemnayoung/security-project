@@ -51,7 +51,7 @@ case "$SHELL_NAME" in
         ACTION_RESULT="ERROR"
         STATUS="FAIL"
         ACTION_LOG="지원하지 않는 쉘 유형: $SHELL_NAME"
-        EVIDENCE="조치 불가"
+        EVIDENCE="지원하지 않는 쉘 사용으로 인하여 조치가 불가합니다."
         ;;
 esac
 
@@ -106,8 +106,8 @@ if echo "$AFTER_PATH" | grep -qE '(^|:)\.(\:|$)'; then
     # 여전히 취약
     ACTION_RESULT="PARTIAL_SUCCESS"
     STATUS="FAIL"
-    ACTION_LOG="조치를 수행했으나 PATH 내 '.'이 여전히 앞 또는 중간에 존재합니다. 수동 확인 필요."
-    EVIDENCE+=" → 조치 후 PATH: $AFTER_PATH (취약)"
+    ACTION_LOG="조치를 수행했으나 PATH 내 '.'이 여전히 앞 또는 중간에 존재합니다. 수동 확인이 필요합니다."
+    EVIDENCE+="→ 조치 후 PATH: $AFTER_PATH 로 여전히 취약합니다."
 else
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
@@ -118,11 +118,11 @@ else
         ACTION_LOG="취약 설정 없음. PATH가 이미 안전한 상태였습니다."
     fi
 
-    EVIDENCE+=" → 조치 후 PATH: $AFTER_PATH (양호)"
+    EVIDENCE+="→ 조치 후 PATH: $AFTER_PATH 로 양호합니다."
 fi
 
 
-# 7. JSON 표준 출력 (U-01 형식 완전 동일)
+# 7. JSON 표준 출력
 echo ""
 cat << EOF
 {

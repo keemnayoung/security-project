@@ -16,19 +16,22 @@
 # ============================================================================
 
 # 1. 항목 정보 정의
-CHECK_ID="U-66"
+ID="U-66"
 CATEGORY="로그 관리"
 TITLE="정책에 따른 시스템 로깅 설정"
 IMPORTANCE="중"
-TARGET_FILE="/etc/rsyslog.conf /etc/rsyslog.d/default.conf"
-IMPACT_LEVEL="HIGH" 
-ACTION_IMPACT="내부 정책에 따라 시스템 로깅 설정을 적용하면 보안 감사와 사고 분석에 필요한 로그가 안정적으로 수집되는 대신, 로그 저장 공간 사용량이 증가하고 고부하 환경에서는 디스크 I/O가 소폭 증가할 수 있습니다."
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
-
-
-# 2. 진단 로직
 STATUS="PASS"
 EVIDENCE=""
+GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 /etc/rsyslog.conf 또는 /etc/rsyslog.d/default.conf 파일 내에 로그 기록 정책을 수립해주세요."
+ACTION_RESULT="PARTIAL_SUCCESS"
+IMPACT_LEVEL="HIGH" 
+ACTION_IMPACT="내부 정책에 따라 시스템 로깅 설정을 적용하면 보안 감사와 사고 분석에 필요한 로그가 안정적으로 수집되는 대신, 로그 저장 공간 사용량이 증가하고 고부하 환경에서는 디스크 I/O가 소폭 증가할 수 있습니다."
+TARGET_FILE="/etc/rsyslog.conf /etc/rsyslog.d/default.conf"
+FILE_HASH="N/A"
+CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+
+# 2. 진단 로직
+
 
 REQUIRED_POLICIES=(
     "*.info;mail.none;authpriv.none;cron.none /var/log/messages"
@@ -48,7 +51,7 @@ for FILE in /etc/rsyslog.conf /etc/rsyslog.d/default.conf; do
         for POLICY in "${REQUIRED_POLICIES[@]}"; do
             if ! grep -E "^[[:space:]]*${POLICY//\*/\\*}" "$FILE" >/dev/null 2>&1; then
                 POLICY_OK=false
-                EVIDENCE+="[누락] $POLICY (파일: $FILE)\n"
+                EVIDENCE+="$FILE 파일에 $POLICY 정책이 존재하지 않습니다. "
             fi
         done
     fi
@@ -56,9 +59,11 @@ done
 
 if [ "$CONFIG_FOUND" = false ]; then
     STATUS="FAIL"
-    EVIDENCE="rsyslog 설정 파일이 존재하지 않음"
+    ACTION_RESULT="PARTIAL_SUCCESS"
+    EVIDENCE="rsyslog 설정 파일이 존재하지 않습니다. 파일 생성 후 정책을 마련해주시길 바랍니다."
 elif [ "$POLICY_OK" = false ]; then
     STATUS="FAIL"
+    ACTION_RESULT="PARTIAL_SUCCESS"
 fi
 
 # 로그 파일 존재 여부 추가 확인
@@ -72,30 +77,35 @@ LOG_FILES=(
 for LOG in "${LOG_FILES[@]}"; do
     if [ ! -f "$LOG" ]; then
         STATUS="FAIL"
-        EVIDENCE+="[로그 미존재] $LOG\n"
+        EVIDENCE+="$LOG 로그 파일이 존재하지 않습니다. "
     fi
 done
 
-[ -z "$EVIDENCE" ] && EVIDENCE="내부 정책에 따른 로그 기록 정책이 정상적으로 설정 및 적용되어 있음"
+if [ "$STATUS" = true ]; then
+    STATUS="PASS"
+    ACTION_RESULT="SUCCESS"
+    EVIDENCE="내부 정책에 따른 로그 기록 정책이 정상적으로 설정 및 적용되어 있음"
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+else
+    EVIDENCE="다음과 같이 로그 기록 정책이 올바르지 않습니다. $EVIDENCE ※ 정책을 수립하여 수동으로 rsyslog를 수정해주시길 바랍니다."
+fi
 
-
-# 3. 마스터 JSON 출력
+# 3. 마스터 템플릿 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-    "check_id": "$CHECK_ID",
+    "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$(echo -e "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')",
-    "guide": "/etc/rsyslog.conf 또는 /etc/rsyslog.d/default.conf 파일 내에 로그 기록 정책을 수립해주세요.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "N/A",
-    "file_hash": "N/A",
+    "impact_level": "$IMPACT_LEVEL",
     "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",  
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
     "check_date": "$CHECK_DATE"
 }
 EOF

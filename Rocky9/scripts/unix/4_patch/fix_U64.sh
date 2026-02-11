@@ -51,18 +51,18 @@ fi
 
 # 2. EOL 적용 전 기준 판단
 NEED_ACTION="NO"
-RECOMMENDED_VERSION="현재 버전 유지"
+# RECOMMENDED_VERSION="현재 버전 유지"
 
 case "$OS_ID" in
     ubuntu)
         case "$OS_VERSION" in
             18.04)
                 NEED_ACTION="YES"
-                RECOMMENDED_VERSION="Ubuntu 20.04 LTS 이상"
+                # RECOMMENDED_VERSION="Ubuntu 20.04 LTS 이상"
                 ;;
             20.04)
                 NEED_ACTION="YES"
-                RECOMMENDED_VERSION="Ubuntu 22.04 LTS 이상"
+                # RECOMMENDED_VERSION="Ubuntu 22.04 LTS 이상"
                 ;;
         esac
         ;;
@@ -70,17 +70,17 @@ case "$OS_ID" in
         case "$OS_VERSION" in
             8)
                 NEED_ACTION="YES"
-                RECOMMENDED_VERSION="Rocky Linux 9 이상"
+                # RECOMMENDED_VERSION="Rocky Linux 9 이상"
                 ;;
         esac
         ;;
     centos)
         NEED_ACTION="YES"
-        RECOMMENDED_VERSION="Rocky Linux 9 / AlmaLinux 9 / RHEL 9"
+        # RECOMMENDED_VERSION="Rocky Linux 9 / AlmaLinux 9 / RHEL 9"
         ;;
     *)
         NEED_ACTION="YES"
-        RECOMMENDED_VERSION="OS 식별 불가 – 관리자 수동 판단 필요"
+        # RECOMMENDED_VERSION="OS 식별 불가 – 관리자 수동 판단 필요"
         ;;
 esac
 

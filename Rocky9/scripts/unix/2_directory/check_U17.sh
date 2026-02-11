@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.1
+# @Version: 1.0.2
 # @Author: 권순형
-# @Last Updated: 2026-02-09
+# @Last Updated: 2026-02-10
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID    : U-17
@@ -21,17 +21,19 @@ ID="U-17"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="시스템 시작 스크립트 권한 설정"
 IMPORTANCE="상"
-TARGET_FILE="system startup scripts"
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 넓은 권한이나 기본 설정에 의존하던 서비스, 스크립트, 사용자 계정은 권한 부족·접근 거부·동작 오류가 발생할 수 있어 사전 점검과 테스트가 필요합니다."
-
-# 2. 진단 로직
 STATUS="PASS"
 EVIDENCE=""
+GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 시스템 시작 스크립트 파일(/etc/rc.d/*/*와 /etc/systemd/system/*)의 소유자를 root 또는 적절한 계정 사용자로 변경하고 권한도 o-w로 변경하십시오."
+ACTION_RESULT="N/A"
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 넓은 권한이나 기본 설정에 의존하던 서비스, 스크립트, 사용자 계정은 권한 부족·접근 거부·동작 오류가 발생할 수 있어 사전 점검과 테스트가 필요합니다."
+TARGET_FILE="N/A"
 FILE_HASH="N/A"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
+# 2. 진단 로직
 TARGET_FILES=()
-
+EVIDENCE_LINES=""
 # init 방식
 if [ -d /etc/rc.d ]; then
     INIT_FILES=$(readlink -f /etc/rc.d/*/* 2>/dev/null | sed 's/$/*/')
@@ -45,7 +47,10 @@ fi
 ALL_FILES=$(echo -e "$INIT_FILES\n$SYSTEMD_FILES" | sort -u)
 
 if [ -z "$ALL_FILES" ]; then
-    EVIDENCE="점검 대상 시스템 시작 스크립트 파일이 존재하지 않음"
+    STATUS="PASS"
+    ACTION_RESULT="SUCCESS"
+    EVIDENCE="점검 대상 시스템 시작 스크립트 파일이 존재하지 않아 해당 보안 위협이 없습니다."
+
 else
     for FILE in $ALL_FILES; do
         [ -e "$FILE" ] || continue
@@ -58,15 +63,22 @@ else
 
         if [ "$OWNER" != "root" ] || [ "$OTHERS_WRITE" = "w" ]; then
             STATUS="FAIL"
-            EVIDENCE+="[취약] $FILE (owner=$OWNER, perm=$PERM)\n"
-        else
-            EVIDENCE+="[양호] $FILE (owner=root, perm=$PERM)\n"
+            ACTION_RESULT="PARTIAL_SUCCESS"
+            EVIDENCE_LINES+="$FILE (owner=$OWNER, perm=$PERM)\n"
         fi
     done
 fi
 
 TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}")
-EVIDENCE=$(printf "%s\\n" "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
+if [ -z "$EVIDENCE" ]; then
+    STATUS="PASS"
+    ACTION_RESULT="SUCCESS"
+    EVIDENCE="시스템 시작 스크립트 파일의 소유자와 권한이 모두 적절하게 설정되어 있어 해당 보안 위협이 없습니다."
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+else
+    EVIDENCE=$(printf "%s\\n" "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
+fi
+
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
@@ -78,11 +90,12 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "시스템 시작 스크립트 파일(/etc/rc.d/*/*와 /etc/systemd/system/*)의 소유자를 root로 변경하고 권한도 o-w로 변경하세요.",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
-    "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",  
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "check_date": "$CHECK_DATE"
 }
 EOF

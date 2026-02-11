@@ -16,16 +16,19 @@
 # ============================================================================
 
 # 1. 점검 항목 정보 정의
-CHECK_ID="U-30"
+ID="U-30"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="UMASK 설정 관리"
 IMPORTANCE="중"
 STATUS="PASS"
 EVIDENCE=""
-TARGET_FILE="/etc/profile, /etc/login.defs"
+GUIDE="/etc/profile과 /etc/login.defs 파일에 UMASK 값을 022로 설정해주세요."
 IMPACT_LEVEL="LOW" 
 ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 사용자나 그룹 간 파일 공유가 필요한 작업에서는 접근 권한 문제로 불편이 발생할 수 있습니다."
+TARGET_FILE="/etc/profile, /etc/login.defs"
+FILE_HASH="N/A"
 CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 
 UMASK_PROFILE=""
 UMASK_LOGIN_DEFS=""
@@ -51,7 +54,7 @@ CHECK_VALUES=()
 
 if [ ${#CHECK_VALUES[@]} -eq 0 ]; then
     STATUS="FAIL"
-    EVIDENCE="UMASK 설정이 /etc/profile 및 /etc/login.defs 파일에서 확인되지 않음"
+    EVIDENCE="UMASK 설정이 /etc/profile 및 /etc/login.defs 파일에서 확인되지 않습니다. UMASK에 대한 설정이 필요합니다."
 else
     for VALUE in "${CHECK_VALUES[@]}"; do
         if [ "$VALUE" -lt 22 ]; then
@@ -61,29 +64,29 @@ else
     done
 
     if [ "$STATUS" = "PASS" ]; then
-        EVIDENCE="UMASK 값이 022 이상으로 설정됨 (/etc/profile: ${UMASK_PROFILE:-미설정}, /etc/login.defs: ${UMASK_LOGIN_DEFS:-미설정})"
+        EVIDENCE="UMASK 값이 022 미만으로 설정되어 이 항목에 대한 보안 위협이 없습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
-        EVIDENCE="UMASK 값이 022 미만으로 설정됨 (/etc/profile: ${UMASK_PROFILE:-미설정}, /etc/login.defs: ${UMASK_LOGIN_DEFS:-미설정})"
+        EVIDENCE="UMASK 값이 022 미만으로 설정으로 설정되어 있어 UMASK에 대한 설정이 필요합니다. (/etc/profile: ${UMASK_PROFILE:-미설정}, /etc/login.defs: ${UMASK_LOGIN_DEFS:-미설정})"
     fi
 fi
 
 
-# 3. JSON 결과 출력
+# 3. 마스터 템플릿 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-    "check_id": "$CHECK_ID",
+    "check_id": "$ID",
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "설정 파일에 UMASK 값을 022로 설정해주세요.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "N/A",
+    "impact_level": "$IMPACT_LEVEL",
     "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",  
+    "guide": "$GUIDE",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
     "check_date": "$CHECK_DATE"
 }
 EOF
