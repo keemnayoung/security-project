@@ -3,12 +3,12 @@
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-11
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-04
 # @Category    : DBMS (Database Management System)
-# @Platform    : MySQL 
+# @Platform    : MySQL
 # @IMPORTANCE  : 상
 # @Title       : 데이터베이스 관리자 권한을 꼭 필요한 계정에만 부여
 # @Description : 관리자 권한이 필요한 계정 및 그룹에만 관리자 권한을 부여하였는지 점검
@@ -24,72 +24,90 @@ TARGET_FILE="mysql.user"
 STATUS="FAIL"
 EVIDENCE="N/A"
 
-# TCP 강제(소켓 미생성 환경 대응)
-MYSQL_CMD="mysql --connect-timeout=5 --protocol=TCP -uroot -N -s -B -e"
+TIMEOUT_BIN=""
+MYSQL_TIMEOUT=5
+MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
 
-# [가이드 취지] 관리자급 권한만 점검(일반 DML 권한 제외)
-ADMIN_PRIVS="'SUPER','SYSTEM_USER','CREATE USER','RELOAD','SHUTDOWN','PROCESS'"
+# 오탐 완화:
+# - root 외 전부 취약이 아니라, 기관 인가 관리자 목록을 예외 처리
+# - 인가 사용자/계정은 환경변수로 확장 가능
+ALLOWED_ADMIN_USERS_CSV="${ALLOWED_ADMIN_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+ALLOWED_ADMIN_PRINCIPALS_CSV="${ALLOWED_ADMIN_PRINCIPALS_CSV:-root@localhost,root@127.0.0.1,root@::1}"
 
+# 가이드의 SUPER 중심 예시 + MySQL 8 동적 관리자 권한(*_ADMIN)까지 점검
 QUERY="
-SELECT grantee
+SELECT grantee,
+       GROUP_CONCAT(DISTINCT privilege_type ORDER BY privilege_type SEPARATOR ',') AS privileges
 FROM information_schema.user_privileges
-WHERE privilege_type IN (${ADMIN_PRIVS})
+WHERE privilege_type IN ('SUPER','SYSTEM_USER','CREATE USER','RELOAD','SHUTDOWN','PROCESS')
+   OR privilege_type LIKE '%_ADMIN'
 GROUP BY grantee;
 "
 
-# 1) 관리자 권한 보유 계정 목록 조회
-RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null)
-RC=$?
-
-if [[ $RC -ne 0 ]]; then
-    STATUS="FAIL"
-    EVIDENCE="MySQL 접속 실패 또는 쿼리 실행 오류로 관리자 권한 부여 상태를 확인할 수 없습니다."
-else
-    # 2) 가이드 판정 로직(조금 더 엄격하게)
-    # - root@localhost 는 기본 관리자 계정으로 허용
-    # - root@% 또는 root@원격호스트 는 원격 root 가능성이므로 취약으로 판단
-    # - 그 외 관리자 권한 보유 계정은(허용목록 제외) 취약으로 판단
-
-    ROOT_LOCAL=$(echo "$RESULT" | grep -E "root@localhost" || true)
-    ROOT_REMOTE=$(echo "$RESULT" | grep -E "root@%" || true)
-
-    # root@'host' 형태라 따옴표 포함 가능 -> 공백/따옴표 제거해 비교
-    ROOT_REMOTE2=$(echo "$RESULT" | grep -E "root@" | grep -v "localhost" || true)
-
-    # 허용 계정 목록(필요 시 추가 가능): 예) ALLOWLIST=("root@localhost" "dba@localhost")
-    ALLOWLIST=("root@localhost")
-
-    # 결과에서 따옴표 제거 후 비교용 정규화
-    NORMALIZED=$(echo "$RESULT" | tr -d "'" | sed 's/[[:space:]]//g')
-
-    # 허용 목록 제외한 관리자 권한 보유 계정 추출
-    NON_ALLOWED="$NORMALIZED"
-    for a in "${ALLOWLIST[@]}"; do
-        NON_ALLOWED=$(echo "$NON_ALLOWED" | grep -v -F "$a" || true)
+in_csv() {
+    local needle="$1"
+    local csv="$2"
+    IFS=',' read -r -a arr <<< "$csv"
+    for item in "${arr[@]}"; do
+        [[ "$needle" == "$item" ]] && return 0
     done
+    return 1
+}
 
-    # root 원격 계정 판단(정규화 기준)
-    ROOT_REMOTE_NORM=$(echo "$NORMALIZED" | grep -E "^root@%" || true)
-    ROOT_OTHER_REMOTE_NORM=$(echo "$NORMALIZED" | grep -E "^root@" | grep -v "^root@localhost$" || true)
+extract_user() {
+    echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
+}
 
-    if [[ -n "$ROOT_REMOTE_NORM" || -n "$ROOT_OTHER_REMOTE_NORM" ]]; then
-        STATUS="FAIL"
-        SAMPLE=$( (echo "$ROOT_REMOTE_NORM"; echo "$ROOT_OTHER_REMOTE_NORM") | head -n 1 )
-        EVIDENCE="원격 root 계정에 관리자 권한이 부여되어 있습니다. (예: ${SAMPLE})"
-    else
-        if [[ -z "$NON_ALLOWED" ]]; then
-            STATUS="PASS"
-            EVIDENCE="관리자 권한이 필요한 계정(예: root@localhost)에만 권한이 부여되어 있습니다."
-        else
-            COUNT=$(echo "$NON_ALLOWED" | wc -l | tr -d ' ')
-            SAMPLE=$(echo "$NON_ALLOWED" | head -n 1)
-            STATUS="FAIL"
-            EVIDENCE="허용되지 않은 계정(${COUNT}개)에 관리자 권한이 부여되어 있습니다. (예: ${SAMPLE})"
+extract_host() {
+    echo "$1" | sed -E "s/^'[^']+'@'([^']+)'$/\1/"
+}
+
+if [[ -n "$TIMEOUT_BIN" ]]; then
+    RESULT=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
+else
+    RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
+fi
+
+if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
+    STATUS="FAIL"
+    EVIDENCE="관리자 권한 부여 상태 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-04 점검에 실패했습니다."
+elif [[ "$RESULT" == "ERROR" ]]; then
+    STATUS="FAIL"
+    EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 관리자 권한 부여 상태를 확인할 수 없습니다."
+else
+    VIOLATION_COUNT=0
+    SAMPLE="N/A"
+
+    while IFS=$'\t' read -r grantee privs; do
+        [[ -z "$grantee" ]] && continue
+
+        user="$(extract_user "$grantee")"
+        host="$(extract_host "$grantee")"
+        principal="${user}@${host}"
+
+        if in_csv "$user" "$ALLOWED_ADMIN_USERS_CSV"; then
+            continue
         fi
+        if in_csv "$principal" "$ALLOWED_ADMIN_PRINCIPALS_CSV"; then
+            continue
+        fi
+
+        VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
+        if [[ "$SAMPLE" == "N/A" ]]; then
+            SAMPLE="${principal} [${privs}]"
+        fi
+    done <<< "$RESULT"
+
+    if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
+        STATUS="PASS"
+        EVIDENCE="관리자급 권한이 인가된 관리자 계정으로 제한되어 D-04 기준을 충족합니다."
+    else
+        STATUS="FAIL"
+        EVIDENCE="인가되지 않은 계정에 관리자급 권한이 부여되어 있습니다. (${VIOLATION_COUNT}개, 예: ${SAMPLE})"
     fi
 fi
 
-# 파일 해시(요구사항 유지)
+# 파일 해시
 if [ -f "$TARGET_FILE" ]; then
     FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
     [[ -z "$FILE_HASH" ]] && FILE_HASH="HASH_ERROR"
@@ -97,7 +115,10 @@ else
     FILE_HASH="NOT_FOUND"
 fi
 
-cat << EOF
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하면 'test' 계정에서 SUPER 권한이 제거되지만, 일반적인 시스템 운영 및 기존 작업에는 영향이 없습니다. 다만, 해당 계정이 SUPER 권한을 필요로 하는 특정 관리 작업이나 글로벌 설정 변경을 수행하려고 할 경우에는 권한 부족으로 작업이 실패할 수 있으므로 주의가 필요합니다."
+
+cat << EOF_JSON
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
@@ -105,9 +126,11 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "관리자 권한이 필요하지 않은 계정에서는 SUPER, SYSTEM_USER 등 관리자 권한을 회수하고, 최소 권한 원칙에 따라 필요한 권한만 부여하세요.",
+    "guide": "관리자 권한이 필요하지 않은 계정에서는 SUPER/SYSTEM_USER 및 동적 관리자 권한을 회수하고, 필요한 계정만 인가 목록으로 관리하세요.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
-EOF
+EOF_JSON
