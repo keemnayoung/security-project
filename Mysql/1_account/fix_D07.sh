@@ -19,8 +19,6 @@ ID="D-07"
 CATEGORY="계정관리"
 TITLE="root 권한으로 서비스 구동 제한"
 IMPORTANCE="중"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 MySQL 서버가 지정된 일반 사용자 계정으로 실행되도록 설정이 변경됩니다. 일반적인 시스템 운영에는 영향이 없으며, 서버 시작 및 데이터베이스 접근에도 문제를 일으키지 않습니다. 다만, 서버 구동 사용자 계정 변경 후 파일 권한이나 소유권이 올바르게 설정되어 있는지 확인해야 합니다."
 
 # 조치 결과 변수
 STATUS="FAIL"
@@ -29,7 +27,7 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 # 무한 로딩 방지(프로세스/파일 조작은 빠르지만 형식 통일)
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null)"
+TIMEOUT_BIN=""
 CMD_TIMEOUT_SEC=5
 
 run_cmd() {
@@ -52,17 +50,24 @@ MYSQL_RUN_USER="${MYSQL_RUN_USER:-mysql}"
 # 예) MY_CNF="/etc/mysql/my.cnf" ./FIX_D07.sh
 MY_CNF="${MY_CNF:-}"
 
+if [[ "$MYSQL_RUN_USER" == "root" ]]; then
+    STATUS="FAIL"
+    ACTION_RESULT="FAIL"
+    ACTION_LOG="조치가 수행되지 않았습니다. MYSQL_RUN_USER 값이 root로 설정되어 있습니다."
+    EVIDENCE="D-07 기준상 DBMS는 root 권한으로 구동되면 안 되므로 MYSQL_RUN_USER는 일반 계정이어야 합니다."
+fi
+
 # 1) 실행 중 프로세스 확인 (root 구동 여부)
 # mysqld 프로세스가 없으면 조치 대상이 아닐 수 있으나, 설정은 사전 반영 가능하므로 계속 진행
 PROC_USER="$(run_cmd "ps -eo user,comm | awk '\$2==\"mysqld\"{print \$1; exit}'")"
 RC1=$?
 
-if [[ $RC1 -eq 124 ]]; then
+if [[ "$STATUS" != "FAIL" && $RC1 -eq 124 ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
     ACTION_LOG="조치가 수행되지 않았습니다. 프로세스 확인 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
     EVIDENCE="프로세스 확인 명령 실행이 ${CMD_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
-else
+elif [[ "$STATUS" != "FAIL" ]]; then
     # 프로세스가 실행 중이 아닌 경우 PROC_USER는 비어있을 수 있음
     if [[ -n "$PROC_USER" && "$PROC_USER" == "root" ]]; then
         NEED_FIX="Y"
@@ -106,12 +111,24 @@ detect_cnf() {
 }
 
 CNF_FILE="$(detect_cnf)"
-if [[ -z "$CNF_FILE" ]]; then
+if [[ "$STATUS" != "FAIL" && -z "$CNF_FILE" ]]; then
     STATUS="FAIL"
     ACTION_RESULT="FAIL"
     ACTION_LOG="조치가 수행되지 않았습니다. MySQL 설정 파일을 자동으로 찾을 수 없습니다."
     EVIDENCE="${PROC_EVID} MySQL 설정 파일 경로를 MY_CNF 환경변수로 지정해야 합니다."
-else
+elif [[ "$STATUS" != "FAIL" ]]; then
+    # D-07 핵심: 구동 계정으로 사용할 일반 사용자 계정이 실제 시스템에 존재하는지 확인한다.
+    run_cmd "id -u '${MYSQL_RUN_USER}'"
+    RC_USER=$?
+    if [[ $RC_USER -ne 0 ]]; then
+        STATUS="FAIL"
+        ACTION_RESULT="FAIL"
+        ACTION_LOG="조치가 수행되지 않았습니다. 지정된 MySQL 구동 계정이 시스템에 존재하지 않습니다."
+        EVIDENCE="MYSQL_RUN_USER=${MYSQL_RUN_USER} 계정이 없어 [mysqld] user 지시자를 안전하게 변경할 수 없습니다."
+    fi
+fi
+
+if [[ "$STATUS" != "FAIL" ]]; then
     # [mysqld] 섹션에서 user 지시자 값 추출(주석 제외)
     # - [mysqld] 시작 후 다음 [섹션] 전까지 탐색
     CNF_USER="$(run_cmd "awk '
@@ -134,7 +151,7 @@ else
         ACTION_LOG="조치가 수행되지 않았습니다. 설정 파일 확인 명령이 제한 시간 내 완료되지 않아 중단하였습니다."
         EVIDENCE="설정 파일 확인 명령 실행이 ${CMD_TIMEOUT_SEC}초 내에 완료되지 않아 무한 로딩 방지를 위해 처리를 중단하였습니다."
     else
-        # user 지시자가 없거나 root로 되어 있으면 조치 필요
+        # D-07 핵심: [mysqld] user 지시자가 없거나 root면 root 구동 위험이 있으므로 조치 필요
         if [[ -z "$CNF_USER" ]]; then
             NEED_FIX="Y"
             CNF_EVID="MySQL 설정 파일(${CNF_FILE})의 [mysqld] 섹션에 user 지시자가 설정되어 있지 않습니다."
@@ -152,7 +169,7 @@ else
             ACTION_LOG="MySQL 서버가 root 권한으로 구동되지 않도록 설정되어 있어 추가 조치 없이 보안 설정을 유지하였습니다."
             EVIDENCE="${PROC_EVID} ${CNF_EVID}"
         else
-            # 조치 전 백업
+            # D-07 핵심: 조치 전 원복 가능하도록 설정 파일을 백업한다.
             BACKUP_FILE="${CNF_FILE}.bak_$(date '+%Y%m%d%H%M%S')"
             run_cmd "cp -p \"$CNF_FILE\" \"$BACKUP_FILE\""
             RC3=$?
@@ -163,6 +180,7 @@ else
                 ACTION_LOG="조치가 수행되지 않았습니다. 설정 파일 백업에 실패하였습니다."
                 EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일 백업에 실패하여 안전을 위해 조치를 중단하였습니다."
             else
+                # D-07 핵심: [mysqld] user 지시자를 일반 계정으로 설정한다.
                 # [mysqld] 섹션 내 user= 라인이 있으면 교체, 없으면 [mysqld] 다음 줄에 추가
                 # sed -i는 플랫폼 차이가 있어 임시 파일 방식 사용
                 TMP_FILE="$(mktemp)"
@@ -204,10 +222,35 @@ else
                     ACTION_LOG="조치가 수행되지 않았습니다. MySQL 구동 계정 설정 변경에 실패하였습니다."
                     EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일 수정에 실패하여 구동 계정 변경을 완료할 수 없습니다."
                 else
-                    STATUS="PASS"
-                    ACTION_RESULT="SUCCESS"
-                    ACTION_LOG="MySQL 서버가 root 권한으로 구동되지 않도록 [mysqld] 구동 계정을 일반 사용자(${MYSQL_RUN_USER})로 설정하였습니다."
-                    EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER} 설정을 적용하였습니다."
+                    # D-07 핵심: 실행 중 프로세스가 root였던 경우 재시작 후 비root 구동 여부를 재검증한다.
+                    if [[ -n "$PROC_USER" && "$PROC_USER" == "root" ]]; then
+                        run_cmd "systemctl restart mysqld || systemctl restart mysql || systemctl restart mariadb || service mysqld restart || service mysql restart || service mariadb restart"
+                        RC_RESTART=$?
+                        if [[ $RC_RESTART -ne 0 ]]; then
+                            STATUS="FAIL"
+                            ACTION_RESULT="FAIL"
+                            ACTION_LOG="조치가 부분적으로만 수행되었습니다. 설정은 변경했으나 MySQL 재시작에 실패했습니다."
+                            EVIDENCE="${PROC_EVID} 설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER}를 반영했지만 서비스 재시작 실패로 실제 구동 계정 재검증을 완료하지 못했습니다."
+                        else
+                            PROC_USER_POST="$(run_cmd "ps -eo user,comm | awk '\$2==\"mysqld\"{print \$1; exit}'")"
+                            if [[ "$PROC_USER_POST" == "root" ]]; then
+                                STATUS="FAIL"
+                                ACTION_RESULT="FAIL"
+                                ACTION_LOG="조치가 부분적으로만 수행되었습니다. 설정 변경 후에도 mysqld가 root 권한으로 구동 중입니다."
+                                EVIDENCE="설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER}를 반영했으나 실행 프로세스가 여전히 root입니다."
+                            else
+                                STATUS="PASS"
+                                ACTION_RESULT="SUCCESS"
+                                ACTION_LOG="MySQL 서버 구동 계정을 일반 사용자(${MYSQL_RUN_USER})로 변경하고 재시작 후 비root 구동을 확인했습니다."
+                                EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 반영 및 재시작 후 mysqld 프로세스가 root가 아님을 확인했습니다."
+                            fi
+                        fi
+                    else
+                        STATUS="PASS"
+                        ACTION_RESULT="SUCCESS"
+                        ACTION_LOG="MySQL 서버가 root 권한으로 구동되지 않도록 [mysqld] 구동 계정을 일반 사용자(${MYSQL_RUN_USER})로 설정하였습니다."
+                        EVIDENCE="${PROC_EVID} ${CNF_EVID} 설정 파일(${CNF_FILE})에 user=${MYSQL_RUN_USER} 설정을 적용하였습니다."
+                    fi
                 fi
             fi
         fi
@@ -222,8 +265,6 @@ cat << EOF
     "category": "$CATEGORY",
     "title": "$TITLE",
     "importance": "$IMPORTANCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
     "guide": "KISA 가이드라인 기준 보안 설정 조치 완료",
@@ -233,5 +274,4 @@ cat << EOF
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
-
 
