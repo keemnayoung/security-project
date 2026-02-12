@@ -12,7 +12,7 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 EXCLUDE_USERS_CSV="${EXCLUDE_USERS_CSV:-mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
@@ -41,13 +41,6 @@ in_csv() {
   return 1
 }
 
-gen_pass() {
-  local p
-  p="$(tr -dc 'A-Za-z0-9@#%+=_' </dev/urandom | head -c 20)"
-  [[ ${#p} -lt 12 ]] && p="D08Fix$(date +%s)Aa1!"
-  printf "%s" "$p"
-}
-
 CHECK_SQL="
 SELECT user,host,plugin
 FROM mysql.user
@@ -56,6 +49,7 @@ WHERE user NOT IN ('mysql.sys','mysql.session','mysql.infoschema','mysqlxsys','m
 
 ROWS="$(run_mysql "$CHECK_SQL")"
 RC=$?
+
 if [[ $RC -eq 124 ]]; then
   ACTION_LOG="조치 중단: 계정 조회 시간 초과"
   EVIDENCE="mysql.user 조회가 ${MYSQL_TIMEOUT}초를 초과했습니다."
@@ -66,6 +60,7 @@ else
   WEAK_ROWS=""
   WEAK_COUNT=0
 
+  # 1️⃣ 취약 플러그인 계정 탐지
   while IFS=$'\t' read -r user host plugin; do
     [[ -z "$host" ]] && continue
     in_csv "$user" "$EXCLUDE_USERS_CSV" && continue
@@ -81,62 +76,73 @@ else
     fi
   done <<< "$ROWS"
 
+  # 2️⃣ 이미 모두 안전한 경우
   if [[ $WEAK_COUNT -eq 0 ]]; then
     STATUS="PASS"
     ACTION_RESULT="NOT_REQUIRED"
     ACTION_LOG="모든 계정이 SHA-256 기반(caching_sha2_password) 인증을 사용 중입니다."
     EVIDENCE="D-08 기준 추가 조치 불필요"
   else
-    APPLIED=0
-    FAILED=0
+    # 3️⃣ 자동 조치: 익명 계정만 삭제
+    DELETED_ANON=0
+    FAILED_ANON=0
     FAIL_SAMPLE="N/A"
 
     while IFS=$'\t' read -r user host plugin; do
       [[ -z "$host" ]] && continue
-      esc_user="$(sql_escape "$user")"
       esc_host="$(sql_escape "$host")"
 
       if [[ -z "$user" ]]; then
         run_mysql "DROP USER IF EXISTS ''@'${esc_host}';" >/dev/null
         if [[ $? -eq 0 ]]; then
-          APPLIED=$((APPLIED + 1))
+          DELETED_ANON=$((DELETED_ANON + 1))
         else
-          FAILED=$((FAILED + 1))
+          FAILED_ANON=$((FAILED_ANON + 1))
           [[ "$FAIL_SAMPLE" == "N/A" ]] && FAIL_SAMPLE="''@${host}"
         fi
-        continue
-      fi
-
-      new_pass="$(gen_pass)"
-      esc_pass="$(sql_escape "$new_pass")"
-      run_mysql "ALTER USER '${esc_user}'@'${esc_host}' IDENTIFIED WITH caching_sha2_password BY '${esc_pass}';" >/dev/null
-      if [[ $? -eq 0 ]]; then
-        APPLIED=$((APPLIED + 1))
-      else
-        FAILED=$((FAILED + 1))
-        [[ "$FAIL_SAMPLE" == "N/A" ]] && FAIL_SAMPLE="${user}@${host}"
       fi
     done <<< "$WEAK_ROWS"
 
     run_mysql "FLUSH PRIVILEGES;" >/dev/null || true
 
+    # 4️⃣ 재검증
     VERIFY_ROWS="$(run_mysql "$CHECK_SQL")"
     RCV=$?
-    REMAIN_WEAK=""
+
+    REMAIN_COUNT=0
+    SAMPLE_REMAIN=""
+
     if [[ $RCV -eq 0 ]]; then
-      REMAIN_WEAK="$(echo "$VERIFY_ROWS" | awk -F'\t' '$1!="" && $3!="caching_sha2_password" {print $1"@"$2"("$3")"}')"
+      while IFS=$'\t' read -r user host plugin; do
+        [[ -z "$host" ]] && continue
+        in_csv "$user" "$EXCLUDE_USERS_CSV" && continue
+
+        if [[ "$plugin" != "caching_sha2_password" ]]; then
+          REMAIN_COUNT=$((REMAIN_COUNT + 1))
+          [[ -z "$SAMPLE_REMAIN" ]] && SAMPLE_REMAIN="${user}@${host}(${plugin})"
+        fi
+      done <<< "$VERIFY_ROWS"
+    else
+      REMAIN_COUNT=$WEAK_COUNT
+      SAMPLE_REMAIN="$FAIL_SAMPLE"
     fi
 
-    if [[ $RCV -eq 0 && -z "$REMAIN_WEAK" && $FAILED -eq 0 ]]; then
-      STATUS="PASS"
-      ACTION_RESULT="SUCCESS"
-      ACTION_LOG="취약 계정 인증 알고리즘을 SHA-256 기반으로 전환했습니다."
-      EVIDENCE="전환 성공 ${APPLIED}건, 재검증 결과 취약 계정 없음"
+    # 5️⃣ 수동 조치 안내
+    MANUAL_GUIDE="취약 계정의 인증 플러그인을 SHA-256 기반(caching_sha2_password)으로 수동 전환하십시오. 예) ALTER USER '계정'@'호스트' IDENTIFIED WITH caching_sha2_password BY '새로운비밀번호';"
+
+    if [[ $FAILED_ANON -eq 0 ]]; then
+      ACTION_LOG="익명 계정 ${DELETED_ANON}건 삭제 조치를 완료했습니다. 취약 인증 플러그인 계정은 수동 전환이 필요합니다."
     else
-      SAMPLE_REMAIN="$(echo "$REMAIN_WEAK" | head -n 1)"
-      [[ -z "$SAMPLE_REMAIN" ]] && SAMPLE_REMAIN="$FAIL_SAMPLE"
-      ACTION_LOG="조치 일부 실패: 일부 계정이 SHA-256 기준을 충족하지 못했습니다."
-      EVIDENCE="전환 성공 ${APPLIED}건, 실패 ${FAILED}건 (예: ${SAMPLE_REMAIN})"
+      ACTION_LOG="익명 계정 삭제 조치 일부 실패가 발생했습니다. 취약 인증 플러그인 계정은 수동 전환이 필요합니다."
+    fi
+
+    STATUS="FAIL"
+    ACTION_RESULT="MANUAL_REQUIRED"
+
+    if [[ $REMAIN_COUNT -gt 0 ]]; then
+      EVIDENCE="취약 인증 플러그인 계정 ${REMAIN_COUNT}건이 확인됩니다. (예: ${SAMPLE_REMAIN}) ${MANUAL_GUIDE}"
+    else
+      EVIDENCE="익명 계정 삭제 후 취약 계정 재확인이 필요합니다. ${MANUAL_GUIDE}"
     fi
   fi
 fi
@@ -149,7 +155,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"취약 계정의 인증 플러그인을 caching_sha2_password로 전환",
+  "guide":"취약 계정의 인증 플러그인을 caching_sha2_password로 수동 전환하고, 비밀번호는 기관 정책에 맞게 재설정하시기 바랍니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
