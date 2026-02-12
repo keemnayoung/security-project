@@ -161,7 +161,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"공용 계정 삭제/잠금 및 사용자별 계정 분리 운영 (공용 계정 삭제 시 사용자별 개인 계정을 생성하여 최소권한으로 운영하세요.)",
+  "guide":"공용 계정을 삭제 또는 잠금 조치하였으며, 사용자별 개인 계정을 생성하여 최소 권한 원칙에 따라 분리 운영하시기 바랍니다."
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
