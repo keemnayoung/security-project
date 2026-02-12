@@ -1,9 +1,9 @@
 #!/bin/bash
 # @Author: 한은결
-# D-03: 비밀번호 수명/복잡도 정책 적용
-ID="D-03"
+# D-04: 불필요 SUPER 권한 회수
+ID="D-04"
 CATEGORY="계정 관리"
-TITLE="비밀번호 사용 기간 및 복잡도 정책 설정"
+TITLE="관리자 권한 최소 부여"
 IMPORTANCE="상"
 
 STATUS="FAIL"
@@ -14,14 +14,7 @@ EVIDENCE="N/A"
 MYSQL_TIMEOUT=8
 MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
-
-POLICY="${POLICY:-MEDIUM}"
-LENGTH="${LENGTH:-8}"
-MIXED="${MIXED:-1}"
-NUMBER="${NUMBER:-1}"
-SPECIAL="${SPECIAL:-1}"
-LIFETIME="${LIFETIME:-90}"
-EXPIRE_INTERVAL="${EXPIRE_INTERVAL:-91}"
+ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
 run_mysql() {
   local sql="$1"
@@ -33,63 +26,53 @@ run_mysql() {
   return $?
 }
 
-# [정책 적용용 SQL] (참고용: 실제 적용은 아래에서 개별 실행)
-SETUP_SQL="
-INSTALL COMPONENT 'file://component_validate_password';
-SET GLOBAL validate_password.policy='${POLICY}';
-SET GLOBAL validate_password.length=${LENGTH};
-SET GLOBAL validate_password.mixed_case_count=${MIXED};
-SET GLOBAL validate_password.number_count=${NUMBER};
-SET GLOBAL validate_password.special_char_count=${SPECIAL};
-SET GLOBAL default_password_lifetime=${LIFETIME};
-"
+in_csv() {
+  local needle="$1" csv="$2"
+  IFS=',' read -r -a arr <<< "$csv"
+  for x in "${arr[@]}"; do [[ "$needle" == "$x" ]] && return 0; done
+  return 1
+}
 
-# ============================================================================
-# 1) 비밀번호 복잡도/수명 정책 적용 (자동 조치 핵심)
-#    - validate_password: 복잡도 정책
-#    - default_password_lifetime: 비밀번호 사용 기간(만료)
-# ============================================================================
-# INSTALL COMPONENT는 이미 설치된 경우 실패 가능 -> 실패해도 진행
-run_mysql "INSTALL COMPONENT 'file://component_validate_password';" >/dev/null || true
-
-# 복잡도 정책 적용
-run_mysql "SET GLOBAL validate_password.policy='${POLICY}';" >/dev/null; RC1=$?
-run_mysql "SET GLOBAL validate_password.length=${LENGTH};" >/dev/null; RC2=$?
-run_mysql "SET GLOBAL validate_password.mixed_case_count=${MIXED};" >/dev/null; RC3=$?
-run_mysql "SET GLOBAL validate_password.number_count=${NUMBER};" >/dev/null; RC4=$?
-run_mysql "SET GLOBAL validate_password.special_char_count=${SPECIAL};" >/dev/null; RC5=$?
-
-# 수명(만료) 정책 적용
-run_mysql "SET GLOBAL default_password_lifetime=${LIFETIME};" >/dev/null; RC6=$?
-
-if [[ $RC1 -ne 0 || $RC2 -ne 0 || $RC3 -ne 0 || $RC4 -ne 0 || $RC5 -ne 0 || $RC6 -ne 0 ]]; then
-  ACTION_LOG="조치 실패: 정책 파라미터 적용 중 오류"
-  EVIDENCE="validate_password 또는 default_password_lifetime 설정 적용 실패"
+LIST="$(run_mysql "SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE='SUPER';")"
+RC=$?
+if [[ $RC -ne 0 ]]; then
+  ACTION_LOG="조치 실패: SUPER 권한 조회 실패"
+  EVIDENCE="INFORMATION_SCHEMA.USER_PRIVILEGES 조회 실패"
 else
-  # ==========================================================================
-  # 2) (선택적) 사용자 계정 비밀번호 만료 주기 적용
-  #    - 정책 강화 후 기존 비밀번호가 정책을 만족하지 않을 수 있음
-  #    - 여기서는 각 계정에 만료 interval을 부여(실패해도 진행)
-  # ==========================================================================
-  USERS="$(run_mysql "SELECT user,host FROM mysql.user WHERE user NOT IN ('root','mysql.sys','mysql.session','mysql.infoschema','mysqlxsys','mariadb.sys');")"
-  while IFS=$'\t' read -r user host; do
-    [[ -z "$user" || -z "$host" ]] && continue
-    run_mysql "ALTER USER '${user//\'/\'\'}'@'${host//\'/\'\'}' PASSWORD EXPIRE INTERVAL ${EXPIRE_INTERVAL} DAY;" >/dev/null || true
-  done <<< "$USERS"
+  FAIL=0
+  CNT=0
+  while IFS= read -r grantee; do
+    [[ -z "$grantee" ]] && continue
+    user="$(echo "$grantee" | sed -E "s/^'([^']+)'.*$/\1/")"
+    if in_csv "$user" "$ALLOWED_USERS_CSV"; then
+      continue
+    fi
+    run_mysql "REVOKE SUPER ON *.* FROM ${grantee};" >/dev/null || FAIL=1
+    CNT=$((CNT+1))
+  done <<< "$LIST"
 
-  # ==========================================================================
-  # 3) 검증(재확인)
-  # ==========================================================================
-  VERIFY="$(run_mysql "SHOW VARIABLES WHERE Variable_name IN ('default_password_lifetime','validate_password.policy','validate_password.length','validate_password.mixed_case_count','validate_password.number_count','validate_password.special_char_count');")"
-  RCV=$?
-  if [[ $RCV -eq 0 && -n "$VERIFY" ]]; then
+  run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
+  REMAIN="$(run_mysql "SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE='SUPER';")"
+  RC2=$?
+  BAD=0
+  if [[ $RC2 -eq 0 ]]; then
+    while IFS= read -r grantee; do
+      [[ -z "$grantee" ]] && continue
+      user="$(echo "$grantee" | sed -E "s/^'([^']+)'.*$/\1/")"
+      in_csv "$user" "$ALLOWED_USERS_CSV" || BAD=1
+    done <<< "$REMAIN"
+  else
+    BAD=1
+  fi
+
+  if [[ $FAIL -eq 0 && $BAD -eq 0 ]]; then
     STATUS="PASS"
     ACTION_RESULT="SUCCESS"
-    ACTION_LOG="비밀번호 복잡도/수명 정책을 적용했습니다. (정책을 만족하지 않는 기존 비밀번호는 변경하십시오.)"
-    EVIDENCE="D-03 정책값 적용 완료. 사용자 계정은 강화된 정책에 맞게 비밀번호 변경 필요"
+    ACTION_LOG="불필요 SUPER 권한 ${CNT}건을 회수했습니다."
+    EVIDENCE="D-04 조치 후 비인가 SUPER 권한 미검출"
   else
-    ACTION_LOG="조치 일부 실패: 설정 검증 조회 실패"
-    EVIDENCE="정책 적용 후 검증 단계에서 오류"
+    ACTION_LOG="조치 일부 실패: 일부 SUPER 권한이 남아 있을 수 있습니다."
+    EVIDENCE="D-04 자동 조치를 완료하지 못했습니다."
   fi
 fi
 
@@ -102,7 +85,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"validate_password 및 default_password_lifetime 정책을 적용하였습니다. 기존 계정의 비밀번호는 정책에 부합하도록 변경하시기 바랍니다.",
+  "guide":"불필요한 SUPER 권한을 회수하였으며, 최소 권한 원칙(Least Privilege)에 따라 필요한 권한만 부여하여 운영하시기 바랍니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
