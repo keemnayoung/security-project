@@ -15,7 +15,7 @@
 
 #!/bin/bash
 ID="D-07"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="root 권한 서비스 구동 제한"
 IMPORTANCE="중"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
@@ -25,10 +25,10 @@ IMPACT_LEVEL="LOW"
 
 root_cnt=$(ps -eo user,comm | grep postgres | grep -w root | wc -l)
 if [ "$root_cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="PostgreSQL 서비스가 전용 계정(postgres)으로 실행 중"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="PostgreSQL 서비스가 root 권한으로 실행 중"
 fi
 

@@ -69,10 +69,15 @@ fi
 cat <<EOF
 {
   "check_id": "$ID",
+  "category": "$CATEGORY",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
   "status": "$CURRENT_STATUS",
+  "evidence": "$EVIDENCE_ESCAPED",
+  "guide": "$GUIDE_ESCAPED",
   "action_result": "$ACTION_RESULT",
   "action_log": "$ACTION_LOG",
-  "action_date": "$NOW",
-  "check_date": "$NOW"
+  "action_date": "$ACTION_DATE",
+  "check_date": "$ACTION_DATE"
 }
 EOF

@@ -15,7 +15,7 @@
 
 #!/bin/bash
 ID="D-08"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="비밀번호 암호화 알고리즘"
 IMPORTANCE="상"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
@@ -25,11 +25,11 @@ IMPACT_LEVEL="LOW"
 
 enc=$(psql -U postgres -t -c "SHOW password_encryption;" | xargs)
 if [ "$enc" = "scram-sha-256" ]; then
-  STATUS="양호"
-   EVIDENCE="SHA-256 기반 SCRAM 암호화 알고리즘 사용"
+  STATUS="PASS"
+  EVIDENCE="SHA-256 기반 SCRAM 암호화 알고리즘 사용"
 else
-  STATUS="취약"
-   EVIDENCE="SHA-256 미만 암호화 알고리즘 사용($enc)"
+  STATUS="FAIL"
+  EVIDENCE="SHA-256 미만 암호화 알고리즘 사용($enc)"
 fi
 
 cat <<EOF

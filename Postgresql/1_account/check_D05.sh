@@ -15,11 +15,11 @@
 
 #!/bin/bash
 ID="D-05"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="비밀번호 재사용 제한 설정"
 IMPORTANCE="중"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
-STATUS="취약"
+STATUS="FAIL"
 EVIDENCE="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 운영 절차 또는 외부 인증 정책에 따른 관리 여부를 수동으로 확인할 필요가 있다."
 
 TARGET_FILE="password"

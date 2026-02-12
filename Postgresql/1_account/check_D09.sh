@@ -15,14 +15,14 @@
 
 #!/bin/bash
 ID="D-09"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="로그인 실패 횟수 제한"
 IMPORTANCE="중"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
 TARGET_FILE="password"
 ACTION_IMPACT="PAM 또는 fail2ban을 통한 로그인 실패 제한 정책은 반복적인 인증 실패 시에만 적용되므로,일반적인 서비스 이용 및 정상 사용자 인증에는 영향이 없으며,오탐 방지를 위해 정책 값에 대한 사전 검토가 필요할 수 있습니다."
 IMPACT_LEVEL="LOW"
-STATUS="취약"
+STATUS="FAIL"
 EVIDENCE="PostgreSQL은 로그인 실패 횟수 기반 계정 잠금 기능을 DBMS 자체적으로 제공하지 않습니다."
 
 cat <<EOF

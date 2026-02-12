@@ -19,7 +19,6 @@ ID="D-06"
 CURRENT_STATUS="FAIL"
 ACTION_RESULT="MANUAL_REQUIRED"
 ACTION_LOG="N/A"
-
 NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
 # 로그인 가능한 DB 계정 목록 조회
@@ -47,11 +46,16 @@ fi
 cat <<EOF
 {
   "check_id": "$ID",
+  "category": "$CATEGORY",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
   "status": "$CURRENT_STATUS",
+  "evidence": "$EVIDENCE",
+  "guide": "$GUIDE_ESCAPED",
   "action_result": "$ACTION_RESULT",
   "action_log": "$ACTION_LOG",
-  "action_date": "$NOW",
-  "check_date": "$NOW"
+  "action_date": "$ACTION_DATE",
+  "check_date": "$ACTION_DATE"
 }
 EOF
 

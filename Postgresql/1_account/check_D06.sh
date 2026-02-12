@@ -15,7 +15,7 @@
 
 #!/bin/bash
 ID="D-06"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="사용자별 DB 계정 사용"
 IMPORTANCE="중"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
@@ -27,11 +27,11 @@ login_cnt=$(psql -U postgres -t -c \
 "SELECT COUNT(*) FROM pg_roles WHERE rolcanlogin = true AND rolname <> 'postgres';" | xargs)
 
 if [ "$login_cnt" -gt 1 ]; then
-  STATUS="취약"
-   EVIDENCE="로그인 가능한 계정이 다수 존재하나 사용자별 계정 사용 여부는 수동 확인 필요"
+  STATUS="FAIL"
+  EVIDENCE="로그인 가능한 계정이 다수 존재하나 사용자별 계정 사용 여부는 수동 확인 필요"
 else
-  STATUS="취약"
-   EVIDENCE="공용 계정 사용 가능성 높음 (로그인 계정 수가 제한적)"
+  STATUS="FAIL"
+  EVIDENCE="공용 계정 사용 가능성 높음 (로그인 계정 수가 제한적)"
 fi
 
 cat <<EOF

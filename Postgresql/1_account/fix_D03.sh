@@ -52,15 +52,20 @@ else
     ACTION_LOG="수동 확인 필요: pg_hba.conf에서 인증 방식이 혼합되었거나 명확히 식별되지 않습니다. 인증 방식별 비밀번호 정책 적용 위치(DB/OS/중앙 인증)를 구분하여 운영 정책을 확인하십시오."
 fi
 
-# JSON 출력 (D-01 형식 고정)
+# JSON 출력
 cat <<EOF
 {
   "check_id": "$ID",
+  "category": "$CATEGORY",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
   "status": "$CURRENT_STATUS",
+  "evidence": "$EVIDENCE_ESCAPED",
+  "guide": "$GUIDE_ESCAPED",
   "action_result": "$ACTION_RESULT",
   "action_log": "$ACTION_LOG",
-  "action_date": "$NOW",
-  "check_date": "$NOW"
+  "action_date": "$ACTION_DATE",
+  "check_date": "$ACTION_DATE"
 }
 EOF
 

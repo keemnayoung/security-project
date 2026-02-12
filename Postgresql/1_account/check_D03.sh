@@ -15,68 +15,122 @@
 # ============================================================================
 
 #!/bin/bash
-# [점검] D-03 비밀번호 사용기간 및 복잡도 정책 적용 여부 (인증 방식 기반 안내)
 
 ID="D-03"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="비밀번호 사용기간 및 복잡도를 기관의 정책에 맞도록 설정"
 IMPORTANCE="상"
-DATE=(date '+%Y-%m-%d %H:%M:%S')
+DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
-STATUS="취약"
-guide=""
-
-TARGET_FILE="/var/lib/pgsql/data/pg_hba.conf"
-ACTION_IMPACT="주기적인 비밀번호 변경 필요"
+STATUS="FAIL"
+ACTION_RESULT="MANUAL_REQUIRED"
+ACTION_LOG="인증 방식 기반 수동 점검 필요"
 IMPACT_LEVEL="MEDIUM"
+ACTION_IMPACT="비밀번호 정책 적용 위치(DB/OS/중앙인증)를 확인하여 기관 정책에 맞게 설정해야 합니다."
 
-# pg_hba.conf에서 인증 방식 추출
-AUTH_METHODS=$(grep -Ev '^\s*#|^\s*$' "$TARGET_FILE" 2>/dev/null | awk '{print $NF}' | sort -u)
+#########################################
+# 1. 실제 pg_hba.conf 경로 조회
+#########################################
 
-# DB 내부 인증
-if echo "$AUTH_METHODS" | grep -Eq 'password|md5|scram-sha-256'; then
-  guide="DB 내부 인증(password/md5/scram-sha-256) 사용 중. \
-PostgreSQL은 비밀번호 사용기간 및 복잡도 정책을 기본 제공하지 않으므로, \
-DB 차원의 비밀번호 정책 확장 사용 여부 또는 \
-중앙 인증/OS 인증 전환 여부를 확인해야 함."
+HBA_FILE=$(sudo -u postgres psql -t -A -c "SHOW hba_file;" 2>/dev/null)
 
-# PAM 인증
-elif echo "$AUTH_METHODS" | grep -Eq '^pam$'; then
-  guide="PAM 인증 사용 중. \
-OS 계정 비밀번호 정책이 기관 정책에 맞게 설정되어 있는지 확인 필요. \
-확인 항목: /etc/security/pwquality.conf (복잡도), \
-/etc/login.defs (PASS_MAX_DAYS 등 사용기간)."
-
-# LDAP / AD 인증
-elif echo "$AUTH_METHODS" | grep -Eq 'ldap|gss|sspi'; then
-  guide="중앙 인증(LDAP/AD) 연계 사용 중. \
-비밀번호 복잡도 및 사용기간 정책은 중앙 인증 시스템에서 관리됨. \
-중앙 인증 서버의 비밀번호 정책이 기관 정책에 부합하는지 확인 필요."
-
-# 혼합 또는 식별 불가
+if [ -z "$HBA_FILE" ]; then
+    STATUS="FAIL"
+    EVIDENCE="pg_hba.conf 경로 확인 실패"
+    GUIDE_MSG="PostgreSQL 접속 권한을 확인하십시오."
 else
-  guide="pg_hba.conf에서 인증 방식이 혼합되어 있거나 식별 불가. \
-각 인증 방식별로 비밀번호 정책 적용 위치(DB/OS/중앙 인증)를 구분하여 \
-운영 정책 및 설정을 수동으로 확인해야 함."
+
+    #########################################
+    # 2. 인증 방식 추출
+    #########################################
+
+    AUTH_METHODS=$(grep -Ev '^\s*#|^\s*$' "$HBA_FILE" 2>/dev/null | awk '{print $NF}' | sort -u | tr '\n' ',' | sed 's/,$//')
+
+    #########################################
+    # 3. 인증 방식별 가이드 구성
+    #########################################
+
+    if echo "$AUTH_METHODS" | grep -Eq 'password|md5|scram-sha-256'; then
+        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
+
+DB 내부 인증 사용 중입니다.
+
+확인 항목:
+1) 암호 저장 방식 확인:
+   SHOW password_encryption;
+
+2) 계정 만료일 확인:
+   SELECT rolname, rolvaliduntil FROM pg_roles WHERE rolcanlogin=true;
+
+PostgreSQL은 기본적으로 비밀번호 복잡도/사용기간 정책을 제공하지 않으므로,
+기관 정책에 따른 별도 정책 적용 여부를 확인해야 합니다."
+    
+    elif echo "$AUTH_METHODS" | grep -Eq 'pam'; then
+        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
+
+PAM 인증 사용 중입니다.
+
+확인 항목:
+1) /etc/security/pwquality.conf (복잡도)
+2) /etc/login.defs (PASS_MAX_DAYS 등 사용기간)
+3) chage -l 계정명
+
+OS 비밀번호 정책이 기관 정책에 부합하는지 확인하십시오."
+    
+    elif echo "$AUTH_METHODS" | grep -Eq 'ldap|gss|sspi'; then
+        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
+
+중앙 인증(LDAP/AD) 연계 사용 중입니다.
+
+확인 항목:
+1) AD Domain Password Policy
+2) 중앙 인증 서버의 비밀번호 복잡도 정책
+3) 계정 만료 정책
+
+중앙 인증 시스템에서 정책 적용 여부를 확인해야 합니다."
+    
+    else
+        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
+
+인증 방식이 혼합되어 있거나 식별이 명확하지 않습니다.
+
+각 인증 방식별로 정책 적용 위치(DB/OS/중앙 인증)를 구분하여
+기관 정책에 맞게 수동 점검하십시오."
+    fi
+
+    EVIDENCE="실제 pg_hba.conf 경로: ${HBA_FILE}. 적용 인증 방식: ${AUTH_METHODS}"
 fi
 
-EVIDENCE="pg_hba.conf 인증 방식: $(echo "$AUTH_METHODS" | tr '\n' ',' | sed 's/,$//').
-비밀번호 사용기간 및 복잡도 정책의 적용 여부를 자동으로 확인할 수 없음"
+#########################################
+# 4. JSON escape
+#########################################
+
+EVIDENCE_ESCAPED=$(echo "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+GUIDE_ESCAPED=$(echo "$GUIDE_MSG" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+ACTION_LOG_ESCAPED=$(echo "$ACTION_LOG" | sed 's/"/\\"/g')
+
+#########################################
+# 5. JSON 출력
+#########################################
 
 cat <<EOF
 {
   "check_id": "$ID",
   "category": "$CATEGORY",
-  "title": "$TITLE"",
+  "title": "$TITLE",
   "importance": "$IMPORTANCE",
   "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "guide": "$guide",
-  "target_file": "$TARGET_FILE",
+  "evidence": "$EVIDENCE_ESCAPED",
+  "guide": "$GUIDE_ESCAPED",
+  "target_file": "$HBA_FILE",
   "action_impact": "$ACTION_IMPACT",
   "impact_level": "$IMPACT_LEVEL",
+  "action_result": "$ACTION_RESULT",
+  "action_log": "$ACTION_LOG_ESCAPED",
   "check_date": "$DATE"
 }
 EOF
+
+
 
 

@@ -15,11 +15,11 @@
 
 #!/bin/bash
 ID="D-04"
-CATEGORY="계정 관리"
+CATEGORY="계정관리"
 TITLE="DBMS 관리자 권한을 꼭 필요한 계정 및 그룹에 대해서만 허용"
 IMPORTANCE="상"
 TARGET_FILE="pg_roles"
-ACTION_IMPACT="필요 최소한의 관리자 권한만 유지하는 조치로 서비스 및 정상 운영에는 영향이 없습니다."
+ACTION_IMPACT="최소한의 필요한 관리자 권한만 유지하는 조치로 서비스 및 정상 운영에는 영향이 없습니다."
 IMPACT_LEVEL="LOW"
 DATE=(date '+%Y-%m-%d %H:%M:%S')
 
@@ -27,10 +27,10 @@ cnt=$(psql -U postgres -t -c \
 "SELECT COUNT(*) FROM pg_roles WHERE rolsuper = true AND rolname <> 'postgres';" | xargs)
 
 if [ "$cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
    EVIDENCE="postgres 외 불필요한 관리자 권한을 가진 계정이 없습니다."
 else
-  STATUS="취약"
+  STATUS="FAIL"
    EVIDENCE="postgres 외 관리자 권한이 부여된 계정이 존재합니다."
 fi
 
