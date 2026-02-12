@@ -1,0 +1,2 @@
+[target_servers]
+Rocky9 ansible_host=192.168.187.139 ansible_user=rockylinux ansible_ssh_pass=qwer1234 ansible_become_pass=qwer1234

@@ -1,0 +1,36 @@
+- name: 보안 전수 점검 (Linux & DB 통합 자동화)
+  hosts: target_servers
+  become: yes
+  tasks:
+    - name: "1. OS 및 DB 진단 스크립트 목록 가져오기"
+      delegate_to: localhost
+      become: no
+      find:
+        paths: "./scripts/unix"
+        patterns: "check_*.sh"
+        recurse: yes
+      register: script_files
+
+    - name: "2. 대상 서버 환경에 맞는 스크립트 실행"
+      script: "{{ item.path }}"
+      register: diag_results
+      loop: "{{ script_files.files }}"
+      when: 
+        # [조건 추가] target_id 필터 유지 + DB 타입별 실행 제한
+        - target_id is not defined or (target_id | string) in (item.path | basename)
+        # [분기 로직] 로키9면 mysql 스크립트만, 로키10이면 postgres 스크립트만 실행
+        - ("6_db/mysql" not in item.path) or ("Rocky9" in inventory_hostname)
+        - ("6_db/postgresql" not in item.path) or ("Rocky10" in inventory_hostname)
+
+    - name: "3. 결과 수집 및 JSON 저장"
+      delegate_to: localhost
+      become: no
+      copy:
+        # [정규식 보강] JSON 시작({)과 끝(}) 사이의 유효한 데이터만 추출
+        content: "{{ item.stdout | regex_search('\\{[\\s\\S]*\\}') | default('{}', true) }}"
+        dest: "./results/{{ inventory_hostname }}_{{ item.item.path | basename | replace('.sh', '') | replace('-', '') }}.json"
+        force: yes 
+      loop: "{{ diag_results.results }}"
+      when: 
+        - item.skipped is not defined or not item.skipped
+        - item.stdout is defined and '{' in item.stdout
