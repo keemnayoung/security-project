@@ -14,10 +14,8 @@
 # ============================================================================
 
 #!/bin/bash
-#!/bin/bash
-
 ID="D-26"
-
+CATEGORY="패치관리"
 CURRENT_STATUS="FAIL"
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
@@ -75,11 +73,16 @@ fi
 cat <<EOF
 {
   "check_id": "$ID",
+  "category": "$CATEGORY",
+  "title": "$TITLE",
+  "importance": "$IMPORTANCE",
   "status": "$CURRENT_STATUS",
+  "evidence": "$EVIDENCE",
+  "guide": "$GUIDE_MSG",
   "action_result": "$ACTION_RESULT",
   "action_log": "$ACTION_LOG",
-  "action_date": "$NOW",
-  "check_date": "$NOW"
+  "action_date": "$ACTION_DATE",
+  "check_date": "$ACTION_DATE"
 }
 EOF
 

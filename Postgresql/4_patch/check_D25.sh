@@ -26,10 +26,10 @@ IMPACT_LEVEL="HIGH"
 version=$(psql -U postgres -t -c "SHOW server_version;" | xargs)
 major_ver=$(echo "$version" | cut -d'.' -f1)
 if [ "$major_ver" -ge 14 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="보안 패치 지원 버전(PostgreSQL $version) 사용 중"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="보안 패치 지원 종료(EOL) 또는 취약 가능 버전(PostgreSQL $version) 사용 중"
 fi
 
