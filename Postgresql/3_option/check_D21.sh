@@ -32,10 +32,10 @@ WHERE tp.is_grantable = 'YES'
 " | xargs)
 
 if [ "$cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="일반 사용자에게 GRANT OPTION 미부여"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="일반 사용자에게 GRANT OPTION 부여됨"
 fi
 

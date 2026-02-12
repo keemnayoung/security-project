@@ -36,10 +36,10 @@ WHERE c.relowner NOT IN (
 
 
 if [ "$cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="DB 객체가 관리자(postgres)계정으로만 소유됨"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="일반 계정이 소유한 DB 객체가 존재함"
 fi
 
@@ -51,7 +51,7 @@ cat <<EOF
 "importance":"$IMPORTANCE",
 "status":"$STATUS",
 "evidence":"$EVIDENCE",
-"guide": "",
+"guide":"관리자 권한이 없는 일반 계정이 DB 객체(Object)를 소유한 경우, 해당 객체의 사용 목적을 확인한 후 ALTER TABLE / ALTER VIEW / ALTER SEQUENCE 등의 명령을 사용하여 객체 소유자를 관리자 계정(postgres) 또는 인가된 관리 계정으로 변경하십시오.",
 "target_file":"$TARGET_FILE",
 "action_impact":"$ACTION_IMPACT",
 "impact_level":"$IMPACT_LEVEL",

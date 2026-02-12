@@ -31,10 +31,10 @@ WHERE grantee = 'PUBLIC';
 " | xargs)
 
 if [ "$cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
    EVIDENCE="PUBLIC Role에 불필요한 권한이 부여되지 않음"
 else
-  STATUS="취약"
+  STATUS="FAIL"
    EVIDENCE="PUBLIC Role에 부여된 객체 권한 존재"
 fi
 
