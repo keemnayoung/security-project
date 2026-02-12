@@ -1,6 +1,9 @@
 - name: 보안 전수 점검 및 조치 자동화
   hosts: target_servers
   become: yes
+  vars:
+    mysql_env_src: "./scripts/unix/6_db/mysql/mysql_fix.env"
+    mysql_env_dest: "/tmp/security_project_mysql_fix.env"
   tasks:
     - name: "1. 조치 스크립트 목록 가져오기"
       delegate_to: localhost
@@ -8,31 +11,44 @@
       find:
         paths: 
           - "./scripts/unix"
-          - "./scripts/db"
         # [수정] check_ 대신 fix_ 로 시작하는 파일을 찾도록 변경!
         patterns: "fix_*.sh"
         recurse: yes
       register: fix_script_files
+
+    - name: "1-1. MySQL 접속 환경파일 존재 확인(메인 서버)"
+      delegate_to: localhost
+      become: no
+      stat:
+        path: "{{ mysql_env_src }}"
+      register: mysql_env_local
+      run_once: true
+
+    - name: "1-2. MySQL 접속 환경파일 대상 서버 배포(Rocky9)"
+      copy:
+        src: "{{ mysql_env_src }}"
+        dest: "{{ mysql_env_dest }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - "'Rocky9' in inventory_hostname"
+        - mysql_env_local.stat.exists
 
     - name: "2. 대상 서버 조치 스크립트 실행"
       script: "{{ item.path }}"
       register: script_run_result
       become: yes
       loop: "{{ fix_script_files.files }}"
+      environment:
+        MYSQL_ENV_FILE: "{{ mysql_env_dest }}"
       when: 
         # [수정] 파일명에서 fix_를 뺀 나머지로 target_id 매칭
         - target_id is defined
-        - >
-          ('D' ~ ((target_id | string | upper | regex_replace('[^A-Z0-9]', '')) | regex_replace('^D', '')))
-          ==
-          (
-            item.path
-            | basename
-            | regex_replace('^fix_', '')
-            | regex_replace('\\.sh$', '')
-            | upper
-            | regex_replace('[^A-Z0-9]', '')
-          )
+        - (target_id | string) in (item.path | basename | replace('fix_', '') | replace('-', ''))
+        # [분기 로직] 로키9면 mysql 스크립트만, 로키10이면 postgres 스크립트만 실행
+        - ("6_db/mysql" not in (item.path | lower)) or ("Rocky9" in inventory_hostname)
+        - ("6_db/postgresql" not in (item.path | lower)) or ("Rocky10" in inventory_hostname)
 
     # 3. 진단 결과 업데이트 (results 폴더)
     - name: "3. 결과 수집 및 JSON 저장"
