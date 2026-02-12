@@ -12,7 +12,9 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+
+MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
+
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 ALLOWED_HOSTS_CSV="${ALLOWED_HOSTS_CSV:-localhost,127.0.0.1,::1}"
 ACTION_MODE="${ACTION_MODE:-LOCK}" # LOCK | DROP
@@ -20,10 +22,11 @@ ACTION_MODE="${ACTION_MODE:-LOCK}" # LOCK | DROP
 run_mysql() {
   local sql="$1"
   if [[ -n "$TIMEOUT_BIN" ]]; then
-    $TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$sql" 2>/dev/null
+    $TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$sql"
   else
-    $MYSQL_CMD "$sql" 2>/dev/null
+    $MYSQL_CMD "$sql"
   fi
+  return $?
 }
 
 sql_escape() {
