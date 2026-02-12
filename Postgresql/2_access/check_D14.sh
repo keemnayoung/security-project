@@ -48,10 +48,10 @@ for f in postgresql.conf pg_hba.conf pg_ident.conf; do
 done
 
 if [ "$BAD" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="DB 주요 설정 파일 및 디렉터리 권한이 적절히 제한됨"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="DB 주요 설정 파일 또는 디렉터리의 권한 설정이 부적절함"
 fi
 

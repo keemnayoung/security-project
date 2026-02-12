@@ -32,10 +32,10 @@ WHERE tp.table_schema IN ('pg_catalog', 'information_schema')
 " | xargs)
 
 if [ "$cnt" -eq 0 ]; then
-  STATUS="양호"
+  STATUS="PASS"
   EVIDENCE="일반 사용자 계정의 시스템 테이블 접근 권한 미부여"
 else
-  STATUS="취약"
+  STATUS="FAIL"
   EVIDENCE="일반 사용자 계정에 시스템 테이블 접근 권한 부여됨"
 fi
 

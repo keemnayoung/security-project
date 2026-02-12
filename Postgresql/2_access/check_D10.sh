@@ -28,10 +28,10 @@ open_ipv4=$(grep -E "^[^#].*0.0.0.0/0" /var/lib/pgsql/data/pg_hba.conf)
 open_ipv6=$(grep -E "^[^#].*::/0" /var/lib/pgsql/data/pg_hba.conf)
 
 if [ -n "$open_ipv4" ] || [ -n "$open_ipv6" ]; then
-  STATUS="취약"
+  STATUS="FAIL"
    EVIDENCE="전체 IP(0.0.0.0/0 또는 ::/0) 접근 허용 설정 존재"
 else
-  STATUS="양호"
+  STATUS="PASS"
    EVIDENCE="지정된 IP 대역에서만 DB 접속 허용"
 fi
 
