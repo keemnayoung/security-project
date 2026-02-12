@@ -1,41 +1,50 @@
 #!/bin/bash
-# ============================================================================
-# @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
 # @Author: 한은결
-# @Last Updated: 2026-02-07
-# ============================================================================
-# [점검 항목 상세]
-# @ID          : D-11
-# @Category    : 접근 관리
-# @Platform    : MySQL
-# @Severity    : 상
-# @Title       : DBA 이외 사용자의 시스템 테이블 접근 제한
-# @Description : mysql 등 시스템 스키마에 일반 사용자가 접근 불가하도록 설정 여부 점검
-# @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
-# ============================================================================
-
+# D-11: 시스템 테이블 접근 제한
 ID="D-11"
 CATEGORY="접근 관리"
 TITLE="DBA 이외 사용자의 시스템 테이블 접근 제한"
 IMPORTANCE="상"
-TARGET_FILE="information_schema"
 
 STATUS="FAIL"
-EVIDENCE="N/A"
+ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
+EVIDENCE="N/A"
 
-TIMEOUT_BIN=""
-MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_TIMEOUT=8
+MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
+ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
-# 점검 전용 스크립트:
-# D-11은 "일반 계정의 시스템 테이블 접근 가능 여부"를 확인해야 하므로
-# check 단계에서는 권한 변경(REVOKE/GRANT)을 수행하지 않는다.
-#
-# 조회 범위
-# 1) 시스템 스키마 대상 스키마/테이블 권한
-# 2) 전역(*.*) 권한(USAGE 제외) - 전역 권한은 시스템 스키마 접근으로 이어질 수 있음
+run_mysql() {
+  local sql="$1"
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    $TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$sql" 2>/dev/null
+  else
+    $MYSQL_CMD "$sql" 2>/dev/null
+  fi
+}
+
+in_csv() {
+  local needle="$1"
+  local csv="$2"
+  IFS=',' read -r -a arr <<< "$csv"
+  for item in "${arr[@]}"; do
+    [[ "$needle" == "$item" ]] && return 0
+  done
+  return 1
+}
+
+extract_user_from_grantee() {
+  echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
+}
+
+esc_ident() {
+  local s="$1"
+  s="${s//\`/\`\`}"
+  printf "%s" "$s"
+}
+
 QUERY="
 SELECT GRANTEE, 'SCHEMA' AS SCOPE, TABLE_SCHEMA AS OBJ, PRIVILEGE_TYPE
 FROM information_schema.schema_privileges
@@ -50,97 +59,113 @@ FROM information_schema.user_privileges
 WHERE PRIVILEGE_TYPE <> 'USAGE';
 "
 
-if [[ -n "$TIMEOUT_BIN" ]]; then
-    LIST=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
+ROWS="$(run_mysql "$QUERY")"
+RC=$?
+if [[ $RC -eq 124 ]]; then
+  ACTION_LOG="조치 중단: 권한 조회 시간 초과"
+  EVIDENCE="권한 조회가 ${MYSQL_TIMEOUT}초를 초과했습니다."
+elif [[ $RC -ne 0 ]]; then
+  ACTION_LOG="조치 실패: 권한 조회 실패"
+  EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 D-11 조치를 수행할 수 없습니다."
 else
-    LIST=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
-fi
+  TARGETS=""
+  TARGET_COUNT=0
 
-# DBA/시스템 계정 예외 목록 (기관 정책에 따라 확장 가능)
-ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+  while IFS=$'\t' read -r grantee scope obj priv; do
+    [[ -z "$grantee" ]] && continue
+    user="$(extract_user_from_grantee "$grantee")"
+    in_csv "$user" "$ALLOWED_USERS_CSV" && continue
 
-is_allowed_user() {
-    local user="$1"
-    IFS=',' read -r -a arr <<< "$ALLOWED_USERS_CSV"
-    for u in "${arr[@]}"; do
-        [[ "$user" == "$u" ]] && return 0
-    done
-    return 1
-}
-
-extract_user_from_grantee() {
-    # 입력 예: 'appuser'@'10.0.0.%'
-    # 출력 예: appuser
-    echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
-}
-
-if [[ "$LIST" == "ERROR_TIMEOUT" ]]; then
-    STATUS="FAIL"
-    EVIDENCE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 수행하지 못했습니다."
-    ACTION_LOG="DB 응답 지연으로 인해 D-11 점검을 완료하지 못했습니다."
-elif [[ "$LIST" == "ERROR" ]]; then
-    STATUS="FAIL"
-    EVIDENCE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 점검을 수행할 수 없습니다."
-    ACTION_LOG="MySQL 접속 실패로 D-11 점검을 수행하지 못했습니다."
-else
-    if [[ -z "$LIST" ]]; then
-        STATUS="PASS"
-        EVIDENCE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
-        ACTION_LOG="점검 결과, 시스템 테이블 접근 권한은 허용 계정으로만 제한되어 있습니다."
+    row="${grantee}"$'\t'"${scope}"$'\t'"${obj}"$'\t'"${priv}"
+    if [[ -z "$TARGETS" ]]; then
+      TARGETS="$row"
     else
-        VIOLATION_COUNT=0
-        SAMPLE="N/A"
-
-        while IFS=$'\t' read -r grantee scope obj priv; do
-            [[ -z "$grantee" ]] && continue
-            user="$(extract_user_from_grantee "$grantee")"
-            if is_allowed_user "$user"; then
-                continue
-            fi
-
-            VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
-            if [[ "$SAMPLE" == "N/A" ]]; then
-                SAMPLE="${grantee} (${scope}:${obj}, ${priv})"
-            fi
-        done <<< "$LIST"
-
-        if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
-            STATUS="PASS"
-            EVIDENCE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
-            ACTION_LOG="점검 결과, 시스템 테이블 접근 권한은 허용 계정으로만 제한되어 있습니다."
-        else
-            STATUS="FAIL"
-            EVIDENCE="DBA 외 계정에 시스템 테이블 접근 가능 권한이 확인되었습니다. (${VIOLATION_COUNT}건, 예: ${SAMPLE})"
-            ACTION_LOG="D-11 점검 결과 취약: 일반 계정 권한 회수(REVOKE) 조치가 필요합니다."
-        fi
+      TARGETS+=$'\n'"$row"
     fi
+    TARGET_COUNT=$((TARGET_COUNT + 1))
+  done <<< "$ROWS"
+
+  if [[ $TARGET_COUNT -eq 0 ]]; then
+    STATUS="PASS"
+    ACTION_RESULT="NOT_REQUIRED"
+    ACTION_LOG="비인가 계정의 시스템 테이블 권한이 없어 추가 조치가 필요하지 않습니다."
+    EVIDENCE="D-11 기준 추가 조치 불필요"
+  else
+    FAIL=0
+    APPLIED=0
+
+    while IFS=$'\t' read -r grantee scope obj priv; do
+      [[ -z "$grantee" || -z "$scope" || -z "$priv" ]] && continue
+
+      SQL=""
+      case "$scope" in
+        SCHEMA)
+          db="$(esc_ident "$obj")"
+          SQL="REVOKE ${priv} ON \`${db}\`.* FROM ${grantee};"
+          ;;
+        TABLE)
+          db="${obj%%.*}"
+          tb="${obj#*.}"
+          db="$(esc_ident "$db")"
+          tb="$(esc_ident "$tb")"
+          SQL="REVOKE ${priv} ON \`${db}\`.\`${tb}\` FROM ${grantee};"
+          ;;
+        GLOBAL)
+          SQL="REVOKE ${priv} ON *.* FROM ${grantee};"
+          ;;
+      esac
+
+      if [[ -n "$SQL" ]]; then
+        run_mysql "$SQL" >/dev/null || FAIL=1
+        APPLIED=$((APPLIED + 1))
+      fi
+    done <<< "$TARGETS"
+
+    run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
+
+    VERIFY_ROWS="$(run_mysql "$QUERY")"
+    RCV=$?
+    REMAIN=0
+    SAMPLE="N/A"
+    if [[ $RCV -eq 0 ]]; then
+      while IFS=$'\t' read -r grantee scope obj priv; do
+        [[ -z "$grantee" ]] && continue
+        user="$(extract_user_from_grantee "$grantee")"
+        in_csv "$user" "$ALLOWED_USERS_CSV" && continue
+        REMAIN=1
+        if [[ "$SAMPLE" == "N/A" ]]; then
+          SAMPLE="${grantee}(${scope}:${obj},${priv})"
+        fi
+      done <<< "$VERIFY_ROWS"
+    else
+      REMAIN=1
+      SAMPLE="재검증 조회 실패"
+    fi
+
+    if [[ $FAIL -eq 0 && $REMAIN -eq 0 ]]; then
+      STATUS="PASS"
+      ACTION_RESULT="SUCCESS"
+      ACTION_LOG="비인가 계정의 시스템 테이블 관련 권한 ${APPLIED}건을 회수했습니다. 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 운영하세요."
+      EVIDENCE="D-11 조치 후 비인가 시스템 권한 미검출 (업무 DB 권한은 최소 범위로 수동 GRANT 필요)"
+    else
+      ACTION_LOG="조치 일부 실패: 일부 비인가 시스템 권한이 남아 있을 수 있습니다. 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 운영하세요."
+      EVIDENCE="D-11 자동 조치를 완료하지 못했습니다. (예: ${SAMPLE}) (업무 DB 권한은 최소 범위로 수동 GRANT 필요)"
+    fi
+  fi
 fi
 
-# 파일 해시
-if [ -f "$TARGET_FILE" ]; then
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    [[ -z "$FILE_HASH" ]] && FILE_HASH="HASH_ERROR"
-else
-    FILE_HASH="NOT_FOUND"
-fi
-
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 일반 사용자 계정은 시스템 테이블에 접근할 수 없게 되지만, 지정된 데이터베이스 및 테이블에 대한 권한은 그대로 유지됩니다. 따라서 일반적인 시스템 운영 및 애플리케이션 동작에는 영향이 없으며, 권한 범위를 벗어난 작업 시에만 접근이 제한됩니다."
-
-cat << EOF
+cat <<JSON
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "action_log": "$ACTION_LOG",
-    "guide": "시스템 테이블(mysql, performance_schema, sys)은 DBA 계정만 접근 가능하도록 권한을 최소화하고, 일반 사용자 권한은 업무 DB로만 제한하세요.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+  "check_id":"$ID",
+  "category":"$CATEGORY",
+  "title":"$TITLE",
+  "importance":"$IMPORTANCE",
+  "status":"$STATUS",
+  "evidence":"$EVIDENCE",
+  "guide":"일반 계정의 시스템 스키마(mysql/performance_schema/sys/information_schema) 접근 권한을 회수하고, 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 최소 권한으로 운영하세요.",
+  "action_result":"$ACTION_RESULT",
+  "action_log":"$ACTION_LOG",
+  "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
+  "check_date":"$(date '+%Y-%m-%d %H:%M:%S')"
 }
-EOF
+JSON
