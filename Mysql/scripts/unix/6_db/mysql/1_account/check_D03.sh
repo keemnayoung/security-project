@@ -1,10 +1,10 @@
 #!/bin/bash
 # @Author: 한은결
-# D-06: DB 사용자 계정 개별 부여 운영
-ID="D-06"
+# D-03: 비밀번호 수명/복잡도 정책 적용
+ID="D-03"
 CATEGORY="계정 관리"
-TITLE="DB 사용자 계정을 개별적으로 부여하여 사용"
-IMPORTANCE="중"
+TITLE="비밀번호 사용 기간 및 복잡도 정책 설정"
+IMPORTANCE="상"
 
 STATUS="FAIL"
 ACTION_RESULT="FAIL"
@@ -14,8 +14,14 @@ EVIDENCE="N/A"
 MYSQL_TIMEOUT=8
 MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
-COMMON_USERS_CSV="${COMMON_USERS_CSV:-guest,test,demo,shared,common,public,user}"
-EXEMPT_USERS_CSV="${EXEMPT_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+
+POLICY="${POLICY:-MEDIUM}"
+LENGTH="${LENGTH:-8}"
+MIXED="${MIXED:-1}"
+NUMBER="${NUMBER:-1}"
+SPECIAL="${SPECIAL:-1}"
+LIFETIME="${LIFETIME:-90}"
+EXPIRE_INTERVAL="${EXPIRE_INTERVAL:-91}"
 
 run_mysql() {
   local sql="$1"
@@ -24,135 +30,70 @@ run_mysql() {
   else
     $MYSQL_CMD "$sql" 2>/dev/null
   fi
+  return $?
 }
 
-in_csv() {
-  local needle="$1"
-  local csv="$2"
-  IFS=',' read -r -a arr <<< "$csv"
-  for item in "${arr[@]}"; do
-    [[ "$needle" == "$item" ]] && return 0
-  done
-  return 1
-}
-
-sql_escape() {
-  local s="$1"
-  s="${s//\'/\'\'}"
-  printf "%s" "$s"
-}
-
-AGG_SQL="
-SELECT user,
-       SUM(CASE WHEN host NOT IN ('localhost','127.0.0.1','::1') THEN 1 ELSE 0 END) AS non_local_host_count,
-       SUM(CASE WHEN host='%' THEN 1 ELSE 0 END) AS wildcard_count
-FROM mysql.user
-WHERE IFNULL(account_locked,'N') != 'Y'
-GROUP BY user;
+# [정책 적용용 SQL] (참고용: 실제 적용은 아래에서 개별 실행)
+SETUP_SQL="
+INSTALL COMPONENT 'file://component_validate_password';
+SET GLOBAL validate_password.policy='${POLICY}';
+SET GLOBAL validate_password.length=${LENGTH};
+SET GLOBAL validate_password.mixed_case_count=${MIXED};
+SET GLOBAL validate_password.number_count=${NUMBER};
+SET GLOBAL validate_password.special_char_count=${SPECIAL};
+SET GLOBAL default_password_lifetime=${LIFETIME};
 "
 
-DETAIL_SQL1="SELECT user,host,COALESCE(account_locked,'N') FROM mysql.user;"
-DETAIL_SQL2="SELECT user,host,'N' FROM mysql.user;"
+# ============================================================================
+# 1) 비밀번호 복잡도/수명 정책 적용 (자동 조치 핵심)
+#    - validate_password: 복잡도 정책
+#    - default_password_lifetime: 비밀번호 사용 기간(만료)
+# ============================================================================
+# INSTALL COMPONENT는 이미 설치된 경우 실패 가능 -> 실패해도 진행
+run_mysql "INSTALL COMPONENT 'file://component_validate_password';" >/dev/null || true
 
-AGG_ROWS="$(run_mysql "$AGG_SQL")"
-RC1=$?
-if [[ $RC1 -ne 0 ]]; then
-  ACTION_LOG="조치 실패: 계정 집계 조회 실패"
-  EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 D-06 자동 조치를 수행할 수 없습니다."
+# 복잡도 정책 적용
+run_mysql "SET GLOBAL validate_password.policy='${POLICY}';" >/dev/null; RC1=$?
+run_mysql "SET GLOBAL validate_password.length=${LENGTH};" >/dev/null; RC2=$?
+run_mysql "SET GLOBAL validate_password.mixed_case_count=${MIXED};" >/dev/null; RC3=$?
+run_mysql "SET GLOBAL validate_password.number_count=${NUMBER};" >/dev/null; RC4=$?
+run_mysql "SET GLOBAL validate_password.special_char_count=${SPECIAL};" >/dev/null; RC5=$?
+
+# 수명(만료) 정책 적용
+run_mysql "SET GLOBAL default_password_lifetime=${LIFETIME};" >/dev/null; RC6=$?
+
+if [[ $RC1 -ne 0 || $RC2 -ne 0 || $RC3 -ne 0 || $RC4 -ne 0 || $RC5 -ne 0 || $RC6 -ne 0 ]]; then
+  ACTION_LOG="조치 실패: 정책 파라미터 적용 중 오류"
+  EVIDENCE="validate_password 또는 default_password_lifetime 설정 적용 실패"
 else
-  ANON_BAD=0
-  declare -A BAD_COMMON
-  declare -A BAD_SHARED
+  # ==========================================================================
+  # 2) (선택적) 사용자 계정 비밀번호 만료 주기 적용
+  #    - 정책 강화 후 기존 비밀번호가 정책을 만족하지 않을 수 있음
+  #    - 여기서는 각 계정에 만료 interval을 부여(실패해도 진행)
+  # ==========================================================================
+  USERS="$(run_mysql "SELECT user,host FROM mysql.user WHERE user NOT IN ('root','mysql.sys','mysql.session','mysql.infoschema','mysqlxsys','mariadb.sys');")"
+  while IFS=$'\t' read -r user host; do
+    [[ -z "$user" || -z "$host" ]] && continue
+    run_mysql "ALTER USER '${user//\'/\'\'}'@'${host//\'/\'\'}' PASSWORD EXPIRE INTERVAL ${EXPIRE_INTERVAL} DAY;" >/dev/null || true
+  done <<< "$USERS"
 
-  while IFS=$'\t' read -r user non_local wildcard; do
-    [[ -z "$user" && -z "$non_local" && -z "$wildcard" ]] && continue
-    in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-
-    if [[ -z "$user" ]]; then
-      ANON_BAD=1
-    elif in_csv "$user" "$COMMON_USERS_CSV"; then
-      BAD_COMMON["$user"]=1
-    elif { [[ "$wildcard" -gt 0 ]] && [[ "$non_local" -gt 1 ]]; } || [[ "$non_local" -ge 3 ]]; then
-      BAD_SHARED["$user"]=1
-    fi
-  done <<< "$AGG_ROWS"
-
-  if [[ $ANON_BAD -eq 0 && ${#BAD_COMMON[@]} -eq 0 && ${#BAD_SHARED[@]} -eq 0 ]]; then
+  # ==========================================================================
+  # 3) 검증(재확인)
+  # ==========================================================================
+  VERIFY="$(run_mysql "SHOW VARIABLES WHERE Variable_name IN ('default_password_lifetime','validate_password.policy','validate_password.length','validate_password.mixed_case_count','validate_password.number_count','validate_password.special_char_count');")"
+  RCV=$?
+  if [[ $RCV -eq 0 && -n "$VERIFY" ]]; then
     STATUS="PASS"
-    ACTION_RESULT="NOT_REQUIRED"
-    ACTION_LOG="공용/과다 공유 사용 징후 계정이 없어 추가 조치가 필요하지 않습니다."
-    EVIDENCE="D-06 기준 추가 조치 불필요"
+    ACTION_RESULT="SUCCESS"
+    ACTION_LOG="비밀번호 복잡도/수명 정책을 적용했습니다. (정책을 만족하지 않는 기존 비밀번호는 변경하십시오.)"
+    EVIDENCE="D-03 정책값 적용 완료. 사용자 계정은 강화된 정책에 맞게 비밀번호 변경 필요"
   else
-    DETAIL_ROWS="$(run_mysql "$DETAIL_SQL1")"
-    RC2=$?
-    if [[ $RC2 -ne 0 ]]; then
-      DETAIL_ROWS="$(run_mysql "$DETAIL_SQL2")"
-      RC2=$?
-    fi
-
-    if [[ $RC2 -ne 0 ]]; then
-      ACTION_LOG="조치 실패: 계정 상세 조회 실패"
-      EVIDENCE="mysql.user 상세 조회에 실패하여 D-06 조치를 진행하지 못했습니다."
-    else
-      FAIL=0
-      DROP_CNT=0
-      LOCK_CNT=0
-
-      while IFS=$'\t' read -r user host locked; do
-        [[ -z "$host" ]] && continue
-        in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-
-        esc_user="$(sql_escape "$user")"
-        esc_host="$(sql_escape "$host")"
-
-        if { [[ -z "$user" ]] && [[ $ANON_BAD -eq 1 ]]; } || [[ -n "${BAD_COMMON[$user]:-}" ]]; then
-          run_mysql "DROP USER IF EXISTS '${esc_user}'@'${esc_host}';" >/dev/null || FAIL=1
-          DROP_CNT=$((DROP_CNT + 1))
-        elif [[ -n "${BAD_SHARED[$user]:-}" ]]; then
-          case "$host" in
-            localhost|127.0.0.1|::1) ;;
-            *)
-              run_mysql "ALTER USER '${esc_user}'@'${esc_host}' ACCOUNT LOCK;" >/dev/null || FAIL=1
-              LOCK_CNT=$((LOCK_CNT + 1))
-              ;;
-          esac
-        fi
-      done <<< "$DETAIL_ROWS"
-
-      run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
-
-      VERIFY_ROWS="$(run_mysql "$AGG_SQL")"
-      RCV=$?
-      REMAIN=0
-      if [[ $RCV -eq 0 ]]; then
-        while IFS=$'\t' read -r user non_local wildcard; do
-          [[ -z "$user" && -z "$non_local" && -z "$wildcard" ]] && continue
-          in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-          if [[ -z "$user" ]] || in_csv "$user" "$COMMON_USERS_CSV"; then
-            REMAIN=1
-            break
-          elif { [[ "$wildcard" -gt 0 ]] && [[ "$non_local" -gt 1 ]]; } || [[ "$non_local" -ge 3 ]]; then
-            REMAIN=1
-            break
-          fi
-        done <<< "$VERIFY_ROWS"
-      else
-        REMAIN=1
-      fi
-
-      if [[ $FAIL -eq 0 && $REMAIN -eq 0 ]]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="공용 계정 ${DROP_CNT}건 삭제, 공유 의심 원격 계정 ${LOCK_CNT}건 잠금 조치를 완료했습니다."
-        EVIDENCE="D-06 조치 후 공용/과다 공유 사용 징후가 확인되지 않습니다. 공용 계정 삭제 시 사용자별 개인 계정을 생성하여 최소권한으로 운영하세요. 예) CREATE USER 'user1'@'localhost' IDENTIFIED BY '강력한비밀번호'; GRANT SELECT,INSERT,UPDATE,DELETE ON <DB>.* TO 'user1'@'localhost'; FLUSH PRIVILEGES;"
-      else
-        ACTION_LOG="조치 일부 실패: 공용 계정 또는 공유 사용 징후 계정이 일부 남아 있을 수 있습니다."
-        EVIDENCE="D-06 자동 조치를 완료하지 못했습니다. 공용 계정 삭제 시 사용자별 개인 계정을 생성하여 최소권한으로 운영하세요. 예) CREATE USER 'user1'@'localhost' IDENTIFIED BY '강력한비밀번호'; GRANT SELECT,INSERT,UPDATE,DELETE ON <DB>.* TO 'user1'@'localhost'; FLUSH PRIVILEGES;"
-      fi
-    fi
+    ACTION_LOG="조치 일부 실패: 설정 검증 조회 실패"
+    EVIDENCE="정책 적용 후 검증 단계에서 오류"
   fi
 fi
 
+echo ""
 cat <<JSON
 {
   "check_id":"$ID",
@@ -161,7 +102,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"공용 계정을 삭제 또는 잠금 조치하였으며, 사용자별 개인 계정을 생성하여 최소 권한 원칙에 따라 분리 운영하시기 바랍니다."
+  "guide":"validate_password 및 default_password_lifetime 정책을 적용하였습니다. 기존 계정의 비밀번호는 정책에 부합하도록 변경하시기 바랍니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
