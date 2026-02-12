@@ -50,7 +50,7 @@ while IFS=: read -r USER _ _ _ _ HOME _; do
         if [[ "$OWNER" != "root" ]]; then
             STATUS="FAIL"
             ACTION_RESULT="PARTIAL_SUCCESS"
-            EVIDENCE_LINES+=("${USER}:${HOME}(OWNER=${OWNER},PERM=${PERM})")
+            EVIDENCE_LINES+=("${USER}:${HOME}(owner=${OWNER},perm=${PERM})")
         fi
     fi
 

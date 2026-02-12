@@ -34,7 +34,7 @@ CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 # 2. 진단 로직
 MISSING_HOME_USERS=()
 
-while IFS=: read -r username _ uid _ _ homedir; do
+while IFS=: read -r username _ uid _ _ homedir _ ; do
     # 시스템 계정 제외 (UID 1000 미만)
     if [ "$uid" -ge 1000 ]; then
         if [ ! -d "$homedir" ]; then

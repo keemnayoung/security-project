@@ -19,18 +19,21 @@ ID="U-17"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="시스템 시작 스크립트 파일 권한 설정"
 IMPORTANCE="상"
-
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 STATUS="FAIL"
 EVIDENCE=""
+GUIDE=""
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
+
+# 1. 조치 대상 수집
 EVIDENCE_LINES=()
 MODIFIED=0
 FAIL_FLAG=0
 
 
-# 1. 조치 대상 수집 (KISA 가이드 기준)
 if [ -d /etc/rc.d ]; then
     INIT_FILES=$(readlink -f /etc/rc.d/*/* 2>/dev/null | sed 's/$/*/')
 fi
@@ -46,8 +49,8 @@ ALL_FILES=$(echo -e "$INIT_FILES\n$SYSTEMD_FILES" | sort -u)
 if [ -z "$ALL_FILES" ]; then
     ACTION_RESULT="ERROR"
     STATUS="FAIL"
-    ACTION_LOG="조치 대상 시스템 시작 스크립트 파일이 존재하지 않음"
-    EVIDENCE="조치 대상 파일 없음"
+    ACTION_LOG="조치 대상 시스템 시작 스크립트 파일이 존재하지 않습니다."
+    EVIDENCE="조치 대상 파일이 존재하지 않습니다."
 else
     for FILE in $ALL_FILES; do
         [ -e "$FILE" ] || continue
@@ -75,32 +78,34 @@ else
         AFTER_PERM=$(stat -c "%A" "$FILE")
 
         if [ "$AFTER_OWNER" = "root" ] && [ "$(echo "$AFTER_PERM" | cut -c9)" != "w" ]; then
-            EVIDENCE_LINES+=("[양호] $FILE (owner=root, perm=$AFTER_PERM)")
+            EVIDENCE_LINES+=("[양호] $FILE (owner=$AFTER_OWNER, perm=$AFTER_PERM)")
         else
             EVIDENCE_LINES+=("[취약] $FILE (owner=$AFTER_OWNER, perm=$AFTER_PERM)")
-            FAIL_FLAG=1
+            FAIL_FLAG=1    
+
         fi
     done
 
     if [ "$FAIL_FLAG" -eq 0 ]; then
         STATUS="PASS"
         ACTION_RESULT="SUCCESS"
+        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
         if [ "$MODIFIED" -eq 1 ]; then
-            ACTION_LOG="시스템 시작 스크립트 파일 소유자 및 권한 조치 완료"
+            ACTION_LOG="시스템 시작 스크립트 파일 소유자 및 권한 조치가 완료되었습니다."
         else
-            ACTION_LOG="조치 대상 없음 (이미 기준에 부합)"
+            ACTION_LOG="조치 대상이 존재하지 않습니다."
         fi
     else
         STATUS="FAIL"
         ACTION_RESULT="PARTIAL_SUCCESS"
-        ACTION_LOG="일부 시스템 시작 스크립트 파일이 기준에 부합하지 않음"
+        ACTION_LOG="일부 시스템 시작 스크립트 파일이 기준에 부합하지 않습니다. 수동으로 확인해주시길 바랍니다."
+        GUIDE="시스템 시작 스크립트 파일(/etc/rc.d/*/*와 /etc/systemd/system/*)의 소유자를 root 또는 적절한 계정 사용자로 변경하고 권한도 o-w로 변경하십시오."
     fi
 
-    EVIDENCE=$(printf "%s\\n" "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
+    EVIDENCE=$(printf "%s, " "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
 fi
 
-
-# 4. JSON 표준 출력 (U-01 기준)
+# 4. JSON 표준 출력
 echo ""
 cat << EOF
 {
@@ -110,10 +115,10 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF

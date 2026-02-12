@@ -23,11 +23,13 @@ ID="U-25"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="world writable 파일 점검"
 IMPORTANCE="상"
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
-
 STATUS="FAIL"
 EVIDENCE="N/A"
+GUIDE="KISA 가이드라인에 따른 홈 디렉터리 환경변수 파일 권한 설정을 수행하였습니다."
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TMP_BEFORE="/tmp/u25_world_writable_before.txt"
 TMP_AFTER="/tmp/u25_world_writable_after.txt"
@@ -41,8 +43,8 @@ if [ ! -s "$TMP_BEFORE" ]; then
     # 조치 대상 없음
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
-    ACTION_LOG="world writable 파일이 존재하지 않아 조치 불필요"
-    EVIDENCE="world writable 파일 없음 (양호)"
+    ACTION_LOG="world writable 파일이 존재하지 않아 해당 항목에 대한 보안 위협이 없습니다."
+    EVIDENCE="world writable 파일이 존재하지 않아 해당 항목에 대한 보안 위협이 없습니다."
 else
     # Step 2) 일반 사용자 쓰기 권한 제거
     while read -r line; do
@@ -50,9 +52,9 @@ else
         chmod o-w "$FILE_PATH" 2>/dev/null
 
         if [ $? -eq 0 ]; then
-            ACTION_LOG+="[권한 제거] $FILE_PATH ; "
+            ACTION_LOG+="$FILE_PATH 의 권한 제거가 완료되었습니다. "
         else
-            ACTION_LOG+="[권한 제거 실패] $FILE_PATH ; "
+            ACTION_LOG+="$FILE_PATH 의 권한 제거가 실패하였습니다. "
         fi
     done < "$TMP_BEFORE"
 
@@ -62,15 +64,17 @@ else
     if [ ! -s "$TMP_AFTER" ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        EVIDENCE="모든 world writable 파일의 일반 사용자 쓰기 권한 제거 완료"
+        EVIDENCE="모든 world writable 파일의 일반 사용자 쓰기 권한 제거가 완료되었습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
         ACTION_RESULT="PARTIAL_SUCCESS"
         STATUS="FAIL"
-        EVIDENCE="일부 world writable 파일이 여전히 존재함 (수동 확인 필요)"
+        EVIDENCE="일부 world writable 파일이 여전히 존재하여 취약합니다. 수동 확인이 필요합니다."
+        GUIDE="world writable 파일 존재 여부를 확인하고 불필요한 경우 제거해주세요."
     fi
 fi
 
-# 2. JSON 표준 출력
+# 3. JSON 표준 출력
 echo ""
 cat << EOF
 {
@@ -80,11 +84,11 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "world writable 파일 존재 여부를 점검하고 불필요한 경우 일반 사용자 쓰기 권한을 제거하도록 설정합니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF
 

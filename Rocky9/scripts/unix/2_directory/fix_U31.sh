@@ -19,23 +19,23 @@ ID="U-31"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="홈디렉토리 소유자 및 권한 설정"
 IMPORTANCE="중"
-TARGET_FILE="/etc/passwd"
-
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 STATUS="FAIL"
 EVIDENCE=""
-
+GUIDE=""
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 
+TARGET_FILE="/etc/passwd"
 # 1. 실제 조치 프로세스 시작
 if [ -f "$TARGET_FILE" ]; then
 
-    while IFS=: read -r USER _ UID _ _ HOME _; do
+    while IFS=: read -r USER _ USER_UID _ _ HOME _; do
 
         # UID 1000 이상 사용자만 대상
-        UID_CLEAN=$(echo "$UID" | tr -cd '0-9')
+        UID_CLEAN=$(echo "$USER_UID" | tr -cd '0-9')
         [[ -z "$UID_CLEAN" ]] && continue
         (( UID_CLEAN < 1000 )) && continue
 

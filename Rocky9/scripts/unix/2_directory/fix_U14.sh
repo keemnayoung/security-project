@@ -21,11 +21,13 @@ ID="U-14"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="root 홈, 패스 디렉터리 권한 및 패스 설정"
 IMPORTANCE="상"
-
 STATUS="FAIL"
-ACTION_RESULT="FAIL"
 EVIDENCE=""
+GUIDE=""
+ACTION_RESULT="FAIL"
 ACTION_LOG=""
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 
 # 2. root 로그인 쉘 확인 및 대상 파일 정의
@@ -62,7 +64,6 @@ EVIDENCE="조치 전 root PATH: $BEFORE_PATH"
 
 MODIFIED_FILES=()
 MODIFIED_COUNT=0
-
 
 # 4. 실제 조치 프로세스
 for TARGET_FILE in "${TARGET_FILES[@]}"; do
@@ -108,17 +109,19 @@ if echo "$AFTER_PATH" | grep -qE '(^|:)\.(\:|$)'; then
     STATUS="FAIL"
     ACTION_LOG="조치를 수행했으나 PATH 내 '.'이 여전히 앞 또는 중간에 존재합니다. 수동 확인이 필요합니다."
     EVIDENCE+="→ 조치 후 PATH: $AFTER_PATH 로 여전히 취약합니다."
+    GUIDE="관리자가 직접 root 계정의 환경설정 파일(/.profile, /.bashrc 등)과 시스템 환경설정 파일(/etc/profile 등)에 설정된 PATH 환경변수에서 현재 디렉터리를 나타내는 '.'을 PATH 환경변수의 마지막으로 이동하도록 설정하십시오."
 else
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
-
+    
     if [ "$MODIFIED_COUNT" -gt 0 ]; then
-        ACTION_LOG="PATH 내 '.' 위치 조정 완료. 조치 파일 ${MODIFIED_COUNT}개 (${MODIFIED_FILES[*]})"
+        ACTION_LOG="PATH 내 '.' 위치 조정을 완료하였습니다. 조치 파일 ${MODIFIED_COUNT}개 (${MODIFIED_FILES[*]})"
     else
-        ACTION_LOG="취약 설정 없음. PATH가 이미 안전한 상태였습니다."
+        ACTION_LOG="취약한 설정이 없습니다. PATH가 이미 안전한 상태였습니다."
     fi
 
     EVIDENCE+="→ 조치 후 PATH: $AFTER_PATH 로 양호합니다."
+    GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
 fi
 
 
@@ -132,10 +135,10 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF

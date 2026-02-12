@@ -19,16 +19,18 @@ ID="U-22"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="/etc/services 파일 소유자 및 권한 설정"
 IMPORTANCE="상"
-TARGET_FILE="/etc/services"
-
+STATUS="FAIL"
+EVIDENCE=""
+GUIDE=""
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
-STATUS="FAIL"
-EVIDENCE="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+TARGET_FILE="/etc/services"
 
 # 1. 실제 조치 프로세스 시작
 if [ -f "$TARGET_FILE" ]; then
-
 
     # 백업 생성
     BACKUP_FILE="${TARGET_FILE}_bak_$(date +%Y%m%d_%H%M%S)"
@@ -47,36 +49,38 @@ if [ -f "$TARGET_FILE" ]; then
 
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="조치 완료. /etc/services 소유자 및 권한이 기준에 맞게 설정됨."
-        EVIDENCE="소유자: $AFTER_OWNER, 권한: $AFTER_PERM (양호)"
+        ACTION_LOG="/etc/services 의 소유자($AFTER_OWNER) 및 권한($AFTER_PERM) 설정이 완료되었습니다."
+        EVIDENCE="/etc/services 의 소유자($AFTER_OWNER) 및 권한($AFTER_PERM) 설정이 완료되었습니다."
+        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
     else
         ACTION_RESULT="PARTIAL_SUCCESS"
         STATUS="FAIL"
-        ACTION_LOG="조치 수행 후에도 설정이 기준에 부합하지 않음. 수동 확인 필요."
-        EVIDENCE="소유자: $AFTER_OWNER, 권한: $AFTER_PERM (취약)"
+        ACTION_LOG="$FILE 의 조치를 수행했지만 소유자($AFTER_OWNER) 및 권한($AFTER_PERM)으로 여전히 취약합니다. 수동 확인이 필요합니다."
+        EVIDENCE="$FILE 의 조치를 수행했지만 소유자($AFTER_OWNER) 및 권한($AFTER_PERM)으로 여전히 취약합니다. 수동 확인이 필요합니다."
+        GUIDE="/etc/services 파일 소유자를 root로 변경하고 권한도 644로 변경해주세요."
     fi
 else
     ACTION_RESULT="ERROR"
     STATUS="FAIL"
     ACTION_LOG="조치 대상 파일(/etc/services)이 존재하지 않습니다."
-    EVIDENCE="파일 없음"
+    EVIDENCE="조치 대상 파일(/etc/services)이 존재하지 않습니다."
+    GUIDE="/etc/services 파일 소유자를 root로 변경하고 권한도 644로 변경해주세요."
 fi
 
-# 2. JSON 표준 출력 (U-01 구조 그대로)
+# 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "guide": "KISA 가이드라인에 따른 파일 권한 보안 설정이 완료되었습니다.",
-  "action_result": "$ACTION_RESULT",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-  "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF

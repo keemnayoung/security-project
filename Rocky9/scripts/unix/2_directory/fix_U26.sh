@@ -24,15 +24,17 @@ ID="U-26"
 CATEGORY="파일 및 디렉터리 관리"
 TITLE="/dev에 존재하지 않는 device 파일 점검"
 IMPORTANCE="상"
-TARGET_FILE="/dev"
-
 STATUS="FAIL"
+EVIDENCE="N/A"
+GUIDE=""
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
-EVIDENCE="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-ACTION_DATE=$(date "+%Y-%m-%d %H:%M:%S")
-CHECK_DATE=$(date "+%Y-%m-%d %H:%M:%S")
+
+TARGET_FILE="/dev"
+
 
 
 # 1. 실제 조치 프로세스 시작
@@ -44,9 +46,9 @@ if [ -d "$TARGET_FILE" ]; then
     if [ -z "$INVALID_FILES" ]; then
         # 이미 양호한 상태
         STATUS="PASS"
-        ACTION_RESULT="NO_ACTION_REQUIRED"
-        ACTION_LOG="조치 대상 파일이 존재하지 않아 추가 조치가 필요하지 않습니다."
-        EVIDENCE="불필요하거나 존재하지 않는 device 파일 없음 (양호)"
+        ACTION_RESULT="SUCCESS"
+        ACTION_LOG="조치 대상 파일이 존재하지 않아 않아 해당 항목에 대한 보안 위협이 없습니다."
+        EVIDENCE="조치 대상 파일이 존재하지 않아 않아 해당 항목에 대한 보안 위협이 없습니다."
     else
         # 쉼표 구분 문자열 생성
         INVALID_FILES_CSV=$(echo "$INVALID_FILES" | paste -sd ", " -)
@@ -60,14 +62,16 @@ if [ -d "$TARGET_FILE" ]; then
         if [ -z "$REMAIN_FILES" ]; then
             STATUS="PASS"
             ACTION_RESULT="SUCCESS"
-            ACTION_LOG="불필요하거나 존재하지 않는 device 파일 삭제 완료"
-            EVIDENCE="삭제된 파일: $INVALID_FILES_CSV (양호)"
+            ACTION_LOG="불필요하거나 존재하지 않는 device 파일 삭제를 완료하였습니다."
+            EVIDENCE="삭제된 파일: $INVALID_FILES_CSV"
+            GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
         else
             REMAIN_FILES_CSV=$(echo "$REMAIN_FILES" | paste -sd ", " -)
             STATUS="FAIL"
             ACTION_RESULT="PARTIAL_SUCCESS"
-            ACTION_LOG="일부 device 파일 삭제 실패. 수동 확인 필요"
-            EVIDENCE="잔존 파일: $REMAIN_FILES_CSV (취약)"
+            ACTION_LOG="일부 device 파일 삭제를 실패하였습니다. 수동 확인이 필요합니다."
+            EVIDENCE="잔존 파일: $REMAIN_FILES_CSV"
+            GUIDE="/dev 디렉터리에 대한 파일 목록을 점검 후 major, minor number를 가지지 않는 device 파일을 제거해주세요."
         fi
     fi
 else
@@ -75,13 +79,13 @@ else
     ACTION_RESULT="ERROR"
     ACTION_LOG="/dev 디렉터리가 존재하지 않습니다."
     EVIDENCE="조치 대상 디렉터리 없음"
+    GUIDE="/dev 디렉터리에 대한 파일 목록을 점검 후 major, minor number를 가지지 않는 device 파일을 제거해주세요."
 fi
 
 
 # 2. JSON 표준 출력
 echo ""
-
-cat <<EOF
+cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
@@ -89,7 +93,7 @@ cat <<EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "/dev 디렉터리는 character/block device 파일만 존재해야 하며, 일반 파일은 제거되어야 합니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
     "action_date": "$ACTION_DATE",

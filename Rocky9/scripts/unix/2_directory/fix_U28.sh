@@ -24,17 +24,18 @@ ID="U-28"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="접속 IP 및 포트 제한"
 IMPORTANCE="상"
-
 STATUS="FAIL"
+EVIDENCE="N/A"
+GUIDE=""
 ACTION_RESULT="MANUAL_REQUIRED"
 ACTION_LOG="N/A"
-EVIDENCE="N/A"
-
 CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
-# 1. 실제 조치 프로세스 (상태 수집)
-FIND_FLAG=0
+
+
+# 1. 실제 조치 프로세스
+FIND_FLAG=
 DETAIL_LOG=""
 
 # TCP Wrapper
@@ -42,7 +43,7 @@ if [ -f /etc/hosts.allow ] && [ -f /etc/hosts.deny ]; then
     if grep -q "^ALL:ALL" /etc/hosts.deny && \
        grep -Ev '^\s*$|^\s*#' /etc/hosts.allow >/dev/null 2>&1; then
         FIND_FLAG=1
-        DETAIL_LOG+="TCP Wrapper 접근제한 설정 확인\n"
+        DETAIL_LOG+="TCP Wrapper 접근제한 설정 정책이 존재합니다. "
     fi
 fi
 
@@ -51,7 +52,7 @@ if command -v iptables >/dev/null 2>&1; then
     IPT_RULE=$(iptables -L INPUT -n 2>/dev/null | grep ACCEPT | grep dpt)
     if [ -n "$IPT_RULE" ]; then
         FIND_FLAG=1
-        DETAIL_LOG+="iptables IP 및 포트 제한 정책 존재\n"
+        DETAIL_LOG+="iptables IP 및 포트 제한 정책이 존재합니다. "
     fi
 fi
 
@@ -60,7 +61,7 @@ if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>
     FW_RULE=$(firewall-cmd --list-rich-rules 2>/dev/null)
     if [ -n "$FW_RULE" ]; then
         FIND_FLAG=1
-        DETAIL_LOG+="firewalld rich-rule 접근제한 설정 존재\n"
+        DETAIL_LOG+="firewalld rich-rule 접근제한 설정 정책이 존재합니다. "
     fi
 fi
 
@@ -70,7 +71,7 @@ if command -v ufw >/dev/null 2>&1; then
         UFW_RULE=$(ufw status numbered | grep ALLOW | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
         if [ -n "$UFW_RULE" ]; then
             FIND_FLAG=1
-            DETAIL_LOG+="UFW IP 기반 접근제한 정책 존재\n"
+            DETAIL_LOG+="UFW IP 기반 접근제한 정책이 존재합니다. "
         fi
     fi
 fi
@@ -80,16 +81,18 @@ if [ "$FIND_FLAG" -eq 1 ]; then
     STATUS="PASS"
     ACTION_RESULT="SUCCESS"
     ACTION_LOG="접근 IP 및 포트 제한 설정이 확인되어 추가 조치가 필요하지 않습니다."
-    EVIDENCE="IP 및 포트 기반 접근제한 설정 존재 (양호)"
+    EVIDENCE="{$DETAIL_LOG} IP 및 포트 기반 접근제한 설정이 존재하여 보안 위협이 없습니다."
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 else
     STATUS="FAIL"
-    ACTION_RESULT="MANUAL_REQUIRED"
+    ACTION_RESULT="PARTIAL_SUCCESS"
     ACTION_LOG="접근 IP 및 포트 제한 설정이 확인되지 않아 자동 조치를 수행하지 않았습니다. 정책에 따라 수동 설정이 필요합니다."
-    EVIDENCE="접근제한 정책 미설정 (취약)"
+    EVIDENCE="접근 IP 및 포트 제한 설정이 확인되지 않아 자동 조치를 수행하지 않았습니다. 정책에 따라 수동 설정이 필요합니다."
+    GUIDE="OS에 기본으로 제공하는 방화벽 애플리케이션이나 TCP Wrapper와 같은 호스트별 서비스 제한하고 애플리케이션을 사용하여 접근 허용 IP를 등록해주세요."
 fi
 
 
-# 3. JSON 표준 출력 (U-01 형식과 동일)
+# 2. JSON 표준 출력
 echo ""
 cat << EOF
 {
@@ -99,7 +102,7 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "OS 기본 방화벽 또는 TCP Wrapper를 이용하여 허용 IP 및 포트를 제한 설정해야 합니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
     "action_date": "$ACTION_DATE",

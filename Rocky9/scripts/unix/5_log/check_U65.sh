@@ -48,7 +48,7 @@ if systemctl list-units --type=service | grep -q ntp; then
             
             # Step 3. ntp.conf 서버 설정 확인
             if [ -f /etc/ntp.conf ] && grep -qE '^[[:space:]]*server[[:space:]]+' /etc/ntp.conf; then
-                EVIDENCE+="ntp.conf 서버 설정이 존재하여 이 항목에 대한 보안 위협이 없습니다. 다만, 올바른 설정이 다시 한번 확인해주시길 바랍니다."
+                EVIDENCE="ntp.conf 서버 설정이 존재하여 이 항목에 대한 보안 위협이 없습니다. 다만, 올바른 설정이 다시 한번 확인해주시길 바랍니다."
                 NTP_OK=true
             else
                 EVIDENCE+="ntp.conf 서버 설정이 없습니다. "
@@ -79,7 +79,7 @@ if systemctl list-units --type=service | grep -q chrony; then
 
             # Step 3. chrony.conf 서버 설정 확인
             if [ -f /etc/chrony.conf ] && grep -qE '^[[:space:]]*server[[:space:]]+' /etc/chrony.conf; then
-                EVIDENCE+="chrony.conf 서버 설정이 존재하여 이 항목에 대한 보안 위협이 없습니다. 다만, 올바른 설정이 다시 한번 확인해주시길 바랍니다. "
+                EVIDENCE="chrony.conf 서버 설정이 존재하여 이 항목에 대한 보안 위협이 없습니다. 다만, 올바른 설정이 다시 한번 확인해주시길 바랍니다. "
                 CHRONY_OK=true
             else
                 EVIDENCE+="chrony.conf 서버 설정이 없습니다. "

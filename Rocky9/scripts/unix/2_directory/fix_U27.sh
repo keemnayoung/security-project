@@ -19,21 +19,23 @@ ID="U-27"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="\$HOME/.rhosts, hosts.equiv 사용 금지"
 IMPORTANCE="상"
+STATUS="FAIL"
+EVIDENCE=""
+GUIDE=""
 ACTION_RESULT="FAIL"
 ACTION_LOG="N/A"
-EVIDENCE=""
-STATUS="FAIL"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 TARGET_FILES=("/etc/hosts.equiv" "\$HOME/.rhosts")
 RHOSTS_FILES=$(find /home -name ".rhosts" 2>/dev/null)
 
 if [ ${#TARGET_FILES[@]} -eq 0 ] && [ -z "$RHOSTS_FILES" ]; then
     ACTION_RESULT="ERROR"
-    ACTION_LOG="조치 대상 파일 없음"
-    EVIDENCE="파일 없음"
+    ACTION_LOG="조치 대상 파일이 존재하지 않습니다."
+    EVIDENCE="조치 대상 파일이 존재하지 않습니다."
+    GUIDE="/etc/hosts.equiv, \$HOME/.rhosts 파일 소유자를 root 또는 해당 계정으로 변경해주시고 권한도 600 이하로 변경해주세요. 각 파일에 허용 호스트 및 계정을 등록해주세요."
 else
     for file in "${TARGET_FILES[@]}" $RHOSTS_FILES; do
         if [ -f "$file" ]; then
@@ -63,8 +65,8 @@ else
             PLUS_AFTER=$(grep -E '^\s*\+' "$file" 2>/dev/null)
             AFTER="owner=$OWNER_AFTER,perm=$PERM_AFTER,plus=$( [ -n "$PLUS_AFTER" ] && echo yes || echo no )"
 
-            EVIDENCE+="$file(before:$BEFORE,after:$AFTER),"
-            ACTION_LOG+="$file 조치 완료,"
+            EVIDENCE+="$file (조치 전 상태: $BEFORE, 조치 후 상태: $AFTER), "
+            ACTION_LOG+="$file 조치가 완료되었습니다. "
         fi
     done
 
@@ -74,11 +76,12 @@ else
 
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 fi
 
-# 2. JSON 출력
+# 2. JSON 표준 출력
 echo ""
-cat <<EOF
+cat << EOF
 {
     "check_id": "$ID",
     "category": "$CATEGORY",
@@ -86,7 +89,7 @@ cat <<EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 소유자, 권한, '+' 설정 제거 완료",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
     "action_date": "$ACTION_DATE",

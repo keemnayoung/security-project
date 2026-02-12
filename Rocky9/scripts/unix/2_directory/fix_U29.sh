@@ -19,20 +19,24 @@ ID="U-29"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="hosts.lpd 파일 소유자 및 권한 설정"
 IMPORTANCE="하"
-TARGET_FILE="/etc/hosts.lpd"
-
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 STATUS="FAIL"
 EVIDENCE="N/A"
+GUIDE=""
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 
 # 1. 실제 조치 프로세스
+TARGET_FILE="/etc/hosts.lpd"
+
 if [ ! -e "$TARGET_FILE" ]; then
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
-    ACTION_LOG="/etc/hosts.lpd 파일이 존재하지 않아 조치 불필요"
-    EVIDENCE="/etc/hosts.lpd 파일 미존재 (양호)"
+    ACTION_LOG="/etc/hosts.lpd 파일이 존재하지 않아 이 항목에 대한 보안 위협이 없습니다."
+    EVIDENCE="/etc/hosts.lpd 파일이 존재하지 않아 이 항목에 대한 보안 위협이 없습니다."
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 else
 
     chown root "$TARGET_FILE" 2>/dev/null
@@ -44,20 +48,21 @@ else
     if [ "$OWNER" = "root" ] && [ "$PERM" -le 600 ]; then
         ACTION_RESULT="SUCCESS"
         STATUS="PASS"
-        ACTION_LOG="/etc/hosts.lpd 파일 소유자 및 권한 설정 완료"
-        EVIDENCE="소유자: $OWNER, 권한: $PERM (양호)"
+        ACTION_LOG="/etc/hosts.lpd 파일 소유자($OWNER) 및 권한($PERM) 설정이 완료되었습니다."
+        EVIDENCE="/etc/hosts.lpd 파일 소유자($OWNER) 및 권한($PERM) 설정이 완료되었습니다."
+        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
     else
         ACTION_RESULT="FAIL"
         STATUS="FAIL"
-        ACTION_LOG="/etc/hosts.lpd 파일 권한 또는 소유자 설정 실패"
-        EVIDENCE="소유자: $OWNER, 권한: $PERM (취약)"
+        ACTION_LOG="/etc/hosts.lpd 파일 소유자($OWNER) 및 권한($PERM) 설정이 실패하였습니다."
+        EVIDENCE="/etc/hosts.lpd 파일 소유자($OWNER) 및 권한($PERM) 설정이 실패하였습니다."
+        GUIDE="/etc/hosts.lpd 파일을 제거하거나, /etc/hosts.lpd 파일 소유자를 root로 변경하고 권한을 600 이하로 변경해주세요."
     fi
 fi
 
 
 # 2. JSON 표준 출력
 echo ""
-
 cat << EOF
 {
     "check_id": "$ID",
@@ -66,10 +71,10 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF

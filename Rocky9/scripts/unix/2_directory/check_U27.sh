@@ -24,11 +24,9 @@ EVIDENCE=""
 IMPACT_LEVEL="LOW" 
 ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 해당 방식에 의존하던 레거시 자동화 작업이나 원격 관리 기능은 더 이상 동작하지 않을 수 있습니다."
 GUIDE="/etc/hosts.equiv, \$HOME/.rhosts 파일 소유자를 root 또는 해당 계정으로 변경해주시고 권한도 600 이하로 변경해주세요. 각 파일에 허용 호스트 및 계정을 등록해주세요."
-TARGET_FILES=("/etc/hosts.equiv")
+TARGET_FILE="/etc/hosts.equiv"
 FILE_HASH="N/A"
 CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-
-TARGET_FILES=("/etc/hosts.equiv")
 
 VUL_OWNER_LIST=()
 VUL_PERM_LIST=()
@@ -43,11 +41,11 @@ RHOSTS_FILES=$(find /home -name ".rhosts" 2>/dev/null)
 if [ -z "$SERVICE_USED" ]; then
     EVIDENCE="rlogin, rsh, rexec 서비스 미사용"
 else
-    for file in "${TARGET_FILES[@]}" $RHOSTS_FILES; do
+    for file in $TARGET_FILE $RHOSTS_FILES; do
         if [ -f "$file" ]; then
             OWNER=$(stat -c %U "$file")
             PERM=$(stat -c %a "$file")
-            PLUS_EXIST=$(grep -E '^\s*\+' "$file" 2>/dev/null)
+            PLUS_EXIST=$(grep -E '^[[:space:]]*\+' "$file" 2>/dev/null)
 
             # /etc/hosts.equiv 소유자 점검
             if [[ "$file" == "/etc/hosts.equiv" && "$OWNER" != "root" ]]; then
@@ -97,7 +95,7 @@ if [ "$STATUS" = "FAIL" ]; then
   fi
 else
   STATUS="PASS"
-  EVIDENCE="사용자, 시스템 환경변수 파일 소유자 또는 권한 설정이 적절하게 설정되어 있어 이 항목에서 보안 위협이 없습니다."
+  EVIDENCE+="사용자, 시스템 환경변수 파일 소유자 또는 권한 설정이 적절하게 설정되어 있어 이 항목에서 보안 위협이 없습니다."
   GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 fi
 

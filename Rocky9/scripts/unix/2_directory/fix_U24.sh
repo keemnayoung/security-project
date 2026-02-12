@@ -19,12 +19,13 @@ ID="U-24"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="사용자, 시스템 환경변수 파일 소유자 및 권한 설정"
 IMPORTANCE="상"
-
 STATUS="PASS"
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
 EVIDENCE=""
 GUIDE="KISA 가이드라인에 따른 홈 디렉터리 환경변수 파일 권한 설정을 수행하였습니다."
+ACTION_RESULT="SUCCESS"
+ACTION_LOG=""
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 ENV_FILES=(
   ".profile"
@@ -70,25 +71,29 @@ while IFS=: read -r USER _ _ _ _ HOME_DIR _; do
        || [[ "${PERM_AFTER:5:1}" == "w" || "${PERM_AFTER:8:1}" == "w" ]]; then
         STATUS="FAIL"
         ACTION_RESULT="PARTIAL_SUCCESS"
-        [ -n "$ACTION_LOG" ] && ACTION_LOG+=", "
-        ACTION_LOG+="조치 실패: $FILE_PATH"
-        [ -n "$EVIDENCE" ] && EVIDENCE+=", "
-        EVIDENCE+="조치 후에도 기준 미충족 ($FILE_PATH)"
+        GUIDE="환경변수 파일(.profile, .kshrc, .cshrc, .bashrc, .bash_profile, .login, .exrc, .netrc 등)의 소유자를 root 또는 해당 계정으로 변경하고, 일반 사용자 쓰기 권한을 제거해주세요."
+
+        ACTION_LOG+="$FILE_PATH 의 소유자($OWNER_AFTER) 또는 권한($PERM_AFTER) 조치가 실패하였습니다. "
+        EVIDENCE+="$FILE_PATH 의 소유자($OWNER_AFTER) 또는 권한($PERM_AFTER) 조치가 실패하였습니다. "
     else
-        [ -n "$ACTION_LOG" ] && ACTION_LOG+=", "
-        ACTION_LOG+="조치 완료: $FILE_PATH"
+        ACTION_LOG+="$FILE_PATH 의 소유자($OWNER_AFTER) 또는 권한($PERM_AFTER) 조치가 완료되었습니다. "
+        EVIDENCE+="$FILE_PATH 의 소유자($OWNER_AFTER) 또는 권한($PERM_AFTER) 조치가 완료되었습니다. "
     fi
 
   done
 done < /etc/passwd
 
+if [ "$STATUS" == "PASS" ]; then
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+fi
 
 # 2. 결과 정리
 if [ "$ACTION_TARGET_FOUND" = false ]; then
   STATUS="PASS"
   ACTION_RESULT="SUCCESS"
-  ACTION_LOG="조치 대상 환경변수 파일이 존재하지 않음"
-  EVIDENCE="점검 대상 파일 없음"
+  ACTION_LOG="조치 대상 환경변수 파일이 존재하지 않습니다."
+  EVIDENCE="조치 대상 환경변수 파일이 존재하지 않습니다."
+  GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 fi
 
 
@@ -96,16 +101,16 @@ fi
 echo ""
 cat << EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "guide": "$GUIDE",
-  "action_result": "$ACTION_RESULT",
-  "action_log": "$ACTION_LOG",
-  "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-  "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "$GUIDE",
+    "action_result": "$ACTION_RESULT",
+    "action_log": "$ACTION_LOG",
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF

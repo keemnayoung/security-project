@@ -33,7 +33,7 @@ CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 VULN_FILES=()
 
 # 2. 진단 로직
-if [ -d "$TARGET_DIR" ]; then
+if [ -d "$TARGET_FILE" ]; then
     while IFS= read -r file; do
         OWNER=$(stat -c %U "$file" 2>/dev/null)
         PERM=$(stat -c %a "$file" 2>/dev/null)
@@ -42,7 +42,7 @@ if [ -d "$TARGET_DIR" ]; then
             STATUS="FAIL"
             VULN_FILES+=("$file (owner=$OWNER, perm=$PERM)")
         fi
-    done < <(find "$TARGET_DIR" -type f 2>/dev/null)
+    done < <(find "$TARGET_FILE" -type f 2>/dev/null)
 else
     STATUS="FAIL"
     EVIDENCE="/var/log 디렉터리가 존재하지 않습니다. 로그가 기록될 디렉터리를 생성해주길 바랍니다."

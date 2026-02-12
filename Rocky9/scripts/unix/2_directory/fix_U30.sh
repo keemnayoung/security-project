@@ -19,11 +19,13 @@ ID="U-30"
 CATEGORY="파일 및 디렉토리 관리"
 TITLE="UMASK 설정 관리"
 IMPORTANCE="중"
-
-ACTION_RESULT="FAIL"
 STATUS="FAIL"
-ACTION_LOG="N/A"
 EVIDENCE="N/A"
+GUIDE=""
+ACTION_RESULT="FAIL"
+ACTION_LOG="N/A"
+CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 PROFILE_OK=0
 LOGIN_DEFS_OK=0
@@ -39,7 +41,7 @@ if [ -f /etc/profile ]; then
     FINAL_PROFILE=$(grep -iE '^[[:space:]]*umask[[:space:]]+[0-9]+' /etc/profile | tail -n 1 | awk '{print $2}')
     [ "$FINAL_PROFILE" -ge 22 ] && PROFILE_OK=1
 else
-    ACTION_LOG="조치 실패: /etc/profile 파일 없음"
+    ACTION_LOG="/etc/profile 파일이 존재하지 않아 조치에 실패하였습니다."
 fi
 
 
@@ -53,7 +55,7 @@ if [ -f /etc/login.defs ]; then
     FINAL_LOGIN_DEFS=$(grep -iE '^[[:space:]]*UMASK[[:space:]]+[0-9]+' /etc/login.defs | tail -n 1 | awk '{print $2}')
     [ "$FINAL_LOGIN_DEFS" -ge 22 ] && LOGIN_DEFS_OK=1
 else
-    ACTION_LOG="조치 실패: /etc/login.defs 파일 없음"
+    ACTION_LOG="etc/login.defs 파일이 존재하지 않아 조치에 실패하였습니다."
 fi
 
 
@@ -61,22 +63,25 @@ fi
 if [ "$PROFILE_OK" -eq 1 ] && [ "$LOGIN_DEFS_OK" -eq 1 ]; then
     ACTION_RESULT="SUCCESS"
     STATUS="PASS"
-    ACTION_LOG="UMASK 설정 완료 (/etc/profile, /etc/login.defs 모두 022 이상 적용)"
-    EVIDENCE="적용값 확인: /etc/profile=$FINAL_PROFILE, /etc/login.defs=$FINAL_LOGIN_DEFS (양호)"
+    ACTION_LOG="UMASK 설정이 완료되었습니다. (/etc/profile, /etc/login.defs 모두 022 이상 적용)"
+    EVIDENCE="UMASK 설정이 완료되었습니다. /etc/profile=$FINAL_PROFILE, /etc/login.defs=$FINAL_LOGIN_DEFS (양호)"
+    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
 elif [ "$PROFILE_OK" -eq 1 ] || [ "$LOGIN_DEFS_OK" -eq 1 ]; then
     ACTION_RESULT="PARTIAL_SUCCESS"
     STATUS="FAIL"
     ACTION_LOG="일부 파일에만 UMASK 설정 적용됨"
-    EVIDENCE="적용값 확인: /etc/profile=${FINAL_PROFILE:-미설정}, /etc/login.defs=${FINAL_LOGIN_DEFS:-미설정} (취약)"
+    EVIDENCE="일부 파일에만 UMASK가 설정되었습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
+    GUIDE="/etc/profile과 /etc/login.defs 파일에 UMASK 값을 022로 설정해주세요."
 else
     ACTION_RESULT="FAIL"
     STATUS="FAIL"
-    ACTION_LOG="UMASK 설정 조치 실패"
-    EVIDENCE="UMASK 값이 022 이상으로 적용되지 않음"
+    ACTION_LOG="UMASK 값이 022 이상으로 적용되지 않아 조치에 실패하였습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
+    EVIDENCE="UMASK 값이 022 이상으로 적용되지 않아 조치에 실패하였습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
+    GUIDE="/etc/profile과 /etc/login.defs 파일에 UMASK 값을 022로 설정해주세요."
 fi
 
 
-# 4. JSON 결과 출력
+# 4. JSON 표준 출력
 echo ""
 cat << EOF
 {
@@ -86,10 +91,10 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 UMASK 보안 설정이 완료되었습니다.",
+    "guide": "$GUIDE",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "action_date": "$ACTION_DATE",
+    "check_date": "$CHECK_DATE"
 }
 EOF
