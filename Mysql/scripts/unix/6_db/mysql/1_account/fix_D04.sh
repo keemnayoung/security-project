@@ -12,7 +12,10 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
@@ -85,7 +88,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"불필요 SUPER 권한 회수 및 최소 권한 원칙 적용",
+  "guide":"불필요한 SUPER 권한을 회수하였으며, 최소 권한 원칙(Least Privilege)에 따라 필요한 권한만 부여하여 운영하시기 바랍니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
