@@ -15,84 +15,134 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+
+# 기본 변수
 ID="U-27"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="\$HOME/.rhosts, hosts.equiv 사용 금지"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
-TARGET_FILES=("/etc/hosts.equiv" "\$HOME/.rhosts")
-RHOSTS_FILES=$(find /home -name ".rhosts" 2>/dev/null)
+LOG_FILE_FIXED=0
+FAIL_FLAG=0
+FOUND=0
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
-if [ ${#TARGET_FILES[@]} -eq 0 ] && [ -z "$RHOSTS_FILES" ]; then
-    ACTION_RESULT="ERROR"
-    ACTION_LOG="조치 대상 파일이 존재하지 않습니다."
-    EVIDENCE="조치 대상 파일이 존재하지 않습니다."
-    GUIDE="/etc/hosts.equiv, \$HOME/.rhosts 파일 소유자를 root 또는 해당 계정으로 변경해주시고 권한도 600 이하로 변경해주세요. 각 파일에 허용 호스트 및 계정을 등록해주세요."
-else
-    for file in "${TARGET_FILES[@]}" $RHOSTS_FILES; do
-        if [ -f "$file" ]; then
-            OWNER=$(stat -c %U "$file")
-            PERM=$(stat -c %a "$file")
-            PLUS_EXIST=$(grep -E '^\s*\+' "$file" 2>/dev/null)
+CHECK_COMMAND="( [ -f /etc/hosts.equiv ] && stat -c '%U %G %a %n' /etc/hosts.equiv && grep -nE '^[[:space:]]*\\+' /etc/hosts.equiv 2>/dev/null ) ; find /home -name .rhosts -type f -print -exec stat -c '%U %G %a %n' {} \\; -exec grep -nE '^[[:space:]]*\\+' {} \\; 2>/dev/null"
 
-            BEFORE="owner=$OWNER,perm=$PERM,plus=$( [ -n "$PLUS_EXIST" ] && echo yes || echo no )"
-            
-            # 소유자 조치
-            if [[ "$file" == "/etc/hosts.equiv" ]]; then
-                chown root "$file"
-            else
-                FILE_USER=$(basename "$(dirname "$file")")
-                chown "$FILE_USER" "$file"
-            fi
+# 대상 파일 수집
+TARGET_LIST=()
 
-            # 권한 조치
-            chmod 600 "$file"
-
-            # "+" 제거
-            sed -i '/^\s*\+/d' "$file"
-
-            # 조치 후 확인
-            OWNER_AFTER=$(stat -c %U "$file")
-            PERM_AFTER=$(stat -c %a "$file")
-            PLUS_AFTER=$(grep -E '^\s*\+' "$file" 2>/dev/null)
-            AFTER="owner=$OWNER_AFTER,perm=$PERM_AFTER,plus=$( [ -n "$PLUS_AFTER" ] && echo yes || echo no )"
-
-            EVIDENCE+="$file (조치 전 상태: $BEFORE, 조치 후 상태: $AFTER), "
-            ACTION_LOG+="$file 조치가 완료되었습니다. "
-        fi
-    done
-
-    # 마지막 쉼표 제거
-    EVIDENCE=${EVIDENCE%,}
-    ACTION_LOG=${ACTION_LOG%,}
-
-    ACTION_RESULT="SUCCESS"
-    STATUS="PASS"
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+if [ -f "/etc/hosts.equiv" ]; then
+  TARGET_LIST+=("/etc/hosts.equiv")
 fi
 
-# 2. JSON 표준 출력
+while IFS= read -r rf; do
+  [ -f "$rf" ] && TARGET_LIST+=("$rf")
+done < <(find /home -name ".rhosts" -type f 2>/dev/null)
+
+if [ "${#TARGET_LIST[@]}" -gt 0 ]; then
+  FOUND=1
+fi
+
+TARGET_FILE=$(printf "%s\n" "${TARGET_LIST[@]}")
+
+# 조치 수행
+if [ "$FOUND" -eq 1 ]; then
+  for file in "${TARGET_LIST[@]}"; do
+    [ -f "$file" ] || continue
+
+    # 소유자 조치
+    if [ "$file" = "/etc/hosts.equiv" ]; then
+      OWNER=$(stat -c "%U" "$file" 2>/dev/null)
+      if [ "$OWNER" != "root" ]; then
+        chown root:root "$file" 2>/dev/null
+      fi
+    else
+      FILE_USER=$(stat -c "%U" "$file" 2>/dev/null)
+      [ -n "$FILE_USER" ] && chown "$FILE_USER":"$FILE_USER" "$file" 2>/dev/null
+    fi
+
+    # 권한 조치
+    chmod 600 "$file" 2>/dev/null
+
+    # '+' 제거
+    sed -i '/^[[:space:]]*\+/d' "$file" 2>/dev/null
+  done
+fi
+
+# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+if [ "$FOUND" -eq 0 ]; then
+  IS_SUCCESS=1
+  REASON_LINE="조치 대상 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT=""
+else
+  for file in "${TARGET_LIST[@]}"; do
+    [ -f "$file" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$file" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$file" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$file" 2>/dev/null)
+
+    PLUS_AFTER=$(grep -nE '^[[:space:]]*\+' "$file" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$file
+$( [ -n "$PLUS_AFTER" ] && echo "$PLUS_AFTER" || echo "" )
+
+"
+
+    # 기준 검증: owner( /etc/hosts.equiv= root, .rhosts= 파일소유자 ), perm<=600, '+' 없음
+    if [ "$file" = "/etc/hosts.equiv" ]; then
+      [ "$AFTER_OWNER" != "root" ] && FAIL_FLAG=1
+    fi
+
+    if [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+      FAIL_FLAG=1
+    fi
+
+    if [ -n "$PLUS_AFTER" ]; then
+      FAIL_FLAG=1
+    fi
+  done
+
+  if [ "$FAIL_FLAG" -eq 0 ]; then
+    IS_SUCCESS=1
+    REASON_LINE="/etc/hosts.equiv 및 .rhosts 파일의 권한이 600 이하로 설정되고 '+' 패턴이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 /etc/hosts.equiv 또는 .rhosts 파일의 권한 또는 '+' 패턴 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

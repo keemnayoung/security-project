@@ -17,48 +17,76 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-04"
-CATEGORY="계정관리"
-TITLE="비밀번호 파일 보호"
-IMPORTANCE="상"
+STATUS="PASS"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 PASSWD_FILE="/etc/passwd"
 SHADOW_FILE="/etc/shadow"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="리눅스 환경에서 pwconv 명령을 통한 쉐도우 패스워드 전환은 시스템 운영에 직접적인 영향이 거의 없습니다. 다만, HP-UX 시스템의 경우 Trusted Mode 전환 시 파일 시스템 구조 변경으로 인한 서비스 장애 위험이 있으므로 해당 OS 환경에서는 반드시 충분한 사전 테스트가 필요합니다."
+TARGET_FILE="$PASSWD_FILE $SHADOW_FILE"
 
-STATUS="PASS"
-EVIDENCE="N/A"
+# 가이드 핵심: /etc/passwd에 비밀번호(평문/해시)가 저장되지 않고, shadow로 분리(x)되어 있는지 확인
+# - passwd 2필드가 'x'면 정상(쉐도우 사용)
+# - passwd 2필드가 '!' 또는 '*' 계열이면 잠금/비밀번호 미사용(평문/해시 저장 아님) → 취약으로 보지 않음(오탐 방지)
+# - 그 외 값이면 passwd에 비밀번호(평문/해시)가 남아있을 가능성 → 취약
+CHECK_COMMAND='[ -f /etc/passwd ] && awk -F: '\''$2 != "x" && $2 !~ /^(\!|\*)+$/ {print $1 ":" $2}'\'' /etc/passwd || echo "passwd_not_found"; [ -f /etc/shadow ] && echo "shadow_exists" || echo "shadow_not_found"'
 
-# 1. /etc/passwd 내 두 번째 필드가 'x'가 아닌 계정 추출
-UNSHADOWED_USERS=$(awk -F: '$2 != "x" {print $1}' "$PASSWD_FILE" | xargs | sed 's/ /, /g')
+REASON_LINE=""
+DETAIL_CONTENT=""
 
+UNSHADOWED_USERS=""
+
+# 파일 존재 여부에 따른 분기
 if [ -f "$PASSWD_FILE" ] && [ -f "$SHADOW_FILE" ]; then
+    # /etc/passwd 내 두 번째 필드가 'x'가 아니면서, '!','*' (잠금/미사용) 계열이 아닌 계정만 추출
+    UNSHADOWED_USERS=$(awk -F: '$2 != "x" && $2 !~ /^(\!|\*)+$/ {print $1 ":" $2}' "$PASSWD_FILE" 2>/dev/null)
+
     if [ -z "$UNSHADOWED_USERS" ]; then
         STATUS="PASS"
-        EVIDENCE="모든 계정의 패스워드가 쉐도우 정책에 따라 암호화되어 안전하게 보호되고 있음을 확인하였습니다."
+        REASON_LINE="/etc/passwd의 두 번째 필드가 모든 계정에서 'x'(쉐도우)로 설정되어 있거나, 잠금/비밀번호 미사용('!','*') 상태로 저장되어 /etc/passwd에 비밀번호(평문/해시)가 노출되지 않으므로 양호합니다."
+        DETAIL_CONTENT="all_users_shadowed_or_locked"
     else
         STATUS="FAIL"
-        EVIDENCE="패스워드 보호 정책(x)이 적용되지 않은 일부 계정($UNSHADOWED_USERS)이 식별되어 시스템 보안을 위한 조치가 필요합니다."
+        REASON_LINE="/etc/passwd의 두 번째 필드에 'x'가 아닌 값(잠금/미사용 '!','*' 제외)이 존재하여 비밀번호(평문/해시)가 /etc/passwd에 저장되었을 가능성이 있으므로 취약합니다. pwconv 등을 통해 쉐도우 패스워드 정책을 적용해야 합니다."
+        DETAIL_CONTENT="$UNSHADOWED_USERS"
     fi
 else
     STATUS="FAIL"
-    EVIDENCE="비밀번호 암호화 정책을 관리하는 필수 설정 파일이 누락되어 정확한 점검이 불가능하므로, 시스템 파일 복구 조치가 필요합니다."
+    if [ ! -f "$PASSWD_FILE" ] && [ ! -f "$SHADOW_FILE" ]; then
+        REASON_LINE="비밀번호 관련 필수 파일(/etc/passwd, /etc/shadow)이 모두 존재하지 않아 쉐도우 패스워드 적용 여부를 확인할 수 없으므로 취약합니다."
+        DETAIL_CONTENT="passwd_not_found\nshadow_not_found"
+    elif [ ! -f "$PASSWD_FILE" ]; then
+        REASON_LINE="비밀번호 관련 필수 파일(/etc/passwd)이 존재하지 않아 계정 정보 및 쉐도우 정책 적용 여부를 확인할 수 없으므로 취약합니다."
+        DETAIL_CONTENT="passwd_not_found\nshadow_exists"
+    else
+        REASON_LINE="비밀번호 관련 필수 파일(/etc/shadow)이 존재하지 않아 비밀번호 해시 분리 저장(쉐도우) 정책이 적용되지 않을 수 있으므로 취약합니다."
+        DETAIL_CONTENT="passwd_exists\nshadow_not_found"
+    fi
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "pwconv 명령어를 실행하여 쉐도우 패스워드 정책을 적용하세요.",
-    "target_file": "$PASSWD_FILE, $SHADOW_FILE",
-    "file_hash": "${FILE_HASH:-N/A}",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

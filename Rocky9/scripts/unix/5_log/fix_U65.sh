@@ -15,75 +15,95 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-65"
-CATEGORY="로그 관리"
-TITLE="NTP 및 시각 동기화 설정"
-IMPORTANCE="중"
-TARGET_FILE="/var/log"
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
-STATUS="FAIL"
-EVIDENCE=""
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 1. 로그 파일 점검 및 조치
-if [ -d "$TARGET_FILE" ]; then
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
-    # 취약 로그 파일 탐색 (root 소유 아님 or 권한 644 초과)
-    VULN_FILES=$(find "$TARGET_FILE" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
+TARGET_DIR="/var/log"
+TARGET_FILE="$TARGET_DIR"
 
-    if [ -z "$VULN_FILES" ]; then
-        ACTION_RESULT="NO_ACTION_REQUIRED"
-        STATUS="PASS"
-        ACTION_LOG="모든 로그 파일이 이미 적절한 소유자 및 권한을 유지하고 있습니다."
-        EVIDENCE="취약 로그 파일 없음 (양호)"
+CHECK_COMMAND="find /var/log -type f \\( ! -user root -o -perm /133 \\) -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null"
+
+FAIL_FLAG=0
+MODIFIED=0
+DETAIL_CONTENT=""
+
+# 조치 수행
+if [ -d "$TARGET_DIR" ]; then
+  VULN_FILES=$(find "$TARGET_DIR" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
+
+  if [ -n "$VULN_FILES" ]; then
+    for file in $VULN_FILES; do
+      [ -f "$file" ] || continue
+
+      OWNER=$(stat -c "%U" "$file" 2>/dev/null)
+      GROUP=$(stat -c "%G" "$file" 2>/dev/null)
+      PERM=$(stat -c "%a" "$file" 2>/dev/null)
+
+      if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+        chown root:root "$file" 2>/dev/null
+        MODIFIED=1
+      fi
+
+      if [ -n "$PERM" ] && [ "$PERM" -gt 644 ]; then
+        chmod 644 "$file" 2>/dev/null
+        MODIFIED=1
+      fi
+    done
+  fi
+
+  # 조치 후 재확인 및 상태 수집(조치 후 상태만 detail에 표시)
+  RECHECK_FILES=$(find "$TARGET_DIR" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
+
+  if [ -z "$RECHECK_FILES" ]; then
+    IS_SUCCESS=1
+    if [ -z "$VULN_FILES" ]; then   
+
+     
+      REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자와 권한이 기준에 맞게 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     else
-        # 조치 수행
-        for file in $VULN_FILES; do
-            chown root:root "$file" 2>/dev/null
-            chmod 644 "$file" 2>/dev/null
-        done
-
-        # 재확인
-        RECHECK=$(find "$TARGET_FILE" -type f \( ! -user root -o -perm /133 \) 2>/dev/null)
-
-        if [ -z "$RECHECK" ]; then
-            ACTION_RESULT="SUCCESS"
-            STATUS="PASS"
-            ACTION_LOG="취약 로그 파일의 소유자 및 권한을 root:root, 644로 조치 완료했습니다."
-            EVIDENCE="조치된 파일:\n$VULN_FILES"
-        else
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            STATUS="FAIL"
-            ACTION_LOG="일부 로그 파일 조치 실패. 수동 확인이 필요합니다."
-            EVIDENCE="조치 실패 파일:\n$RECHECK"
-        fi
+      REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자와 권한이 기준에 맞게 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     fi
+    DETAIL_CONTENT=""
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 /var/log 디렉터리 내 일부 로그 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    DETAIL_CONTENT="$RECHECK_FILES"
+  fi
 else
-    ACTION_RESULT="ERROR"
-    STATUS="FAIL"
-    ACTION_LOG="로그 디렉터리($TARGET_FILE)가 존재하지 않습니다."
-    EVIDENCE="디렉터리 없음"
+  IS_SUCCESS=0
+  REASON_LINE="로그 디렉터리(/var/log)가 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# JSON 출력용 줄바꿈 이스케이프
-EVIDENCE_ESCAPED=$(echo -e "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g')
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-
-# 2. JSON 표준 출력
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE_ESCAPED",
-    "guide": "KISA 가이드라인에 따른 로그 파일 접근 권한 설정을 수행했습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

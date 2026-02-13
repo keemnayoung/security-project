@@ -15,89 +15,116 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 0. 기본 변수 정의
+# 기본 변수
 ID="U-67"
-CATEGORY="로그 관리"
-TITLE="로그 디렉터리 소유자 및 권한 설정"
-IMPORTANCE="중"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+
 TARGET_DIR="/var/log"
+TARGET_FILE="$TARGET_DIR"
+CHECK_COMMAND="find /var/log -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null | head -n 500"
 
-STATUS="FAIL"
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
-EVIDENCE="N/A"
+FOUND_FILES=0
+FAIL_FLAG=0
+MODIFIED=0
+DETAIL_CONTENT=""
 
-ACTION_DATE=$(date +"%Y-%m-%d %H:%M:%S")
-CHECK_DATE="$ACTION_DATE"
-
-VULN_FOUND=0
-FIXED_COUNT=0
-
-
-# 1. 실제 조치 프로세스
+# 조치 수행
 if [ -d "$TARGET_DIR" ]; then
-    while IFS= read -r file; do
-        OWNER=$(stat -c %U "$file" 2>/dev/null)
-        PERM=$(stat -c %a "$file" 2>/dev/null)
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    FOUND_FILES=1
 
-        # 취약 조건
-        if [ "$OWNER" != "root" ] || [ "$PERM" -gt 644 ]; then
-            VULN_FOUND=1
+    OWNER=$(stat -c "%U" "$file" 2>/dev/null)
+    GROUP=$(stat -c "%G" "$file" 2>/dev/null)
+    PERM=$(stat -c "%a" "$file" 2>/dev/null)
 
-            chown root "$file" 2>/dev/null
-            chmod 644 "$file" 2>/dev/null
-
-            NEW_OWNER=$(stat -c %U "$file" 2>/dev/null)
-            NEW_PERM=$(stat -c %a "$file" 2>/dev/null)
-
-            if [ "$NEW_OWNER" = "root" ] && [ "$NEW_PERM" -le 644 ]; then
-                FIXED_COUNT=$((FIXED_COUNT+1))
-                ACTION_LOG+="조치 완료: $file (owner=$NEW_OWNER, perm=$NEW_PERM) | "
-            else
-                ACTION_LOG+="조치 실패: $file (owner=$NEW_OWNER, perm=$NEW_PERM) | "
-            fi
-        fi
-    done < <(find "$TARGET_DIR" -type f 2>/dev/null)
-
-    # 2. 조치 결과 판정
-    if [ "$VULN_FOUND" -eq 0 ]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="조치 대상 로그 파일 없음"
-        EVIDENCE="모든 로그 파일의 소유자가 root이며 권한이 644 이하임"
-    else
-        if [ "$FIXED_COUNT" -gt 0 ]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            EVIDENCE="취약 로그 파일 조치 완료 (총 ${FIXED_COUNT}개 파일)"
-        else
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            EVIDENCE="취약 로그 파일이 존재하나 일부 또는 전체 조치 실패"
-        fi
+    if [ "$OWNER" != "root" ]; then
+      chown root "$file" 2>/dev/null
+      MODIFIED=1
     fi
+
+    if [ -n "$PERM" ] && [ "$PERM" -gt 644 ]; then
+      chmod 644 "$file" 2>/dev/null
+      MODIFIED=1
+    fi
+  done < <(find "$TARGET_DIR" -type f 2>/dev/null)
+
+  # 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$file" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$file" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$file" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$file
+
+"
+
+    if [ "$AFTER_OWNER" != "root" ]; then
+      FAIL_FLAG=1
+      continue
+    fi
+
+    if [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 644 ]; then
+      FAIL_FLAG=1
+    fi
+  done < <(find "$TARGET_DIR" -type f 2>/dev/null)
+
+  if [ "$FOUND_FILES" -eq 0 ]; then
+    IS_SUCCESS=1
+    REASON_LINE="/var/log 디렉터리 내 로그 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT=""
+  else
+    if [ "$FAIL_FLAG" -eq 0 ]; then
+      IS_SUCCESS=1
+      if [ "$MODIFIED" -eq 1 ]; then
+        REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자가 root로 설정되고 권한이 644 이하로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      else
+        REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자가 root로 유지되고 권한이 644 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      fi
+    else
+      IS_SUCCESS=0
+      REASON_LINE="조치를 수행했으나 /var/log 디렉터리 내 일부 로그 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    fi
+  fi
 else
-    STATUS="FAIL"
-    ACTION_RESULT="ERROR"
-    ACTION_LOG="/var/log 디렉터리가 존재하지 않음"
-    EVIDENCE="조치 대상 디렉터리 없음"
+  IS_SUCCESS=0
+  REASON_LINE="로그 디렉터리(/var/log)가 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. JSON 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 로그 접근 통제 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

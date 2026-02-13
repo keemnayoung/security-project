@@ -15,72 +15,108 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-21"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/(r)syslog.conf 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG=""
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 1. 실제 조치 프로세스
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+
 LOG_FILES=("/etc/syslog.conf" "/etc/rsyslog.conf")
+
+CHECK_COMMAND="for f in /etc/syslog.conf /etc/rsyslog.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done 2>/dev/null"
+TARGET_FILE=$(printf "%s\n" "${LOG_FILES[@]}")
+
 FOUND=0
+FAIL_FLAG=0
+MODIFIED=0
+DETAIL_CONTENT=""
 
+# 조치 수행
 for FILE in "${LOG_FILES[@]}"; do
-    if [ -f "$FILE" ]; then
-        FOUND=1
-        TARGET_FILE="$TARGET_FILE $FILE"
+  if [ -f "$FILE" ]; then
+    FOUND=1
 
-        # 조치 수행
-        chown root "$FILE" 2>/dev/null
-        chmod 640 "$FILE" 2>/dev/null
+    OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-        AFTER_OWNER=$(stat -c %U "$FILE")
-        AFTER_PERM=$(stat -c %a "$FILE")
-
-        # 결과 판정
-        if [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]] && [ "$AFTER_PERM" -le 640 ]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG+="$FILE 의 소유자($AFTER_OWNER) 및 권한($AFTER_PERM) 설정이 완료되었습니다."
-            EVIDENCE="$FILE 의 소유자($AFTER_OWNER) 및 권한($AFTER_PERM) 설정이 완료되었습니다."
-            GUIDE="KISA 가이드라인에 따른 syslog 설정 파일 권한 설정이 완료되었습니다."
-        else
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            ACTION_LOG="$FILE 의 조치를 수행했지만 소유자($AFTER_OWNER) 및 권한($AFTER_PERM)으로 여전히 취약합니다. 수동 확인이 필요합니다."
-            EVIDENCE+="$FILE 의 조치를 수행했지만 소유자($AFTER_OWNER) 및 권한($AFTER_PERM)으로 여전히 취약합니다. 수동 확인이 필요합니다."
-            GUIDE="KISA 가이드라인에 따른 syslog 설정 파일 권한 설정이 완료되었습니다."
-        fi
+    if [ "$OWNER" != "root" ]; then
+      chown root "$FILE" 2>/dev/null
+      MODIFIED=1
     fi
+
+    if [ -n "$PERM" ] && [ "$PERM" -gt 640 ]; then
+      chmod 640 "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+  fi
 done
 
+# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+for FILE in "${LOG_FILES[@]}"; do
+  if [ -f "$FILE" ]; then
+    AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$FILE
+
+"
+
+    if ! [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 640 ]; then
+      FAIL_FLAG=1
+    fi
+  fi
+done
+
+# 최종 판정
 if [ "$FOUND" -eq 0 ]; then
-    STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="syslog 설정 파일이 존재하지 않아 이미 안전한 상태였습니다."
-    EVIDENCE="점검 대상 파일이 존재하지 않습니다."
+  IS_SUCCESS=1
+  REASON_LINE="syslog 설정 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT=""
+else
+  if [ "$FAIL_FLAG" -eq 0 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="syslog 설정 파일의 소유자와 권한이 기준에 맞게 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    else
+      REASON_LINE="syslog 설정 파일의 소유자와 권한이 기준에 맞게 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    fi
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 syslog 설정 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
 fi
 
-# 3. JSON 표준 출력
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

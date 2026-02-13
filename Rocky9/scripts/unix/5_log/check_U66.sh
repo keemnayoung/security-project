@@ -15,23 +15,18 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-66"
-CATEGORY="로그 관리"
-TITLE="정책에 따른 시스템 로깅 설정"
-IMPORTANCE="중"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 /etc/rsyslog.conf 또는 /etc/rsyslog.d/default.conf 파일 내에 로그 기록 정책을 수립해주세요."
-ACTION_RESULT="PARTIAL_SUCCESS"
-IMPACT_LEVEL="HIGH" 
-ACTION_IMPACT="내부 정책에 따라 시스템 로깅 설정을 적용하면 보안 감사와 사고 분석에 필요한 로그가 안정적으로 수집되는 대신, 로그 저장 공간 사용량이 증가하고 고부하 환경에서는 디스크 I/O가 소폭 증가할 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/rsyslog.conf /etc/rsyslog.d/default.conf"
-FILE_HASH="N/A"
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CHECK_COMMAND='for f in /etc/rsyslog.conf /etc/rsyslog.d/default.conf; do [ -f "$f" ] && echo "[FILE] $f" && egrep -n "^[[:space:]]*(\*\.info;mail\.none;authpriv\.none;cron\.none[[:space:]]+/var/log/messages|auth,authpriv\.\*[[:space:]]+/var/log/secure|mail\.\*[[:space:]]+/var/log/maillog|cron\.\*[[:space:]]+/var/log/cron|\*\.alert[[:space:]]+/dev/console|\*\.emerg[[:space:]]+\*)" "$f"; done; for l in /var/log/messages /var/log/secure /var/log/maillog /var/log/cron; do [ -f "$l" ] && echo "[LOGFILE] $l exists" || echo "[LOGFILE] $l missing"; done'
 
-# 2. 진단 로직
-
+REASON_LINE=""
+DETAIL_CONTENT=""
+FOUND_VULN="N"
+DETAIL_LINES=""
 
 REQUIRED_POLICIES=(
     "*.info;mail.none;authpriv.none;cron.none /var/log/messages"
@@ -42,31 +37,32 @@ REQUIRED_POLICIES=(
     "*.emerg *"
 )
 
-CONFIG_FOUND=false
-POLICY_OK=true
+CONFIG_FOUND="N"
+POLICY_OK="Y"
 
+# 설정 파일 존재 및 정책 존재 여부 점검
 for FILE in /etc/rsyslog.conf /etc/rsyslog.d/default.conf; do
     if [ -f "$FILE" ]; then
-        CONFIG_FOUND=true
+        CONFIG_FOUND="Y"
+
         for POLICY in "${REQUIRED_POLICIES[@]}"; do
+            # 정규식 특수문자 최소 처리(* 만 이스케이프). 기존 로직 의도 유지
             if ! grep -E "^[[:space:]]*${POLICY//\*/\\*}" "$FILE" >/dev/null 2>&1; then
-                POLICY_OK=false
-                EVIDENCE+="$FILE 파일에 $POLICY 정책이 존재하지 않습니다. "
+                POLICY_OK="N"
+                FOUND_VULN="Y"
+                DETAIL_LINES+="$FILE missing_policy=$POLICY"$'\n'
             fi
         done
     fi
 done
 
-if [ "$CONFIG_FOUND" = false ]; then
+if [ "$CONFIG_FOUND" = "N" ]; then
     STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="rsyslog 설정 파일이 존재하지 않습니다. 파일 생성 후 정책을 마련해주시길 바랍니다."
-elif [ "$POLICY_OK" = false ]; then
-    STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
+    FOUND_VULN="Y"
+    DETAIL_LINES+="rsyslog_config_not_found"$'\n'
 fi
 
-# 로그 파일 존재 여부 추가 확인
+# 로그 파일 존재 여부 점검
 LOG_FILES=(
     "/var/log/messages"
     "/var/log/secure"
@@ -77,35 +73,44 @@ LOG_FILES=(
 for LOG in "${LOG_FILES[@]}"; do
     if [ ! -f "$LOG" ]; then
         STATUS="FAIL"
-        EVIDENCE+="$LOG 로그 파일이 존재하지 않습니다. "
+        FOUND_VULN="Y"
+        DETAIL_LINES+="logfile_missing=$LOG"$'\n'
     fi
 done
 
-if [ "$STATUS" = true ]; then
-    STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="내부 정책에 따른 로그 기록 정책이 정상적으로 설정 및 적용되어 있음"
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+# 결과에 따른 PASS/FAIL 및 reason/detail 구성
+if [ "$FOUND_VULN" = "Y" ]; then
+    STATUS="FAIL"
+    REASON_LINE="rsyslog 설정 파일에 필수 로그 기록 정책이 누락되었거나 주요 로그 파일이 생성되지 않아 보안 감사 및 사고 분석에 필요한 로그가 충분히 수집되지 않을 위험이 있으므로 취약합니다. rsyslog 설정 파일에 내부 정책에 따른 로깅 규칙을 반영하고 로그 파일이 정상 생성되도록 설정해야 합니다."
+    DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 else
-    EVIDENCE="다음과 같이 로그 기록 정책이 올바르지 않습니다. $EVIDENCE ※ 정책을 수립하여 수동으로 rsyslog를 수정해주시길 바랍니다."
+    STATUS="PASS"
+    REASON_LINE="rsyslog 설정 파일에 필수 로그 기록 정책이 설정되어 있고 주요 로그 파일이 존재하여 보안 감사 및 사고 분석에 필요한 로그가 정상적으로 수집되므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="all_required_policies_present\nall_log_files_exist"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(echo -e "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -15,106 +15,153 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-20"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/(x)inetd.conf 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG=""
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
 FILES=(
-    "/etc/inetd.conf"
-    "/etc/xinetd.conf"
-    "/etc/systemd/system.conf"
+  "/etc/inetd.conf"
+  "/etc/xinetd.conf"
+  "/etc/systemd/system.conf"
 )
 
 DIR="/etc/systemd"
 
-# 1. 실제 조치 프로세스 시작
-ERROR_FLAG=0
+CHECK_COMMAND="for f in /etc/inetd.conf /etc/xinetd.conf /etc/systemd/system.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done; [ -d /etc/systemd ] && find /etc/systemd -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null"
+TARGET_FILE=$(printf "%s\n" "${FILES[@]}")
+if [ -d "$DIR" ]; then
+  TARGET_FILE="${TARGET_FILE}
+$DIR/*"
+fi
 
-fix_file() {
-    local FILE="$1"
-
-    if [ ! -f "$FILE" ]; then
-        ACTION_LOG+="[$FILE 이 존재하지 않습니다.] "
-        return
-    fi
-
-    chown root "$FILE" 2>/dev/null
-    chmod 600 "$FILE" 2>/dev/null
-
-    OWNER=$(stat -c %U "$FILE")
-    PERM=$(stat -c %a "$FILE")
-
-    if [ "$OWNER" != "root" ] || [ "$PERM" -gt 600 ]; then
-        ERROR_FLAG=1
-        ACTION_LOG+="[$FILE 파일 조치에 실패하였습니다. (owner=$OWNER, perm=$PERM)] "
-        EVIDENCE+="[$FILE 파일 조치에 실패하였습니다. (owner=$OWNER, perm=$PERM)] "
-    else
-        ACTION_LOG+="[$FILE 파일 조치가 완료되었습니다. (owner=$OWNER, perm=$PERM)] "
-        EVIDENCE+="[$FILE 파일 조치에 실패하였습니다. (owner=$OWNER, perm=$PERM)] "
-    fi
-}
+FAIL_FLAG=0
+MODIFIED=0
+DETAIL_CONTENT=""
 
 # 개별 파일 조치
 for FILE in "${FILES[@]}"; do
-    fix_file "$FILE"
+  if [ ! -f "$FILE" ]; then
+    continue
+  fi
+
+  OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+  GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+  PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
+
+  if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+    chown root:root "$FILE" 2>/dev/null
+    MODIFIED=1
+  fi
+
+  if [ -n "$PERM" ] && [ "$PERM" -gt 600 ]; then
+    chmod 600 "$FILE" 2>/dev/null
+    MODIFIED=1
+  fi
 done
 
 # systemd 디렉터리 내 파일 조치
 if [ -d "$DIR" ]; then
-    while IFS= read -r FILE; do
-        chown root "$FILE" 2>/dev/null
-        chmod 600 "$FILE" 2>/dev/null
+  while IFS= read -r FILE; do
+    [ -f "$FILE" ] || continue
 
-        OWNER=$(stat -c %U "$FILE")
-        PERM=$(stat -c %a "$FILE")
+    OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-        if [ "$OWNER" != "root" ] || [ "$PERM" -gt 600 ]; then
-            ERROR_FLAG=1
-        fi
-    done < <(find "$DIR" -type f 2>/dev/null)
-else
-    ACTION_LOG+="[/etc/systemd 파일이 존재하지 않습니다.] "
+    if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+      chown root:root "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+
+    if [ -n "$PERM" ] && [ "$PERM" -gt 600 ]; then
+      chmod 600 "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+  done < <(find "$DIR" -type f 2>/dev/null)
 fi
 
+# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+for FILE in "${FILES[@]}"; do
+  if [ -f "$FILE" ]; then
+    AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-# 2. 최종 판정
-if [ "$ERROR_FLAG" -eq 0 ]; then
-    STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="모든 대상 파일의 소유자가 root이며 권한이 600 이하로 설정되었습니다."
-    ACTION_LOG+="최종 확인 완료"
-    GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
-else
-    STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="일부 파일의 소유자 또는 권한이 기준에 부합하지 않습니다."
-    ACTION_LOG+="일부 항목 수동 확인 필요"
-    GUIDE="/etc/hosts 파일 소유자를 root로 변경하고 권한도 644 이하로 변경하십시오."
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$FILE
+
+"
+
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+      FAIL_FLAG=1
+    fi
+  fi
+done
+
+if [ -d "$DIR" ]; then
+  while IFS= read -r FILE; do
+    [ -f "$FILE" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$FILE
+
+"
+
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+      FAIL_FLAG=1
+    fi
+  done < <(find "$DIR" -type f 2>/dev/null)
 fi
 
+# 최종 판정
+if [ "$FAIL_FLAG" -eq 0 ]; then
+  IS_SUCCESS=1
+  if [ "$MODIFIED" -eq 1 ]; then
+    REASON_LINE="대상 파일의 소유자와 그룹이 root로 설정되고 권한이 600 이하로 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
+    REASON_LINE="대상 파일의 소유자와 그룹이 root이고 권한이 600 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+else
+  IS_SUCCESS=0
+  REASON_LINE="조치를 수행했으나 일부 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+fi
 
-# 3. JSON 표준 출력
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

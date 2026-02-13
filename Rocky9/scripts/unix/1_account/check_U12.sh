@@ -16,57 +16,119 @@
 # @Criteria_Bad : 세션 종료 시간이 설정되지 않았거나 600초를 초과하는 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
+# 기본 변수
 ID="U-12"
-CATEGORY="계정관리"
-TITLE="세션 종료 시간 설정"
-IMPORTANCE="하"
-TARGET_FILE="/etc/profile"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="유휴 세션 종료(TMOUT)를 설정할 경우, 일정 시간 활동이 없으면 접속이 강제로 끊어지게 됩니다. 특히 실시간 모니터링이나 대시보드 관제 용도로 사용하는 계정은 업무 수행에 차질이 발생할 수 있으므로, 해당 용도의 계정이나 IP에 대해서는 별도의 예외 처리가 필요합니다."
-
 STATUS="FAIL"
-EVIDENCE="N/A"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ -f "$TARGET_FILE" ]; then
-    # 1. 파일 무결성 해시 추출
-    FILE_HASH=$(sha256sum "$TARGET_FILE" | awk '{print $1}')
-    
-    # 2. [검증 강화] TMOUT 설정값 추출 (주석 제외 및 숫자만 정밀 추출)
-    TMOUT_VAL=$(grep -i "TMOUT=" "$TARGET_FILE" | grep -v "^#" | cut -d= -f2 | sed 's/[^0-9]//g' | head -1)
+# 점검 대상(가이드의 "사용자 쉘 환경설정 파일" 범주를 최소로 반영)
+TARGET_FILES=(
+  "/etc/profile"
+  "/etc/profile.d/*.sh"
+  "/etc/bashrc"
+)
 
-    # 3. 결과 판별: 가이드 기준(600초 이하) 준수 여부 확인
-    if [[ "$TMOUT_VAL" =~ ^[0-9]+$ ]] && [ "$TMOUT_VAL" -le 600 ] && [ "$TMOUT_VAL" -gt 0 ]; then
-        STATUS="PASS"
-        # [수정] 기준 준수라는 말 대신 세션 보안 상태를 설명
-        EVIDENCE="일정 시간 서비스 요청이 없을 경우 세션이 자동 종료되도록 ${TMOUT_VAL}초로 설정되어 있어 보안 가이드라인을 준수하고 있습니다."
-    else
-        STATUS="FAIL"
-        if [ -z "$TMOUT_VAL" ]; then
-            EVIDENCE="현재 자동 세션 종료(TMOUT) 설정이 확인되지 않아, 비인가자의 세션 탈취 방지를 위한 조치가 필요합니다."
-        else
+# (참고) 가이드 예시 커맨드 성격 유지용
+TARGET_FILE="/etc/profile"
+CHECK_COMMAND='grep -nEi "^[[:space:]]*TMOUT[[:space:]]*=" /etc/profile /etc/profile.d/*.sh /etc/bashrc 2>/dev/null | grep -nEv "^[[:space:]]*#" | head -n 5 || echo "tmout_not_found"'
 
-            EVIDENCE="설정된 세션 종료 시간(${TMOUT_VAL}초)이 권장 범위를 벗어나 있어, 안전한 세션 관리를 위한 조치가 필요합니다."
-        fi
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+TMOUT_VAL="not_set"
+TMOUT_FOUND_LINE=""
+EXPORT_FOUND="no"
+
+# --------------------------------------------
+# 1) TMOUT / export TMOUT 확인 (sh/ksh/bash)
+#    - 여러 파일에 설정될 수 있으므로 "마지막으로 발견된 TMOUT"를 유효값으로 간주
+#    - export TMOUT는 어디서든 한 번이라도 설정되면 유지되므로, 존재 여부만 확인
+# --------------------------------------------
+
+FOUND_ANY_FILE="no"
+CANDIDATE_LINES=()
+
+for pattern in "${TARGET_FILES[@]}"; do
+  # glob 확장되는 파일들 순회
+  for f in $pattern; do
+    [ -e "$f" ] || continue
+    FOUND_ANY_FILE="yes"
+
+    # export TMOUT 존재 여부(주석 제외)
+    if grep -nE '^[[:space:]]*(export[[:space:]]+TMOUT|typeset[[:space:]]+-x[[:space:]]+TMOUT)\b' "$f" 2>/dev/null | grep -qEv '^[[:space:]]*#'; then
+      EXPORT_FOUND="yes"
     fi
-else
-    STATUS="FAIL"
-    EVIDENCE="환경 설정 파일($TARGET_FILE)이 식별되지 않아 세션 타임아웃 설정을 점검할 수 없으므로, 시스템 확인 조치가 필요합니다."
-    FILE_HASH="NOT_FOUND"
+
+    # TMOUT= 라인 수집(주석 제외)
+    while IFS= read -r line; do
+      [ -n "$line" ] && CANDIDATE_LINES+=("$f:$line")
+    done < <(grep -nEi '^[[:space:]]*TMOUT[[:space:]]*=' "$f" 2>/dev/null | grep -Ev '^[[:space:]]*#')
+  done
+done
+
+# 마지막 TMOUT 설정 라인(가장 마지막 발견을 유효로 간주)
+if [ "${#CANDIDATE_LINES[@]}" -gt 0 ]; then
+  TMOUT_FOUND_LINE="${CANDIDATE_LINES[-1]}"
+
+  # 값만 숫자로 추출(안전하게)
+  TMOUT_VAL=$(echo "$TMOUT_FOUND_LINE" \
+    | sed 's/.*TMOUT[[:space:]]*=[[:space:]]*//I' \
+    | sed 's/[^0-9].*$//')
+  [ -z "$TMOUT_VAL" ] && TMOUT_VAL="not_set"
 fi
+
+# PASS/FAIL 판단
+# - TMOUT: 1~600
+# - export TMOUT: 필수(가이드 조치 예시)
+if [ "$TMOUT_VAL" != "not_set" ] && echo "$TMOUT_VAL" | grep -qE '^[0-9]+$' && [ "$TMOUT_VAL" -gt 0 ] && [ "$TMOUT_VAL" -le 600 ] && [ "$EXPORT_FOUND" = "yes" ]; then
+  STATUS="PASS"
+  REASON_LINE="TMOUT가 1~600초 범위로 설정되어 있고(export TMOUT 포함) 유휴 세션이 자동 종료되므로 장시간 방치 세션의 탈취 위험이 낮아 이 항목에 대한 보안 위협이 없습니다."
+else
+  STATUS="FAIL"
+  if [ "$FOUND_ANY_FILE" = "no" ]; then
+    REASON_LINE="시스템 전역 쉘 환경설정 파일(/etc/profile, /etc/profile.d/*.sh, /etc/bashrc)을 확인할 수 없어 유휴 세션 종료(TMOUT) 설정을 점검할 수 없으므로 취약합니다."
+  elif [ "$TMOUT_VAL" = "not_set" ]; then
+    REASON_LINE="TMOUT 설정이 확인되지 않아 유휴 세션 자동 종료가 보장되지 않으므로 취약합니다. TMOUT=600 이하로 설정하고 export TMOUT를 적용해야 합니다."
+  elif ! echo "$TMOUT_VAL" | grep -qE '^[0-9]+$'; then
+    REASON_LINE="TMOUT 값이 숫자로 확인되지 않아 유휴 세션 자동 종료 정책이 안전하게 적용되지 않으므로 취약합니다. TMOUT=600 이하의 숫자 값으로 설정하고 export TMOUT를 적용해야 합니다."
+  elif [ "$TMOUT_VAL" -le 0 ] || [ "$TMOUT_VAL" -gt 600 ]; then
+    REASON_LINE="TMOUT가 ${TMOUT_VAL}초로 설정되어 권고 범위(1~600초)를 벗어나 유휴 세션 자동 종료 정책이 안전하게 적용되지 않으므로 취약합니다. TMOUT=600 이하로 설정하고 export TMOUT를 적용해야 합니다."
+  elif [ "$EXPORT_FOUND" != "yes" ]; then
+    REASON_LINE="TMOUT 값은 설정되어 있으나(export TMOUT 미적용) 하위 쉘/세션에 일관되게 적용되지 않을 수 있어 취약합니다. export TMOUT를 함께 적용해야 합니다."
+  else
+    REASON_LINE="유휴 세션 종료(TMOUT) 설정이 가이드 기준을 충족하지 않아 취약합니다. TMOUT=600 이하 및 export TMOUT를 적용해야 합니다."
+  fi
+fi
+
+# detail 구성
+if [ -n "$TMOUT_FOUND_LINE" ]; then
+  DETAIL_CONTENT="tmout_last_line=$TMOUT_FOUND_LINE"$'\n'"tmout_value=$TMOUT_VAL"$'\n'"export_tmout=$EXPORT_FOUND"
+else
+  DETAIL_CONTENT="tmout_last_line=not_found"$'\n'"tmout_value=$TMOUT_VAL"$'\n'"export_tmout=$EXPORT_FOUND"
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "/etc/profile, /etc/profile.d/*.sh, /etc/bashrc"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "/etc/profile 파일에 TMOUT=600 및 export TMOUT를 설정하세요.",
-    "file_hash": "$FILE_HASH",
-    "target_file": "$TARGET_FILE",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

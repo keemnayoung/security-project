@@ -17,60 +17,159 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-13"
-CATEGORY="계정관리"
-TITLE="안전한 비밀번호 암호화 알고리즘 사용"
-IMPORTANCE="중"
+STATUS="PASS"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 DEFS_FILE="/etc/login.defs"
 SHADOW_FILE="/etc/shadow"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="암호화 알고리즘 변경 설정(SHA-512 등)은 일반적인 시스템 운영에는 영향이 없습니다. 다만, 설정 변경 이후 생성되는 계정이나 비밀번호를 새로 변경하는 계정에만 적용되므로, 기존 계정들은 다음 비밀번호 변경 주기 전까지 이전 알고리즘으로 유지됨을 유의해야 합니다."
+PAM_SYSTEM_AUTH="/etc/pam.d/system-auth"
+PAM_PASSWORD_AUTH="/etc/pam.d/password-auth"
 
-STATUS="PASS"
-EVIDENCE="N/A"
+TARGET_FILE="$DEFS_FILE $SHADOW_FILE $PAM_SYSTEM_AUTH $PAM_PASSWORD_AUTH"
 
-if [ -f "$DEFS_FILE" ] && [ -f "$SHADOW_FILE" ]; then
-    # 1. 파일 해시 추출
-    FILE_HASH=$(sha256sum "$DEFS_FILE" | awk '{print $1}')
-    
-    # 2. /etc/login.defs 설정 확인
-    ENCRYPT_METHOD=$(grep -i "^ENCRYPT_METHOD" "$DEFS_FILE" | awk '{print $2}')
-    
-    # 3. [검증 강화] /etc/shadow에서 실제 사용 중인 알고리즘 식별자 확인 ($6$ = SHA-512)
-    INVALID_ALGO_ACCOUNTS=$(awk -F: '$2 ~ /^\$/ && $2 !~ /^\$6\$/ {print $1}' "$SHADOW_FILE" | xargs | sed 's/ /, /g')
-    
-    if [[ "$ENCRYPT_METHOD" =~ "SHA512" ]]; then
-        if [ -z "$INVALID_ALGO_ACCOUNTS" ]; then
-            STATUS="PASS"
-            EVIDENCE="패스워드 암호화 표준에 따라 강력한 해시 알고리즘(SHA-512)을 사용 중이며 모든 계정이 안전하게 보호되고 있습니다."
-        else
-            STATUS="FAIL"
-            EVIDENCE="암호화 정책은 SHA-512로 설정되어 있으나, 일부 계정($INVALID_ALGO_ACCOUNTS)에 구형 알고리즘이 적용되어 있어 비밀번호 재설정 등의 조치가 필요합니다."
-        fi
+CHECK_COMMAND='
+[ -f /etc/login.defs ] && grep -Ei "^[[:space:]]*ENCRYPT_METHOD[[:space:]]+" /etc/login.defs | tail -n 1 || echo "login.defs_not_found";
+[ -f /etc/shadow ] && awk -F: '\''$2 ~ /^\$/ {print $1 ":" $2}'\'' /etc/shadow | head -n 5 || echo "shadow_not_found";
+[ -f /etc/pam.d/system-auth ] && grep -E "^[[:space:]]*password[[:space:]]+.*pam_unix\.so" /etc/pam.d/system-auth || echo "system-auth_not_found_or_no_pam_unix";
+[ -f /etc/pam.d/password-auth ] && grep -E "^[[:space:]]*password[[:space:]]+.*pam_unix\.so" /etc/pam.d/password-auth || echo "password-auth_not_found_or_no_pam_unix"
+' | tr '\n' '; ' | sed 's/[[:space:]]\+/ /g'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+ENCRYPT_METHOD=""
+INVALID_ALGO_ACCOUNTS=""
+PAM_WEAK_FILES=""
+PAM_DETAIL=""
+
+# ---- 함수: PAM에서 안전 알고리즘 옵션 존재 여부 점검 ----
+# 안전 옵션: sha512 / sha256 / yescrypt
+check_pam_file() {
+    local file="$1"
+    local result="OK"
+    local lines=""
+
+    if [ ! -f "$file" ]; then
+        echo "NOT_FOUND"
+        return
+    fi
+
+    # password 라인 중 pam_unix.so 포함 라인 추출
+    lines=$(grep -E '^[[:space:]]*password[[:space:]]+.*pam_unix\.so' "$file" 2>/dev/null)
+
+    if [ -z "$lines" ]; then
+        echo "NO_PAM_UNIX"
+        return
+    fi
+
+    # 해당 라인들 중 안전 옵션 포함 여부(하나라도 있으면 OK)
+    if echo "$lines" | grep -Eqi '(^|[[:space:]])(sha512|sha256|yescrypt)($|[[:space:]])'; then
+        echo "OK"
+    else
+        echo "WEAK"
+    fi
+}
+
+# ---- 파일 존재 여부에 따른 분기 ----
+MISSING_FILES=""
+[ -f "$DEFS_FILE" ] || MISSING_FILES="${MISSING_FILES}login.defs_not_found"$'\n'
+[ -f "$SHADOW_FILE" ] || MISSING_FILES="${MISSING_FILES}shadow_not_found"$'\n'
+[ -f "$PAM_SYSTEM_AUTH" ] || MISSING_FILES="${MISSING_FILES}system-auth_not_found"$'\n'
+# password-auth는 환경에 따라 없을 수 있어 "있으면 점검"으로만 취급(필수 X)
+
+if [ -n "$MISSING_FILES" ]; then
+    STATUS="FAIL"
+    REASON_LINE="암호화 정책 점검에 필요한 필수 파일(/etc/login.defs, /etc/shadow, /etc/pam.d/system-auth) 중 일부가 없어 안전한 암호화 알고리즘 적용 여부를 확인할 수 없으므로 취약합니다."
+    DETAIL_CONTENT="$(printf "%s" "$MISSING_FILES" | sed '/^$/d')"
+else
+    # 1) /etc/login.defs ENCRYPT_METHOD 확인
+    ENCRYPT_METHOD=$(grep -Ei '^[[:space:]]*ENCRYPT_METHOD[[:space:]]+' "$DEFS_FILE" 2>/dev/null | awk '{print $2}' | tail -n 1)
+
+    # 안전 ENCRYPT_METHOD: SHA256 / SHA512 / YESCRYPT (대소문자 무시)
+    DEFS_OK="N"
+    if [ -n "$ENCRYPT_METHOD" ] && echo "$ENCRYPT_METHOD" | grep -Eqi '^(SHA256|SHA512|YESCRYPT)$'; then
+        DEFS_OK="Y"
+    fi
+
+    # 2) /etc/shadow 해시 접두어 점검
+    # 양호: $5$ (SHA-256), $6$ (SHA-512), $y$ (yescrypt)
+    INVALID_ALGO_ACCOUNTS=$(awk -F: '
+        $2 ~ /^\$/ && $2 !~ /^\$5\$/ && $2 !~ /^\$6\$/ && $2 !~ /^\$y\$/ {print $1}
+    ' "$SHADOW_FILE" 2>/dev/null)
+
+    # 3) PAM 설정 점검 (system-auth 필수, password-auth는 있으면 점검)
+    SYS_PAM_RES=$(check_pam_file "$PAM_SYSTEM_AUTH")
+    PASS_PAM_RES=$(check_pam_file "$PAM_PASSWORD_AUTH")
+
+    PAM_OK="Y"
+    PAM_WEAK_FILES=""
+
+    if [ "$SYS_PAM_RES" != "OK" ]; then
+        PAM_OK="N"
+        PAM_WEAK_FILES="${PAM_WEAK_FILES}system-auth:$SYS_PAM_RES"$'\n'
+    fi
+
+    # password-auth는 존재하고 WEAK/NO_PAM_UNIX면 취약으로 반영(존재할 때만 의미 있음)
+    if [ -f "$PAM_PASSWORD_AUTH" ] && [ "$PASS_PAM_RES" != "OK" ]; then
+        PAM_OK="N"
+        PAM_WEAK_FILES="${PAM_WEAK_FILES}password-auth:$PASS_PAM_RES"$'\n'
+    fi
+
+    # DETAIL 구성
+    DETAIL_CONTENT="ENCRYPT_METHOD=${ENCRYPT_METHOD:-not_set}"$'\n'
+    if [ -z "$INVALID_ALGO_ACCOUNTS" ]; then
+        DETAIL_CONTENT="${DETAIL_CONTENT}shadow_hash_prefix=only_$5$_$6$_$y$ (SHA-256/SHA-512/yescrypt)"$'\n'
+    else
+        DETAIL_CONTENT="${DETAIL_CONTENT}shadow_weak_accounts:"$'\n'"$(printf "%s\n" "$INVALID_ALGO_ACCOUNTS" | sed 's/[[:space:]]*$//')"$'\n'
+    fi
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}pam_system-auth=$SYS_PAM_RES"$'\n'
+    if [ -f "$PAM_PASSWORD_AUTH" ]; then
+        DETAIL_CONTENT="${DETAIL_CONTENT}pam_password-auth=$PASS_PAM_RES"$'\n'
+    else
+        DETAIL_CONTENT="${DETAIL_CONTENT}pam_password-auth=not_found(skip)"$'\n'
+    fi
+
+    # 최종 판정
+    if [ "$DEFS_OK" = "Y" ] && [ "$PAM_OK" = "Y" ] && [ -z "$INVALID_ALGO_ACCOUNTS" ]; then
+        STATUS="PASS"
+        REASON_LINE="/etc/login.defs의 ENCRYPT_METHOD가 SHA-2 이상(SHA256/SHA512) 또는 yescrypt로 설정되어 있고, PAM(system-auth${PAM_PASSWORD_AUTH:+/password-auth})에서도 안전한 알고리즘 옵션이 적용되며, /etc/shadow의 해시도 안전 형식($5$/$6$/$y$)만 사용되어 양호합니다."
     else
         STATUS="FAIL"
-        EVIDENCE="현재 패스워드 암호화 강도가 권장 기준($ENCRYPT_METHOD)에 미치지 못하여, 시스템 보안성 향상을 위한 조치가 필요합니다."
+        REASON_LINE="비밀번호 암호화 정책에서 SHA-2 이상(또는 yescrypt) 알고리즘 적용이 일부 보장되지 않아 취약합니다. ENCRYPT_METHOD, PAM 설정, /etc/shadow 해시 형식을 안전 기준으로 맞추고(필요 시 비밀번호 재설정으로 재생성) 점검해야 합니다."
+        if [ "$DEFS_OK" != "Y" ]; then
+            DETAIL_CONTENT="${DETAIL_CONTENT}defs_check=FAIL(need SHA256/SHA512/YESCRYPT)"$'\n'
+        fi
+        if [ "$PAM_OK" != "Y" ]; then
+            DETAIL_CONTENT="${DETAIL_CONTENT}pam_check=FAIL"$'\n'"$(printf "%s" "$PAM_WEAK_FILES" | sed '/^$/d')"$'\n'
+        fi
     fi
-else
-    STATUS="FAIL"
-    EVIDENCE="암호화 정책 관련 필수 설정 파일이 식별되지 않아 정확한 보안성 점검을 위한 시스템 확인 조치가 필요합니다."
-    FILE_HASH="NOT_FOUND"
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "/etc/login.defs 파일에서 ENCRYPT_METHOD를 SHA512로 설정하세요.",
-    "file_hash": "$FILE_HASH",
-    "target_file": "$DEFS_FILE,$SHADOW_FILE",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

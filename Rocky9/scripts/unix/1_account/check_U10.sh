@@ -17,60 +17,84 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-10"
-CATEGORY="계정관리"
-TITLE="동일한 UID 금지"
-IMPORTANCE="중"
-TARGET_FILE="/etc/passwd"
-
-# 2. 진단 로직
 STATUS="PASS"
-EVIDENCE="N/A"
-DUPLICATE_INFO=""
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
+TARGET_FILE="/etc/passwd"
+CHECK_COMMAND='[ -f /etc/passwd -a -r /etc/passwd ] && cut -d: -f3 /etc/passwd | sort -n | uniq -d || echo "passwd_not_found_or_not_readable"'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+DUPS=""
+DUPLICATE_LINES=""
+
+# 파일 존재 여부에 따른 분기
 if [ -f "$TARGET_FILE" ]; then
-    # 중복된 UID 값 추출
-    DUPS=$(cut -d: -f3 "$TARGET_FILE" | sort -n | uniq -d)
-
-    if [ -z "$DUPS" ]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        EVIDENCE="모든 사용자가 고유한 식별 번호(UID)를 할당받아 사용 중이며 계정 간 권한 충돌 위험이 없습니다."
-        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-    else
+    # (필수 추가) 파일이 존재하지만 읽을 수 없는 경우: 점검 불가이므로 FAIL
+    if [ ! -r "$TARGET_FILE" ]; then
         STATUS="FAIL"
-        ACTION_RESULT="PARTIAL_SUCCESS"
-        
-        # 중복 UID별 계정 매칭 상세화
-        for uid in $DUPS; do
-            ACCOUNTS=$(awk -F: -v u="$uid" '$3 == u {print $1}' "$TARGET_FILE" | xargs | sed 's/ /, /g')
-            DUPLICATE_INFO+="UID ${uid}번(${ACCOUNTS}); "
-        done
-        
-        EVIDENCE="동일한 식별 번호를 공유하는 계정(${DUPLICATE_INFO%; })이 식별되어 권한 분리가 필요합니다."
-        GUIDE="1. 중복된 계정 중 UID를 변경할 대상을 결정하세요. 2. 해당 사용자가 소유한 파일 리스트를 'find / -uid <UID>'로 먼저 확보하세요. 3. 'usermod -u <새UID> <계정명>'으로 UID를 수정한 뒤, 확보한 파일들의 소유권을 'chown'으로 재설정하십시오."
+        REASON_LINE="사용자 정보 파일(/etc/passwd)이 존재하지만 읽기 권한이 없어 UID 중복 여부를 점검할 수 없으므로 취약합니다. 파일 권한/ACL을 확인하여 점검 가능 상태로 만든 뒤 재점검해야 합니다."
+        DETAIL_CONTENT="passwd_not_readable"
+    else
+        # UID 목록이 비정상적으로 비어있는 경우도 점검 불가로 처리
+        UID_LIST="$(cut -d: -f3 "$TARGET_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d')"
+        if [ -z "$UID_LIST" ]; then
+            STATUS="FAIL"
+            REASON_LINE="사용자 정보 파일(/etc/passwd)에서 UID를 추출할 수 없어 점검을 수행할 수 없으므로 취약합니다. 파일 형식 이상 여부를 확인하고 복구 후 재점검해야 합니다."
+            DETAIL_CONTENT="passwd_parse_failed"
+        else
+            # 중복 UID 값 추출
+            DUPS=$(printf "%s\n" "$UID_LIST" | sort -n | uniq -d)
+
+            if [ -z "$DUPS" ]; then
+                STATUS="PASS"
+                REASON_LINE="모든 계정이 고유한 UID를 사용하고 있어 계정 간 권한 충돌 및 추적 혼선 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+                DETAIL_CONTENT="no_duplicate_uids"
+            else
+                STATUS="FAIL"
+                REASON_LINE="동일한 UID를 공유하는 계정이 존재하여 권한 경계가 무너지고 감사 추적이 어려워질 수 있으므로 취약합니다. 중복 계정 중 하나의 UID를 변경하고 해당 UID로 소유된 파일의 소유권도 함께 재설정해야 합니다."
+
+                # 중복 UID별 계정 매칭(반복문)
+                for uid in $DUPS; do
+                    ACCOUNTS=$(awk -F: -v u="$uid" '$3 == u {print $1}' "$TARGET_FILE" 2>/dev/null | xargs | sed 's/ /, /g')
+                    DUPLICATE_LINES+="uid=$uid accounts=$ACCOUNTS"$'\n'
+                done
+
+                DETAIL_CONTENT="$(printf "%s" "$DUPLICATE_LINES" | sed 's/[[:space:]]*$//')"
+            fi
+        fi
     fi
 else
     STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="사용자 정보 설정 파일($TARGET_FILE)이 존재하지 않아 계정 식별자 점검이 불가능합니다."
-    GUIDE="시스템 환경에 맞는 계정 설정 파일 존재 여부를 수동으로 점검하십시오."
+    REASON_LINE="사용자 정보 파일(/etc/passwd)이 존재하지 않아 UID 중복 여부를 점검할 수 없으므로 취약합니다. /etc/passwd 파일을 복구한 뒤 UID 중복 여부를 점검해야 합니다."
+    DETAIL_CONTENT="passwd_not_found"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

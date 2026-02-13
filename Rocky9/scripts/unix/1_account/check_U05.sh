@@ -17,47 +17,76 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-05"
-CATEGORY="계정관리"
-TITLE="UID가 0인 일반 계정 존재"
-IMPORTANCE="상"
-TARGET_FILE="/etc/passwd"
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="해당 계정에 반드시 관리자(root) 권한이 필요한 특수 목적이 없다면, UID를 변경하더라도 일반적인 시스템 운영에는 영향이 없습니다. 다만, 조치 후 해당 계정은 더 이상 관리자 권한을 행사할 수 없으므로 기존에 수행하던 작업의 권한 문제를 사전에 검토해야 합니다."
-
 STATUS="PASS"
-EVIDENCE="N/A"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ -f "$TARGET_FILE" ]; then
-    # root 계정 외에 UID가 0인 계정 리스트 추출
-    UID_ZERO_ACCOUNTS=$(awk -F: '$3 == 0 && $1 != "root" {print $1}' "$TARGET_FILE" | xargs | sed 's/ /, /g')
-    
-    if [ -z "$UID_ZERO_ACCOUNTS" ]; then
-        STATUS="PASS"
-        EVIDENCE="시스템 관리자 권한(UID 0)을 가진 계정이 root 이외에 존재하지 않아 보안 가이드라인을 준수하고 있습니다."
-    else
-        STATUS="FAIL"
-        EVIDENCE="root 계정 외에 관리자 권한을 공유하는 계정($UID_ZERO_ACCOUNTS)이 식별되어, 권한 오남용 방지를 위한 조치가 필요합니다."
-    fi
+TARGET_FILE="/etc/passwd"
+
+# 실제 점검 커맨드(증거용): getent 우선, 실패 시 /etc/passwd로 fallback
+CHECK_COMMAND='(command -v getent >/dev/null 2>&1 && getent passwd | awk -F: '\''$3 == 0 && $1 != "root" {print $1 ":" $3}'\'') || ([ -f /etc/passwd ] && awk -F: '\''$3 == 0 && $1 != "root" {print $1 ":" $3}'\'' /etc/passwd) || echo "passwd_not_found"'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+UID_ZERO_ACCOUNTS=""
+
+# 1) getent 사용 가능하면 getent 기준으로 점검 (LDAP/NIS 등 NSS 반영)
+if command -v getent >/dev/null 2>&1; then
+    UID_ZERO_ACCOUNTS=$(getent passwd 2>/dev/null | awk -F: '$3 == 0 && $1 != "root" {print $1}' | sed 's/[[:space:]]*$//')
+    EVID_TARGET="getent_passwd"
+
+# 2) getent 없으면 /etc/passwd로 점검
+elif [ -f "$TARGET_FILE" ]; then
+    UID_ZERO_ACCOUNTS=$(awk -F: '$3 == 0 && $1 != "root" {print $1}' "$TARGET_FILE" 2>/dev/null | sed 's/[[:space:]]*$//')
+    EVID_TARGET="$TARGET_FILE"
+
+# 3) 둘 다 불가면 점검 불가
 else
-    STATUS="FAIL"
-    EVIDENCE="사용자 계정 정보 파일($TARGET_FILE)을 확인할 수 없어 정확한 권한 점검을 위한 시스템 확인 조치가 필요합니다."
+    UID_ZERO_ACCOUNTS=""
+    EVID_TARGET="passwd_not_found"
 fi
 
+# 판정
+if [ "$EVID_TARGET" = "passwd_not_found" ]; then
+    STATUS="FAIL"
+    REASON_LINE="사용자 계정 정보(/etc/passwd 또는 NSS passwd DB)를 확인할 수 없어 root 이외 UID=0 계정 존재 여부를 점검할 수 없으므로 취약합니다. passwd DB 또는 /etc/passwd를 복구/확인한 뒤 재점검해야 합니다."
+    DETAIL_CONTENT="passwd_not_found"
+else
+    if [ -z "$UID_ZERO_ACCOUNTS" ]; then
+        STATUS="PASS"
+        REASON_LINE="root 이외 UID가 0인 계정이 존재하지 않아 관리자 권한 공유가 발생하지 않으므로 양호합니다."
+        DETAIL_CONTENT="no_uid0_accounts_except_root"
+    else
+        STATUS="FAIL"
+        REASON_LINE="root 이외 UID=0 계정이 존재하여 관리자 권한이 분산되고 권한 오남용 및 추적 곤란 위험이 있으므로 취약합니다. root 이외 UID=0 계정의 UID를 중복되지 않는 값으로 변경하거나 불필요한 계정은 제거해야 합니다."
+        DETAIL_CONTENT="$(printf "%s\n" "$UID_ZERO_ACCOUNTS")"
+    fi
+fi
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "root 이외의 계정 중 UID가 0인 계정의 UID를 1000 이상의 번호로 변경하세요.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "${FILE_HASH:-N/A}",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -15,86 +15,106 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-30"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="UMASK 설정 관리"
-IMPORTANCE="중"
-STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
 PROFILE_OK=0
 LOGIN_DEFS_OK=0
 
+FINAL_PROFILE=""
+FINAL_LOGIN_DEFS=""
 
-# 1. /etc/profile 조치
+TARGET_FILE="/etc/profile
+/etc/login.defs"
+
+CHECK_COMMAND="( [ -f /etc/profile ] && grep -inE '^[[:space:]]*umask[[:space:]]+[0-9]+' /etc/profile | tail -n 3 ) ; ( [ -f /etc/login.defs ] && grep -inE '^[[:space:]]*UMASK[[:space:]]+[0-9]+' /etc/login.defs | tail -n 3 )"
+
+# /etc/profile 조치(백업 없음)
 if [ -f /etc/profile ]; then
-    cp -p /etc/profile /etc/profile_bak_"$(date +%Y%m%d_%H%M%S)"
+  sed -i '/^[[:space:]]*umask[[:space:]]\+[0-9]\+/Id' /etc/profile
+  printf "\numask 022\nexport umask\n" >> /etc/profile
 
-    sed -i '/^[[:space:]]*umask[[:space:]]\+[0-9]\+/Id' /etc/profile
-    echo -e "\numask 022\nexport umask" >> /etc/profile
-
-    FINAL_PROFILE=$(grep -iE '^[[:space:]]*umask[[:space:]]+[0-9]+' /etc/profile | tail -n 1 | awk '{print $2}')
-    [ "$FINAL_PROFILE" -ge 22 ] && PROFILE_OK=1
-else
-    ACTION_LOG="/etc/profile 파일이 존재하지 않아 조치에 실패하였습니다."
+  FINAL_PROFILE=$(grep -iE '^[[:space:]]*umask[[:space:]]+[0-9]+' /etc/profile 2>/dev/null | tail -n 1 | awk '{print $2}')
+  if [ -n "$FINAL_PROFILE" ] && [ "$FINAL_PROFILE" -ge 22 ]; then
+    PROFILE_OK=1
+  fi
 fi
 
-
-# 2. /etc/login.defs 조치
+# /etc/login.defs 조치(백업 없음)
 if [ -f /etc/login.defs ]; then
-    cp -p /etc/login.defs "/etc/login.defs_bak_$(date +%Y%m%d_%H%M%S)"
+  sed -i '/^[[:space:]]*UMASK[[:space:]]\+[0-9]\+/Id' /etc/login.defs
+  echo "UMASK 022" >> /etc/login.defs
 
-    sed -i '/^[[:space:]]*UMASK[[:space:]]\+[0-9]\+/Id' /etc/login.defs
-    echo "UMASK 022" >> /etc/login.defs
-
-    FINAL_LOGIN_DEFS=$(grep -iE '^[[:space:]]*UMASK[[:space:]]+[0-9]+' /etc/login.defs | tail -n 1 | awk '{print $2}')
-    [ "$FINAL_LOGIN_DEFS" -ge 22 ] && LOGIN_DEFS_OK=1
-else
-    ACTION_LOG="etc/login.defs 파일이 존재하지 않아 조치에 실패하였습니다."
+  FINAL_LOGIN_DEFS=$(grep -iE '^[[:space:]]*UMASK[[:space:]]+[0-9]+' /etc/login.defs 2>/dev/null | tail -n 1 | awk '{print $2}')
+  if [ -n "$FINAL_LOGIN_DEFS" ] && [ "$FINAL_LOGIN_DEFS" -ge 22 ]; then
+    LOGIN_DEFS_OK=1
+  fi
 fi
 
+# 조치 후 상태(조치 후 상태만 detail에 표시)
+DETAIL_CONTENT=""
 
-# 3. 결과 판정
+if [ -f /etc/profile ]; then
+  PROFILE_LINE=$(grep -inE '^[[:space:]]*umask[[:space:]]+[0-9]+' /etc/profile 2>/dev/null | tail -n 1)
+  [ -n "$PROFILE_LINE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}${PROFILE_LINE}
+"
+fi
+
+if [ -f /etc/login.defs ]; then
+  LOGIN_LINE=$(grep -inE '^[[:space:]]*UMASK[[:space:]]+[0-9]+' /etc/login.defs 2>/dev/null | tail -n 1)
+  [ -n "$LOGIN_LINE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}${LOGIN_LINE}
+"
+fi
+
+# 최종 판정
 if [ "$PROFILE_OK" -eq 1 ] && [ "$LOGIN_DEFS_OK" -eq 1 ]; then
-    ACTION_RESULT="SUCCESS"
-    STATUS="PASS"
-    ACTION_LOG="UMASK 설정이 완료되었습니다. (/etc/profile, /etc/login.defs 모두 022 이상 적용)"
-    EVIDENCE="UMASK 설정이 완료되었습니다. /etc/profile=$FINAL_PROFILE, /etc/login.defs=$FINAL_LOGIN_DEFS (양호)"
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+  IS_SUCCESS=1
+  REASON_LINE="/etc/profile 및 /etc/login.defs에 UMASK 값이 022로 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
 elif [ "$PROFILE_OK" -eq 1 ] || [ "$LOGIN_DEFS_OK" -eq 1 ]; then
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    STATUS="FAIL"
-    ACTION_LOG="일부 파일에만 UMASK 설정 적용됨"
-    EVIDENCE="일부 파일에만 UMASK가 설정되었습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
-    GUIDE="/etc/profile과 /etc/login.defs 파일에 UMASK 값을 022로 설정해주세요."
+  IS_SUCCESS=0
+  REASON_LINE="UMASK 설정이 일부 파일에만 적용되어 조치가 완료되지 않았습니다."
 else
-    ACTION_RESULT="FAIL"
-    STATUS="FAIL"
-    ACTION_LOG="UMASK 값이 022 이상으로 적용되지 않아 조치에 실패하였습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
-    EVIDENCE="UMASK 값이 022 이상으로 적용되지 않아 조치에 실패하였습니다. /etc/profile=${FINAL_PROFILE}, /etc/login.defs=${FINAL_LOGIN_DEFS}, 수동으로 확인해주세요."
-    GUIDE="/etc/profile과 /etc/login.defs 파일에 UMASK 값을 022로 설정해주세요."
+  IS_SUCCESS=0
+  if [ ! -f /etc/profile ] && [ ! -f /etc/login.defs ]; then
+    REASON_LINE="/etc/profile 및 /etc/login.defs 파일이 존재하지 않아 조치가 완료되지 않았습니다."
+  elif [ ! -f /etc/profile ]; then
+    REASON_LINE="/etc/profile 파일이 존재하지 않아 UMASK 설정 조치가 완료되지 않았습니다."
+  elif [ ! -f /etc/login.defs ]; then
+    REASON_LINE="/etc/login.defs 파일이 존재하지 않아 UMASK 설정 조치가 완료되지 않았습니다."
+  else
+    REASON_LINE="UMASK 값이 022로 적용되지 않아 조치가 완료되지 않았습니다."
+  fi
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 4. JSON 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

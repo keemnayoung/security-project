@@ -16,74 +16,69 @@
 # ============================================================================
 
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-31"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="홈디렉토리 소유자 및 권한 설정"
-IMPORTANCE="중"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 사용자별 홈 디렉토리 소유주를 해당 계정으로 변경하고, 타 사용자의 쓰기 권한 제거해주세요."
-ACTION_RESULT="N/A"
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 공용처럼 사용되던 홈 디렉터리 구조가 있었다면 일부 사용자나 스크립트의 접근이 제한되어 업무에 영향을 줄 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/passwd"
-FILE_HASH="$(sha256sum /etc/passwd 2>/dev/null | awk '{print $1}')"
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+CHECK_COMMAND='while IFS=: read -r u _ _ _ _ h _; do [ -d "$h" ] && stat -c "%n owner=%U perm=%a" "$h"; done < /etc/passwd'
 
+DETAIL_CONTENT=""
+REASON_LINE=""
+VULN_LINES=""
+FOUND_VULN="N"
 
-# 2. 진단 로직
-# 로그인 가능한 사용자 대상으로 홈 디렉토리 점검
-EVIDENCE_LINES=()
-
+# /etc/passwd를 순회하며 홈 디렉터리 소유자/권한 점검
 while IFS=: read -r USER _ _ _ _ HOME _; do
-
-
-    # 홈 디렉토리가 실제로 존재하는 경우만 점검
-    [[ ! -d "$HOME" ]] && continue
+    [ -d "$HOME" ] || continue
 
     OWNER=$(stat -c %U "$HOME" 2>/dev/null | tr -d '[:space:]')
     PERM=$(stat -c %a "$HOME" 2>/dev/null | tr -d '[:space:]')
-    OTHER_WRITE=$((PERM % 10))
 
-    if [[ "$OWNER" != "$USER" || "$OTHER_WRITE" -ge 2 ]]; then
-        if [[ "$OWNER" != "root" ]]; then
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            EVIDENCE_LINES+=("${USER}:${HOME}(owner=${OWNER},perm=${PERM})")
-        fi
+    # other write 여부 확인 (마지막 자리)
+    OTHER_DIGIT=$((PERM % 10))
+
+    # 조건 위반 시 취약 목록에 추가 (소유자 불일치 또는 other write 존재)
+    if [[ "$OWNER" != "$USER" || "$OTHER_DIGIT" -ge 2 ]]; then
+        STATUS="FAIL"
+        FOUND_VULN="Y"
+        VULN_LINES+="${USER}:${HOME} owner=${OWNER} perm=${PERM}"$'\n'
     fi
-
 done < /etc/passwd
 
-if [ "$STATUS" == "PASS" ]; then
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="홈 디렉토리 소유자가 해당 계정이고, 타 사용자 쓰기 권한이 모두 적절하게 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+# 결과에 따른 평가 이유 및 detail 구성
+if [ "$FOUND_VULN" = "Y" ]; then
+    REASON_LINE="사용자 홈 디렉터리의 소유자가 해당 계정과 다르거나 타 사용자(other) 쓰기 권한이 허용되어 홈 디렉터리 내 파일이 임의로 변조될 위험이 있으므로 취약합니다. 각 홈 디렉터리의 소유자를 해당 사용자로 변경하고 타 사용자 쓰기 권한을 제거해야 합니다."
+    DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
 else
-    EVIDENCE="홈 디렉토리 소유자가 해당 계정이 아닌 계정 또는 타 사용자 쓰기 권한이 설정된 파일이 발견되었습니다. 보안을 위해 각 계정에 홈 디렉터리 소유자 또는 권한 설정이 필요합니다. "
-    EVIDENCE+=$(printf "[")
-    EVIDENCE+=$(printf "%s, " "${EVIDENCE_LINES[@]}")
-    EVIDENCE+=$(printf "]")
+    STATUS="PASS"
+    REASON_LINE="사용자 홈 디렉터리의 소유자가 해당 계정으로 설정되어 있고 타 사용자(other) 쓰기 권한이 제거되어 있어 홈 디렉터리 변조 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="all_homes_ok"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF
-

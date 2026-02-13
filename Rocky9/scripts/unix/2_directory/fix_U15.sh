@@ -19,60 +19,51 @@
 # 수동 조치 필요
 ######################
 
+# 기본 변수
 ID="U-15"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="파일 및 디렉터리 소유자 설정"
-IMPORTANCE="상"
-STATUS="PASS"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND="find / -xdev \\( -nouser -o -nogroup \\) ! -path \"/proc/*\" ! -path \"/sys/*\" ! -path \"/dev/*\" 2>/dev/null"
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE="/ (excluding: /proc, /sys, /dev)"
 
-# 1. 실제 조치 프로세스 시작
-# 소유자 또는 그룹이 존재하지 않는 파일/디렉터리 탐색
-ORPHAN_FILES=$(find / \( -nouser -o -nogroup \) -xdev -ls 2>/dev/null)
+ORPHAN_FILES=$(find / \
+  -xdev \
+  \( -nouser -o -nogroup \) \
+  ! -path "/proc/*" \
+  ! -path "/sys/*" \
+  ! -path "/dev/*" \
+  2>/dev/null)
 
 if [ -n "$ORPHAN_FILES" ]; then
-    # 취약 상태
-    STATUS="FAIL"
-    EVIDENCE=$(echo "$ORPHAN_FILES" | tr '\n' ',' | sed 's/,$//')
-    GUIDE="관리자가 직접 'find / \( -nouser -o -nogroup \) -xdev -ls 2>/dev/null' 명령으로 소유자가 존재하지 않는 파일 및 디렉터리를 확인 후 제거하거나 소유자를 변경하십시오."
-    # --------------------------------------------------------------
-    # 조치 정책:
-    # - 자동 삭제/소유권 변경은 수행하지 않음
-    # - UID 재사용 공격 위험 존재 → 관리자 수동 조치 필요
-    # --------------------------------------------------------------
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    ACTION_LOG="소유자가 존재하지 않는 파일 및 디렉터리가 발견되었습니다. UID 재사용 공격 위험 존재로 자동 조치는 수행하지 않습니다. 수동 조치를 해주시길 바랍니다."
-
+  IS_SUCCESS=0
+  REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 발견되어 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT="$ORPHAN_FILES"
 else
-    # 양호 상태
-    STATUS="PASS"
-    EVIDENCE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리 존재하지 않습니다."
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="조치 대상이 존재하지 않습니다."
-    GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
+  IS_SUCCESS=1
+  REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 존재하지 않아 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT=""
 fi
 
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 2. JSON 표준 출력
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

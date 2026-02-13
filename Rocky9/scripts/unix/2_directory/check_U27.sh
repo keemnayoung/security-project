@@ -15,105 +15,106 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-27"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="\$HOME/.rhosts, hosts.equiv 사용 금지"
-IMPORTANCE="상"
 STATUS="PASS"
-EVIDENCE=""
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 해당 방식에 의존하던 레거시 자동화 작업이나 원격 관리 기능은 더 이상 동작하지 않을 수 있습니다."
-GUIDE="/etc/hosts.equiv, \$HOME/.rhosts 파일 소유자를 root 또는 해당 계정으로 변경해주시고 권한도 600 이하로 변경해주세요. 각 파일에 허용 호스트 및 계정을 등록해주세요."
-TARGET_FILE="/etc/hosts.equiv"
-FILE_HASH="N/A"
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VUL_OWNER_LIST=()
-VUL_PERM_LIST=()
-VUL_PLUS_LIST=()
+CHECK_COMMAND='ps -ef | grep -E "rlogin|rsh|rexec" | grep -v grep; ( [ -f /etc/hosts.equiv ] && stat -c "%n owner=%U perm=%a" /etc/hosts.equiv ); find /home -name ".rhosts" -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%n owner=%U perm=%a" "{}" 2>/dev/null; grep -nE "^[[:space:]]*\\+" /etc/hosts.equiv /home/*/.rhosts 2>/dev/null'
 
-# rlogin/rsh/rexec 서비스 사용 여부 확인
+TARGET_FILE="/etc/hosts.equiv /home/*/.rhosts"
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+VULN_LINES=""
+FOUND_VULN="N"
+
+# rlogin/rsh/rexec 서비스(프로세스) 사용 여부 확인
 SERVICE_USED=$(ps -ef | grep -E 'rlogin|rsh|rexec' | grep -v grep)
 
 # 홈 디렉터리 내 .rhosts 파일 수집
-RHOSTS_FILES=$(find /home -name ".rhosts" 2>/dev/null)
+RHOSTS_FILES=$(find /home -name ".rhosts" -type f 2>/dev/null)
 
+# 서비스 미사용이면 설정 파일이 존재하더라도 위험도는 낮지만, 정책상 파일/설정은 점검
 if [ -z "$SERVICE_USED" ]; then
-    EVIDENCE="rlogin, rsh, rexec 서비스 미사용"
+    SERVICE_LINE="service_used=NO"
 else
-    for file in $TARGET_FILE $RHOSTS_FILES; do
-        if [ -f "$file" ]; then
-            OWNER=$(stat -c %U "$file")
-            PERM=$(stat -c %a "$file")
-            PLUS_EXIST=$(grep -E '^[[:space:]]*\+' "$file" 2>/dev/null)
+    SERVICE_LINE="service_used=YES"
+fi
 
-            # /etc/hosts.equiv 소유자 점검
-            if [[ "$file" == "/etc/hosts.equiv" && "$OWNER" != "root" ]]; then
-                STATUS="FAIL"
-                VUL_OWNER_LIST+=("$file (owner=$OWNER); ")
-            fi
+# /etc/hosts.equiv + .rhosts 파일들을 순회하며 소유자/권한/'+' 설정 점검
+for file in /etc/hosts.equiv $RHOSTS_FILES; do
+    [ -f "$file" ] || continue
 
-            # .rhosts 소유자 점검
-            if [[ "$file" != "/etc/hosts.equiv" ]]; then
-                FILE_USER=$(basename "$(dirname "$file")")
-                if [[ "$OWNER" != "$FILE_USER" && "$OWNER" != "root" ]]; then
-                    STATUS="FAIL"
-                    VUL_OWNER_LIST+=("$file (owner=$OWNER); ")
-                fi
-            fi
+    OWNER=$(stat -c %U "$file" 2>/dev/null)
+    PERM=$(stat -c %a "$file" 2>/dev/null)
+    PLUS_EXIST=$(grep -nE '^[[:space:]]*\+' "$file" 2>/dev/null)
 
-            # 권한 점검
-            if [ "$PERM" -gt 600 ]; then
-                STATUS="FAIL"
-                VUL_PERM_LIST+=("$file (perm=$PERM); ")
-            fi
+    # /etc/hosts.equiv 소유자 점검 (root만 허용)
+    if [[ "$file" == "/etc/hosts.equiv" && "$OWNER" != "root" ]]; then
+        FOUND_VULN="Y"
+        VULN_LINES+="$file owner=$OWNER perm=$PERM (owner_must_be_root)"$'\n'
+    fi
 
-            # "+" 설정 점검
-            if [ -n "$PLUS_EXIST" ]; then
-                STATUS="FAIL"
-                VUL_PLUS_LIST+=("$file; ")
-            fi
+    # .rhosts 소유자 점검 (해당 사용자 또는 root 허용)
+    if [[ "$file" != "/etc/hosts.equiv" ]]; then
+        FILE_USER=$(basename "$(dirname "$file")")
+        if [[ "$OWNER" != "$FILE_USER" && "$OWNER" != "root" ]]; then
+            FOUND_VULN="Y"
+            VULN_LINES+="$file owner=$OWNER perm=$PERM (owner_must_be_$FILE_USER_or_root)"$'\n'
         fi
-    done
-fi
+    fi
 
-# 3. EVIDENCE 구성
-if [ "$STATUS" = "FAIL" ]; then
-  EVIDENCE="/etc/hosts.equiv에 부적절한 설정이 존재합니다. 다음 점검된 내용을 참고하여 소유자 또는 권한 또는 파일 내용을 재설정해주십시오. "
-  if [ "${#VUL_OWNER_LIST[@]}" -gt 0 ]; then
-    EVIDENCE+="[소유자 점검] ${VUL_OWNER_LIST[*]}"
-  fi
+    # 권한 점검 (600 이하)
+    if [ "$PERM" -gt 600 ]; then
+        FOUND_VULN="Y"
+        VULN_LINES+="$file owner=$OWNER perm=$PERM (perm_must_be_600_or_less)"$'\n'
+    fi
 
-  if [ "${#VUL_PERM_LIST[@]}" -gt 0 ]; then
-    [ -n "$EVIDENCE" ] && EVIDENCE+=", "
-    EVIDENCE+="[권한 점검] ${VUL_PERM_LIST[*]}"
-  fi
+    # '+' 포함 여부 점검
+    if [ -n "$PLUS_EXIST" ]; then
+        FOUND_VULN="Y"
+        VULN_LINES+="$file has_plus_entry (line: $(echo "$PLUS_EXIST" | head -n 1 | cut -d: -f1))"$'\n'
+    fi
+done
 
-  if [ "${#VUL_PLUS_LIST[@]}" -gt 0 ]; then
-    [ -n "$EVIDENCE" ] && EVIDENCE+=", "
-    EVIDENCE+="['+' 설정 점검] ${VUL_PLUS_LIST[*]}"
-  fi
+# 점검 결과에 따른 PASS/FAIL 및 reason/detail 구성
+if [ "$FOUND_VULN" = "Y" ]; then
+    STATUS="FAIL"
+    REASON_LINE="/etc/hosts.equiv 또는 사용자 홈의 .rhosts 파일에서 소유자/권한 설정이 부적절하거나 '+' 허용 설정이 존재하여 인증 우회 및 무단 원격 접속으로 악용될 위험이 있으므로 취약합니다. 해당 파일의 소유자를 root 또는 해당 사용자로 설정하고 권한을 600 이하로 제한하며 '+' 허용 설정을 제거해야 합니다."
+    DETAIL_CONTENT="$SERVICE_LINE"$'\n'"$VULN_LINES"
 else
-  STATUS="PASS"
-  EVIDENCE+="사용자, 시스템 환경변수 파일 소유자 또는 권한 설정이 적절하게 설정되어 있어 이 항목에서 보안 위협이 없습니다."
-  GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+    STATUS="PASS"
+    if [ -z "$SERVICE_USED" ]; then
+        REASON_LINE="rlogin, rsh, rexec 서비스가 실행 중이지 않고 /etc/hosts.equiv 및 .rhosts 파일에 '+' 허용 설정이 없으며 소유자/권한이 안전하게 제한되어 있으므로 이 항목에 대한 보안 위협이 없습니다."
+    else
+        REASON_LINE="rlogin, rsh, rexec 서비스가 실행 중이더라도 /etc/hosts.equiv 및 .rhosts 파일에 '+' 허용 설정이 없고 소유자/권한이 안전하게 제한되어 있어 인증 우회 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    fi
+    DETAIL_CONTENT="$SERVICE_LINE"$'\n'"all_files_ok"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "target_file": "/etc/hosts.equiv",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

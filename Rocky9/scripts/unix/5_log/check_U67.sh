@@ -15,84 +15,70 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-67"
-CATEGORY="로그 관리"
-TITLE="로그 디렉터리 소유자 및 권한 설정"
-IMPORTANCE="중"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 다른 시스템들과의 의존성을 파악하고 /var/log/ 디렉터리 내 로그 파일의 소유자를 root로 변경하고 권한도 644로 변경해주세요."
-ACTION_RESULT="PARTIAL_SUCCESS"
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 일부 애플리케이션이나 로그 수집 에이전트가 로그 기록·수집에 실패할 수 있다는 영향이 발생할 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/var/log"
-FILE_HASH="N/A"
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CHECK_COMMAND='[ -d /var/log ] && find /var/log -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%n owner=%U perm=%a" "{}" 2>/dev/null || echo "/var/log dir_not_found"'
 
-VULN_FILES=()
+REASON_LINE=""
+DETAIL_CONTENT=""
+FOUND_VULN="N"
+VULN_LINES=""
 
-# 2. 진단 로직
+# /var/log 존재 여부에 따른 분기
 if [ -d "$TARGET_FILE" ]; then
+    # 로그 파일들을 순회하며 소유자/권한 점검
     while IFS= read -r file; do
         OWNER=$(stat -c %U "$file" 2>/dev/null)
         PERM=$(stat -c %a "$file" 2>/dev/null)
 
         if [ "$OWNER" != "root" ] || [ "$PERM" -gt 644 ]; then
             STATUS="FAIL"
-            VULN_FILES+=("$file (owner=$OWNER, perm=$PERM)")
+            FOUND_VULN="Y"
+            VULN_LINES+="$file owner=$OWNER perm=$PERM"$'\n'
         fi
     done < <(find "$TARGET_FILE" -type f 2>/dev/null)
 else
     STATUS="FAIL"
-    EVIDENCE="/var/log 디렉터리가 존재하지 않습니다. 로그가 기록될 디렉터리를 생성해주길 바랍니다."
+    FOUND_VULN="Y"
+    VULN_LINES="/var/log dir_not_found"
 fi
 
-if [ "$STATUS" = "FAIL" ] && [ ${#VULN_FILES[@]} -gt 0 ]; then
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="/var/log 디렉터리에 다음과 같은 소유자 또는 권한 재설정이 필요한 파일들이 존재합니다. 보안을 위해 수동으로 권한을 변경해주시길 바랍니다. "
-    EVIDENCE+=$(printf "%s, " "${VULN_FILES[@]}")
+# 결과에 따른 평가 이유 및 detail 구성
+if [ "$FOUND_VULN" = "Y" ]; then
+    REASON_LINE="/var/log 디렉터리 내 일부 로그 파일의 소유자가 root가 아니거나 권한이 644 초과로 설정되어 비인가 사용자가 로그를 변조하거나 열람 범위를 확대할 위험이 있으므로 취약합니다. 해당 로그 파일의 소유자를 root로 변경하고 권한을 644 이하로 제한해야 합니다."
+    DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
 else
-    ACTION_RESULT="SUCCESS"
+    STATUS="PASS"
+    REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자가 root로 설정되어 있고 권한이 644 이하로 제한되어 로그 변조 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="all_log_files_ok"
 fi
 
-
-# 3. 마스터 JSON 출력
-echo ""
-
-cat <<EOF
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
 {
-    "check_id": "$CHECK_ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$(echo "$EVIDENCE" | sed ':a;N;$!ba;s/\n/ | /g')",
-    "guide": " /var/log/ 디렉터리 내 로그 파일의 소유자를 root로 변경하고 권한도 644로 변경해주세요.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "N/A",
-    "action_impact": "$ACTION_IMPACT",
-    "impact_level": "$IMPACT_LEVEL",  
-    "check_date": "$CHECK_DATE"
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
 }
 EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(echo -e "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

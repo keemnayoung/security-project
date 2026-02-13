@@ -19,57 +19,54 @@
 # 수동 점검
 ######################
 
-# 1. 기본 변수 정의 (U-01 구조 반영)
+# 기본 변수
 ID="U-33"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="숨겨진 파일 및 디렉토리 검색 및 제거"
-IMPORTANCE="하"
-ACTION_DATE=$(date "+%Y-%m-%d %H:%M:%S")
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-ACTION_RESULT=""
-ACTION_LOG=""
-BEFORE_SETTING=""
-AFTER_SETTING=""
-STATUS="PASS"
-EVIDENCE=""
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
+CHECK_COMMAND="find / -xdev \\( -type f -o -type d \\) -name '.*' 2>/dev/null | head -n 50"
+TARGET_FILE="/ (xdev)"
 
-# 2. 숨겨진 파일 / 디렉토리 검색
-HIDDEN_FILES=$(find / -type f -name ".*" 2>/dev/null | head -n 50 | sed ':a;N;$!ba;s/\n/\\n/g')
-HIDDEN_DIRS=$(find / -type d -name ".*" 2>/dev/null | head -n 50 | sed ':a;N;$!ba;s/\n/\\n/g')
+# 조치 후 상태만 수집(자동 조치 없음: 탐지 결과만 제공)
+HIDDEN_LIST=$(find / -xdev \( -type f -o -type d \) -name ".*" 2>/dev/null | head -n 50)
 
-BEFORE_SETTING="Hidden_files:\\n$HIDDEN_FILES\\n\\nHidden_directories:\\n$HIDDEN_DIRS"
-
-if [[ -n "$HIDDEN_FILES" || -n "$HIDDEN_DIRS" ]]; then
-    STATUS="FAIL"
-    ACTION_RESULT="MANUAL_REQUIRED"
-    ACTION_LOG="숨겨진 파일 또는 디렉토리가 존재합니다. 관리자 확인 후 rm / rm -r로 제거 필요."
-    AFTER_SETTING="수동 조치 필요"
-    EVIDENCE="숨겨진 파일 또는 디렉토리 발견:\\n$HIDDEN_FILES\\n$HIDDEN_DIRS"
+if [ -z "$HIDDEN_LIST" ]; then
+  IS_SUCCESS=1
+  REASON_LINE="숨겨진 파일 및 디렉토리가 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT=""
 else
-    STATUS="PASS"
-    ACTION_RESULT="NO_ACTION_REQUIRED"
-    ACTION_LOG="숨겨진 파일 및 디렉토리 없음"
-    AFTER_SETTING="양호"
-    EVIDENCE="숨겨진 파일 또는 디렉토리 없음"
+  IS_SUCCESS=0
+  REASON_LINE="숨겨진 파일 또는 디렉토리가 존재하여 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT="$HIDDEN_LIST"
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. JSON 결과 출력
+# JSON escape 처리
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "before_setting": "$BEFORE_SETTING",
-    "after_setting": "$AFTER_SETTING",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$ACTION_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

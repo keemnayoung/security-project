@@ -15,59 +15,61 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-22"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/services 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
 STATUS="PASS"
-EVIDENCE=""
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 잘못된 설정 시 일부 네트워크 서비스가 포트 정보를 참조하지 못해 서비스 연동에 영향을 줄 수 있습니다."
-GUIDE="/etc/services 파일 소유자를 root로 변경하고 권한도 644로 변경해주세요."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/services"
-FILE_HASH="N/A"
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CHECK_COMMAND='stat -c "%U %a" /etc/services'
 
+DETAIL_CONTENT=""
+REASON_LINE=""
 
-# 2. 진단 로직
-
+# 파일 존재 여부에 따른 분기
 if [ ! -f "$TARGET_FILE" ]; then
     STATUS="FAIL"
-    EVIDENCE="/etc/services 파일이 존재하지 않습니다."
-    GUIDE="점검 대상 파일이 존재하지 않습니다."
+    REASON_LINE="/etc/services 파일이 존재하지 않아 서비스-포트 매핑 정보의 무결성과 관리가 보장되지 않으므로 취약합니다. /etc/services 파일을 생성(복구)하고 소유자를 root(또는 bin/sys), 권한을 644 이하로 설정해야 합니다."
+    DETAIL_CONTENT="file_not_found"
 else
-    FILE_OWNER=$(stat -c %U "$TARGET_FILE")
-    FILE_PERM=$(stat -c %a "$TARGET_FILE")
+    FILE_OWNER=$(stat -c %U "$TARGET_FILE" 2>/dev/null)
+    FILE_PERM=$(stat -c %a "$TARGET_FILE" 2>/dev/null)
 
-    # 소유자 확인 (root, bin, sys)
-    if [[ ( "$FILE_OWNER" != "root" && "$FILE_OWNER" != "bin" && "$FILE_OWNER" != "sys" ) || "$FILE_PERM" -gt 644 ]]; then
+    # 소유자/권한 기준에 따른 분기 (소유자: root|bin|sys, 권한: 644 이하)
+    if [[ "$FILE_OWNER" =~ ^(root|bin|sys)$ ]] && [ "$FILE_PERM" -le 644 ]; then
+        STATUS="PASS"
+        REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 허용)이고 권한이 $FILE_PERM(644 이하)로 제한되어 비인가 사용자의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    else
         STATUS="FAIL"
-        EVIDENCE="/etc/services 파일의 소유자 또는 권한이 부적절하여 재설정이 필요합니다. (owner=$OWNER, perm=$PERM)"
+        REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 외) 이거나 권한이 $FILE_PERM(644 초과)로 설정되어 비인가 사용자가 서비스-포트 매핑 정보를 변경할 위험이 있으므로 취약합니다. 소유자를 root(또는 bin/sys)로 변경하고 권한을 644 이하로 설정해야 합니다."
     fi
 
-    if [ "$STATUS" = "PASS" ]; then
-        EVIDENCE="/etc/services 파일의 소유자 또는 권한이 모두 적절하게 설정되어 이 항목에 대한 보안 위협이 없습니다."
-        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-    fi
+    # 소유자/권한은 한 줄로 출력
+    DETAIL_CONTENT="owner=$FILE_OWNER perm=$FILE_PERM"
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -19,84 +19,74 @@
 # 검토 필요
 #####################
 
-# 0. 기본 변수 정의
+# 기본 변수
 ID="U-26"
-CATEGORY="파일 및 디렉터리 관리"
-TITLE="/dev에 존재하지 않는 device 파일 점검"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
 TARGET_FILE="/dev"
+CHECK_COMMAND="find /dev -type f 2>/dev/null"
 
-
-
-# 1. 실제 조치 프로세스 시작
+# 조치 프로세스
 if [ -d "$TARGET_FILE" ]; then
+  INVALID_FILES=$(find /dev -type f 2>/dev/null)
 
-    # 1-1. 불필요한 일반 파일 탐색
-    INVALID_FILES=$(find /dev -type f 2>/dev/null)
+  if [ -n "$INVALID_FILES" ]; then
+    # 삭제 수행
+    while IFS= read -r f; do
+      [ -f "$f" ] && rm -f -- "$f" 2>/dev/null
+    done <<< "$INVALID_FILES"
+  fi
 
+  # 조치 후 상태(조치 후 상태만 detail에 표시)
+  REMAIN_FILES=$(find /dev -type f 2>/dev/null)
+
+  if [ -z "$REMAIN_FILES" ]; then
+    IS_SUCCESS=1
     if [ -z "$INVALID_FILES" ]; then
-        # 이미 양호한 상태
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="조치 대상 파일이 존재하지 않아 않아 해당 항목에 대한 보안 위협이 없습니다."
-        EVIDENCE="조치 대상 파일이 존재하지 않아 않아 해당 항목에 대한 보안 위협이 없습니다."
+      REASON_LINE="/dev 디렉터리에 일반 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     else
-        # 쉼표 구분 문자열 생성
-        INVALID_FILES_CSV=$(echo "$INVALID_FILES" | paste -sd ", " -)
-
-        # 1-2. 삭제 수행
-        rm -f $INVALID_FILES 2>/dev/null
-
-        # 1-3. 삭제 후 재검증
-        REMAIN_FILES=$(find /dev -type f 2>/dev/null)
-
-        if [ -z "$REMAIN_FILES" ]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="불필요하거나 존재하지 않는 device 파일 삭제를 완료하였습니다."
-            EVIDENCE="삭제된 파일: $INVALID_FILES_CSV"
-            GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-        else
-            REMAIN_FILES_CSV=$(echo "$REMAIN_FILES" | paste -sd ", " -)
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            ACTION_LOG="일부 device 파일 삭제를 실패하였습니다. 수동 확인이 필요합니다."
-            EVIDENCE="잔존 파일: $REMAIN_FILES_CSV"
-            GUIDE="/dev 디렉터리에 대한 파일 목록을 점검 후 major, minor number를 가지지 않는 device 파일을 제거해주세요."
-        fi
+      REASON_LINE="/dev 디렉터리에 존재하던 일반 파일이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     fi
+    DETAIL_CONTENT=""
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 /dev 디렉터리에 일반 파일이 남아 있어 조치가 완료되지 않았습니다."
+    DETAIL_CONTENT="$REMAIN_FILES"
+  fi
 else
-    STATUS="FAIL"
-    ACTION_RESULT="ERROR"
-    ACTION_LOG="/dev 디렉터리가 존재하지 않습니다."
-    EVIDENCE="조치 대상 디렉터리 없음"
-    GUIDE="/dev 디렉터리에 대한 파일 목록을 점검 후 major, minor number를 가지지 않는 device 파일을 제거해주세요."
+  IS_SUCCESS=0
+  REASON_LINE="/dev 디렉터리가 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 2. JSON 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

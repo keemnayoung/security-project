@@ -17,52 +17,187 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-06"
-CATEGORY="계정관리"
-TITLE="su 명령 사용 제한"
-IMPORTANCE="상"
-TARGET_FILE="/etc/pam.d/su"
-
-# 2. 진단 로직
 STATUS="FAIL"
-EVIDENCE="N/A"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ -f "$TARGET_FILE" ]; then
-    # pam_wheel.so 설정이 활성화되어 있는지 확인
-    CHECK_WHEEL=$(grep -v '^#' "$TARGET_FILE" | grep "pam_wheel.so" | grep "auth" | grep "required")
-    
-    if [ -n "$CHECK_WHEEL" ]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        EVIDENCE="wheel 그룹에 속한 사용자만 su 명령을 사용할 수 있도록 제한되어 있어 보안 가이드라인을 준수하고 있습니다."
-        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-    else
-        STATUS="FAIL"
-        ACTION_RESULT="PARTIAL_SUCCESS"
-        EVIDENCE="현재 모든 사용자가 su 명령어를 사용할 수 있는 상태로 설정되어 있어 권한 오남용 위험이 존재합니다."
-        GUIDE="1. 먼저 su 명령을 사용해야 하는 운영자 계정 리스트를 확인하세요. 2. 해당 계정들을 'usermod -G wheel <계정명>' 명령으로 wheel 그룹에 추가하세요. 3. 이후 /etc/pam.d/su 파일에서 pam_wheel.so 라인의 주석을 제거하십시오."
-    fi
+TARGET_FILE="/etc/pam.d/su"
+SU_BIN="$(command -v su 2>/dev/null)"
+[ -z "$SU_BIN" ] && SU_BIN="/usr/bin/su"
+
+# 가이드 반영:
+# 1) PAM 사용 중: /etc/pam.d/su 에 pam_wheel.so 활성 + (use_uid 또는 group=wheel) 권장/필수 체크
+# 2) PAM 미사용/대체 통제: su 바이너리 wheel 그룹 소유 + 4750 권한이면 제한으로 인정
+
+CHECK_COMMAND='(
+  if [ -f /etc/pam.d/su ]; then
+    grep -nEv "^[[:space:]]*#" /etc/pam.d/su | grep -nE "^[[:space:]]*auth[[:space:]]+required[[:space:]]+pam_wheel\.so" || echo "su_pam_rule_missing"
+  else
+    echo "su_pam_file_not_found"
+  fi
+  SU_PATH="$(command -v su 2>/dev/null)"; [ -z "$SU_PATH" ] && SU_PATH="/usr/bin/su";
+  if [ -e "$SU_PATH" ]; then
+    ls -l "$SU_PATH"
+    stat -c "perm=%a group=%G path=%n" "$SU_PATH"
+  else
+    echo "su_binary_not_found"
+  fi
+)'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+# 내부 점검 값들
+PAM_ACTIVE_LINE=""
+PAM_RULE_OK="no"
+PAM_RULE_REASON=""
+
+WHEEL_GROUP_LINE="$(getent group wheel 2>/dev/null)"
+WHEEL_EXISTS="no"
+WHEEL_MEMBERS=""
+if [ -n "$WHEEL_GROUP_LINE" ]; then
+  WHEEL_EXISTS="yes"
+  WHEEL_MEMBERS="$(echo "$WHEEL_GROUP_LINE" | awk -F: '{print $4}')"
+  [ -z "$WHEEL_MEMBERS" ] && WHEEL_MEMBERS="(none)"
 else
-    STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="시스템 인증 설정 파일($TARGET_FILE)이 존재하지 않아 권한 제어 상태를 확인할 수 없습니다."
-    GUIDE="시스템 환경에 맞는 인증 설정 파일 존재 여부를 수동으로 점검하십시오."
+  WHEEL_MEMBERS="(wheel group not found)"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+SU_EXISTS="no"
+SU_PERM_OCT="N/A"
+SU_GROUP="N/A"
+SU_ALT_OK="no"
+if [ -e "$SU_BIN" ]; then
+  SU_EXISTS="yes"
+  SU_PERM_OCT="$(stat -c '%a' "$SU_BIN" 2>/dev/null)"
+  SU_GROUP="$(stat -c '%G' "$SU_BIN" 2>/dev/null)"
+  if [ "$WHEEL_EXISTS" = "yes" ] && [ "$SU_PERM_OCT" = "4750" ] && [ "$SU_GROUP" = "wheel" ]; then
+    SU_ALT_OK="yes"
+  fi
+fi
+
+# 파일 존재 여부에 따른 분기 (기본 구조 유지)
+if [ -f "$TARGET_FILE" ]; then
+    # pam_wheel.so(auth required) 설정이 활성화되어 있는지 확인(주석 제외)
+    PAM_ACTIVE_LINE="$(grep -Ev '^[[:space:]]*#' "$TARGET_FILE" 2>/dev/null \
+        | grep -E '^[[:space:]]*auth[[:space:]]+required[[:space:]]+pam_wheel\.so' \
+        | head -n 1)"
+
+    if [ -n "$PAM_ACTIVE_LINE" ]; then
+        # 가이드 예시 반영: use_uid 또는 group=wheel 옵션 확인
+        if echo "$PAM_ACTIVE_LINE" | grep -qE '(^|[[:space:]])use_uid([[:space:]]|$)'; then
+            PAM_RULE_OK="yes"
+            PAM_RULE_REASON="pam_wheel.so에 use_uid 옵션 존재"
+        elif echo "$PAM_ACTIVE_LINE" | grep -qE '(^|[[:space:]])group=wheel([[:space:]]|$)'; then
+            PAM_RULE_OK="yes"
+            PAM_RULE_REASON="pam_wheel.so에 group=wheel 옵션 존재"
+        else
+            PAM_RULE_OK="no"
+            PAM_RULE_REASON="pam_wheel.so 라인은 있으나 use_uid 또는 group=wheel 옵션이 없음(가이드 예시 기준 미흡)"
+        fi
+
+        if [ "$PAM_RULE_OK" = "yes" ] && [ "$WHEEL_EXISTS" = "yes" ]; then
+            STATUS="PASS"
+            REASON_LINE="/etc/pam.d/su에 pam_wheel.so가 auth required로 설정되어 있고($PAM_RULE_REASON), wheel 그룹을 기반으로 su 사용이 제한되므로 권한 오남용 위험이 낮아 이 항목에 대한 보안 위협이 없습니다."
+        else
+            STATUS="FAIL"
+            if [ "$WHEEL_EXISTS" != "yes" ]; then
+              REASON_LINE="/etc/pam.d/su에 pam_wheel.so(auth required) 설정은 있으나($PAM_RULE_REASON), wheel 그룹이 존재하지 않아 su 접근 통제가 유효하지 않을 수 있으므로 취약합니다. wheel 그룹 생성 및 su 제한 설정을 점검해야 합니다."
+            else
+              REASON_LINE="/etc/pam.d/su에 pam_wheel.so(auth required) 설정은 있으나($PAM_RULE_REASON), 가이드 예시 기준의 제한 설정이 미흡하여 취약합니다. use_uid 또는 group=wheel 옵션을 포함해 su 사용자를 wheel 그룹으로 제한하도록 설정해야 합니다."
+            fi
+        fi
+
+        # DETAIL_CONTENT: 대시보드 가독성(한 줄 단위) + 추가 증거 포함
+        DETAIL_CONTENT="$(cat <<EOF
+pam_active_line=$(echo "$PAM_ACTIVE_LINE" | sed 's/[[:space:]]*$//')
+wheel_exists=$WHEEL_EXISTS
+wheel_members=$WHEEL_MEMBERS
+su_bin=$SU_BIN
+su_perm_octal=$SU_PERM_OCT
+su_group=$SU_GROUP
+EOF
+)"
+    else
+        # PAM 규칙이 없으면 대체 통제(su 바이너리 4750 + wheel)까지 확인
+        if [ "$SU_ALT_OK" = "yes" ]; then
+            STATUS="PASS"
+            REASON_LINE="/etc/pam.d/su에 pam_wheel.so(auth required) 설정은 없으나, su 바이너리가 wheel 그룹 소유이며 권한이 4750으로 설정되어(대체 통제) wheel 그룹 사용자만 실행 가능하므로 권한 오남용 위험이 낮아 이 항목에 대한 보안 위협이 없습니다."
+            DETAIL_CONTENT="$(cat <<EOF
+pam_wheel_rule=missing
+wheel_exists=$WHEEL_EXISTS
+wheel_members=$WHEEL_MEMBERS
+su_bin=$SU_BIN
+su_perm_octal=$SU_PERM_OCT
+su_group=$SU_GROUP
+EOF
+)"
+        else
+            STATUS="FAIL"
+            REASON_LINE="/etc/pam.d/su에 pam_wheel.so(auth required) 설정이 없어 모든 사용자가 su 명령을 사용할 수 있어 권한 오남용 및 관리자 권한 상승 위험이 있으므로 취약합니다. pam_wheel.so 설정을 적용하거나, su 바이너리를 wheel 그룹 소유 및 4750 권한으로 제한해야 합니다."
+            DETAIL_CONTENT="$(cat <<EOF
+pam_wheel_rule=missing
+wheel_exists=$WHEEL_EXISTS
+wheel_members=$WHEEL_MEMBERS
+su_bin=$SU_BIN
+su_perm_octal=$SU_PERM_OCT
+su_group=$SU_GROUP
+EOF
+)"
+        fi
+    fi
+else
+    # PAM 파일이 없으면 대체 통제(su 바이너리 4750 + wheel)까지 확인
+    if [ "$SU_ALT_OK" = "yes" ]; then
+        STATUS="PASS"
+        REASON_LINE="시스템 인증 설정 파일(/etc/pam.d/su)은 존재하지 않으나, su 바이너리가 wheel 그룹 소유이며 권한이 4750으로 설정되어(대체 통제) wheel 그룹 사용자만 실행 가능하므로 권한 오남용 위험이 낮아 이 항목에 대한 보안 위협이 없습니다."
+        DETAIL_CONTENT="$(cat <<EOF
+pam_su_file_not_found
+wheel_exists=$WHEEL_EXISTS
+wheel_members=$WHEEL_MEMBERS
+su_bin=$SU_BIN
+su_perm_octal=$SU_PERM_OCT
+su_group=$SU_GROUP
+EOF
+)"
+    else
+        STATUS="FAIL"
+        REASON_LINE="시스템 인증 설정 파일(/etc/pam.d/su)이 존재하지 않아 PAM 기반 su 접근 통제를 확인할 수 없고, su 바이너리 권한/그룹 기반의 대체 통제(4750+wheel)도 확인되지 않아 취약합니다. 환경에 맞는 PAM 설정 또는 su 바이너리 권한 제한을 적용해야 합니다."
+        DETAIL_CONTENT="$(cat <<EOF
+pam_su_file_not_found
+wheel_exists=$WHEEL_EXISTS
+wheel_members=$WHEEL_MEMBERS
+su_bin=$SU_BIN
+su_perm_octal=$SU_PERM_OCT
+su_group=$SU_GROUP
+EOF
+)"
+    fi
+fi
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력 (형태 유지)
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

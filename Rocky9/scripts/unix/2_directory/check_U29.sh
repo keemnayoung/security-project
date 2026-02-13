@@ -15,55 +15,60 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ===============================================  =============================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-29"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="hosts.lpd 파일 소유자 및 권한 설정"
-IMPORTANCE="하"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="/etc/hosts.lpd 파일을 제거하거나, /etc/hosts.lpd 파일 소유자를 root로 변경하고 권한을 600 이하로 변경해주세요."
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 해당 파일을 실제로 사용하는 레거시 출력 서비스가 있을 경우 인쇄 기능이 제한되거나 동작하지 않을 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/hosts.lpd"
-FILE_HASH="N/A"
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CHECK_COMMAND='[ -e /etc/hosts.lpd ] && stat -c "%U %a" /etc/hosts.lpd || echo "file_not_found"'
 
+DETAIL_CONTENT=""
+REASON_LINE=""
 
-# 2. 점검 로직
+# 파일 존재 여부에 따른 분기
 if [ ! -e "$TARGET_FILE" ]; then
     STATUS="PASS"
-    EVIDENCE="/etc/hosts.lpd 파일이 존재하지 않습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+    REASON_LINE="/etc/hosts.lpd 파일이 존재하지 않아 레거시 출력 서비스 기반 접근 허용 설정이 적용되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="file_not_found"
 else
     OWNER=$(stat -c %U "$TARGET_FILE" 2>/dev/null)
     PERM=$(stat -c %a "$TARGET_FILE" 2>/dev/null)
 
+    # 소유자/권한 기준에 따른 분기
     if [ "$OWNER" = "root" ] && [ "$PERM" -le 600 ]; then
         STATUS="PASS"
-        EVIDENCE="/etc/hosts.lpd 파일의 소유자 및 권한이 적절하게 설정되어 있어 보안 위협이 없습니다."
-        GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+        REASON_LINE="/etc/hosts.lpd 파일의 소유자가 root이고 권한이 $PERM(600 이하)로 제한되어 비인가 사용자의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
     else
         STATUS="FAIL"
-        EVIDENCE="/etc/hosts.lpd 파일의 소유자 또는 권한이 부적절하게 설정되어 있어 재설정이 필요합니다. (owner=$OWNER, perm=$PERM)"
+        REASON_LINE="/etc/hosts.lpd 파일의 소유자가 $OWNER 이거나 권한이 $PERM(600 초과)로 설정되어 비인가 사용자가 접근 허용 정보를 변조할 위험이 있으므로 취약합니다. 파일을 제거하거나 소유자를 root로 변경하고 권한을 600 이하로 설정해야 합니다."
     fi
+
+    DETAIL_CONTENT="owner=$OWNER perm=$PERM"
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(echo -e "$EVIDENCE" | sed 's/"/\\"/g')",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

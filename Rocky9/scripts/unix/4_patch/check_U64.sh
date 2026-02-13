@@ -15,28 +15,20 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-64"
-CATEGORY="패치 관리"
-TITLE="주기적 보안 패치 및 벤더 권고사항 적용"
-IMPORTANCE="상"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 OS 관리자, 서비스 개발자가 패치 적용에 따른 서비스 영향 정도를 파악하여 OS 관리자 및 벤더에서 적용하도록 설정해주세요."
-ACTION_RESULT="N/A"
-IMPACT_LEVEL="MEDIUM" 
-ACTION_IMPACT="일부 서비스의 설정 변경·라이브러리 의존성 충돌·커널 변경에 따른 재부팅으로 인해 서비스 중단이나 기능 이상이 일시적으로 발생할 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/os-release"
-FILE_HASH="N/A"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND='cat /etc/os-release 2>/dev/null; uname -r; (command -v apt >/dev/null && apt list --upgradable 2>/dev/null) || (command -v dnf >/dev/null && dnf check-update --quiet 2>/dev/null) || (command -v yum >/dev/null && yum check-update -q 2>/dev/null)'
 
-
-# 2. OS 정보 수집
 OS_NAME=""
 OS_VERSION=""
 OS_ID=""
 EOL_STATUS="UNKNOWN"
 
+# OS 정보 수집
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS_NAME="$NAME"
@@ -44,32 +36,20 @@ if [ -f /etc/os-release ]; then
     OS_ID="$ID"
 fi
 
-KERNEL_VERSION=$(uname -r)
+KERNEL_VERSION=$(uname -r 2>/dev/null)
 
-
-# 3. EOL OS 판별 로직 (기준일: 2026년)
+# EOL 판단(기준 로직은 기존 코드 유지)
 case "$OS_ID" in
     ubuntu)
         case "$OS_VERSION" in
-            14.04|16.04|18.04|20.04)
-                EOL_STATUS="EOL"
-                ;;
-            *)
-                EOL_STATUS="SUPPORTED"
-                ;;
+            14.04|16.04|18.04|20.04) EOL_STATUS="EOL" ;;
+            *) EOL_STATUS="SUPPORTED" ;;
         esac
         ;;
     rocky)
         case "$OS_VERSION" in
-            8)
-                EOL_STATUS="SUPPORTED"
-                ;;
-            9|10)
-                EOL_STATUS="SUPPORTED"
-                ;;
-            *)
-                EOL_STATUS="UNKNOWN"
-                ;;
+            8|9|10) EOL_STATUS="SUPPORTED" ;;
+            *) EOL_STATUS="UNKNOWN" ;;
         esac
         ;;
     centos)
@@ -77,12 +57,8 @@ case "$OS_ID" in
         ;;
     rhel)
         case "$OS_VERSION" in
-            6|7)
-                EOL_STATUS="EOL"
-                ;;
-            *)
-                EOL_STATUS="SUPPORTED"
-                ;;
+            6|7) EOL_STATUS="EOL" ;;
+            *) EOL_STATUS="SUPPORTED" ;;
         esac
         ;;
     *)
@@ -90,85 +66,78 @@ case "$OS_ID" in
         ;;
 esac
 
-
-# 4. 패치 미적용 여부 점검
+# 패치 미적용 여부 점검
 UPDATE_COUNT=0
 UPDATE_INFO=""
+PKG_MGR="UNKNOWN"
 
 if command -v apt >/dev/null 2>&1; then
+    PKG_MGR="APT"
     UPDATE_COUNT=$(apt list --upgradable 2>/dev/null | grep -vc "Listing")
-    UPDATE_INFO="[APT 기반 시스템 - 미적용 업데이트 수: ${UPDATE_COUNT}] "
+    UPDATE_INFO="pkg_mgr=APT upgradable_count=${UPDATE_COUNT}"
 elif command -v dnf >/dev/null 2>&1; then
-    UPDATE_COUNT=$(dnf check-update --quiet 2>/dev/null | wc -l)
-    UPDATE_INFO="[DNF 기반 시스템 - 미적용 업데이트 수: ${UPDATE_COUNT}] "
+    PKG_MGR="DNF"
+    UPDATE_COUNT=$(dnf check-update --quiet 2>/dev/null | wc -l | tr -d ' ')
+    UPDATE_INFO="pkg_mgr=DNF check_update_lines=${UPDATE_COUNT}"
 elif command -v yum >/dev/null 2>&1; then
-    UPDATE_COUNT=$(yum check-update -q 2>/dev/null | wc -l)
-    UPDATE_INFO="[YUM 기반 시스템 - 미적용 업데이트 수: ${UPDATE_COUNT}] "
+    PKG_MGR="YUM"
+    UPDATE_COUNT=$(yum check-update -q 2>/dev/null | wc -l | tr -d ' ')
+    UPDATE_INFO="pkg_mgr=YUM check_update_lines=${UPDATE_COUNT}"
 else
     UPDATE_COUNT=-1
-    UPDATE_INFO="패키지 관리자 확인 불가"
+    UPDATE_INFO="pkg_mgr=UNKNOWN"
 fi
 
-
-# 5. 종합 판단
+# 종합 판단
 if [ "$EOL_STATUS" = "EOL" ]; then
     STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
 elif [ "$UPDATE_COUNT" -gt 0 ]; then
     STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
 else
     STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
 fi
 
+# 평가 이유 및 detail 구성
+DETAIL_CONTENT="os_name=${OS_NAME:-unknown} os_id=${OS_ID:-unknown} os_version=${OS_VERSION:-unknown}"$'\n'
+DETAIL_CONTENT+="kernel=${KERNEL_VERSION:-unknown}"$'\n'
+DETAIL_CONTENT+="eol_status=${EOL_STATUS}"$'\n'
+DETAIL_CONTENT+="${UPDATE_INFO}"
 
-# 6. EVIDENCE 구성
-EVIDENCE_LINES=$(cat <<EOF
-[OS Information]
-Name: ${OS_NAME}
-Version: ${OS_VERSION}
-Kernel: ${KERNEL_VERSION}
+if [ "$STATUS" = "PASS" ]; then
+    REASON_LINE="운영 중인 OS가 지원 상태로 판단되고 미적용 업데이트가 확인되지 않아 보안 패치가 최신 수준으로 유지되고 있으므로 이 항목에 대한 보안 위협이 없습니다."
+else
+    if [ "$EOL_STATUS" = "EOL" ]; then
+        REASON_LINE="운영 중인 OS가 EOL(지원 종료) 상태로 판단되어 최신 보안 패치를 정상적으로 제공받기 어려우므로 취약합니다. 상위 버전 OS로 업그레이드하고 보안 패치 정책을 수립하여 주기적으로 적용해야 합니다."
+    elif [ "$UPDATE_COUNT" -gt 0 ]; then
+        REASON_LINE="미적용 보안 업데이트가 존재하여 알려진 취약점이 패치되지 않은 상태로 남을 수 있으므로 취약합니다. 서비스 영향도를 검토한 뒤 패치를 적용하고 주기적 업데이트 정책을 수립해야 합니다."
+    else
+        REASON_LINE="패치 상태를 정확히 판단하기 어려운 상태이므로 취약할 수 있습니다. 패키지 관리자/업데이트 정책을 확인하고 최신 보안 패치를 적용해야 합니다."
+    fi
+fi
 
-[EOL Status]
-${EOL_STATUS}
-
-[Patch Status]
-${UPDATE_INFO}
-
-※ EOL OS 사용 시 최신 보안 패치 적용이 불가능하므로 즉시 상위 버전 OS로 업그레이드가 필요합니다.
-※ 패치 적용 정책 수립 여부 및 주기적 관리 여부는 운영 정책 문서를 확인해주세요.
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
 EOF
 )
 
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-if [ "$STATUS" = "PASS" ]; then
-    STATUS="PASS"
-    EVIDENCE="모든 시스템들이 업데이트되어 있어 이 항목에 대한 보안 위협이 없습니다. "
-    EVIDENCE+=$EVIDENCE_LINES
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-else
-    EVIDENCE="업데이트가 필요한 시스템들이 존재합니다. 운영 중인 시스템들과의 의존성을 파악하여 수동으로 업데이트 해주시길 바랍니다. "
-    EVIDENCE+=$EVIDENCE_LINES
-fi
-
-# 7. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(echo "${EVIDENCE}" | sed ':a;N;$!ba;s/\n/\\n/g')",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF
 

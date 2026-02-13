@@ -15,82 +15,87 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-18"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/shadow 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
 TARGET_FILE="/etc/shadow"
-# 2. 실제 조치 프로세스 시작
+CHECK_COMMAND="stat -c '%U %G %a %n' /etc/shadow 2>/dev/null"
+
+# 조치 프로세스
 if [ -f "$TARGET_FILE" ]; then
+  MODIFIED=0
 
-    # 1) 조치 전 상태 확인
-    BEFORE_OWNER=$(stat -c "%U" "$TARGET_FILE")
-    BEFORE_PERM=$(stat -c "%a" "$TARGET_FILE")
+  # 소유자/그룹 조치
+  OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
 
-    EVIDENCE="조치 전 상태: owner=$BEFORE_OWNER, perm=$BEFORE_PERM"
+  if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+    chown root:root "$TARGET_FILE" 2>/dev/null
+    MODIFIED=1
+  fi
 
-    # 이미 양호한 경우
-    if [ "$BEFORE_OWNER" = "root" ] && [ "$BEFORE_PERM" -le 400 ]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="취약한 설정이 없습니다. 소유자 및 권한이 이미 안전한 상태였습니다."
-        
-        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
+  # 권한 조치(400 초과 시 400으로 조정)
+  PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+  if [ -n "$PERM" ] && [ "$PERM" -gt 400 ]; then
+    chmod 400 "$TARGET_FILE" 2>/dev/null
+    MODIFIED=1
+  fi
+
+  # 조치 후 상태 검증(조치 후 상태만 기록)
+  AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+  AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+
+  DETAIL_CONTENT="owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM"
+
+  if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -le 400 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="/etc/shadow 파일의 소유자/그룹이 root로 설정되고 권한이 400 이하로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     else
-        # 2) 조치 수행
-        chown root "$TARGET_FILE" 2>/dev/null
-        chmod 400 "$TARGET_FILE" 2>/dev/null
-
-        # 3) 조치 후 검증
-        AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE")
-        AFTER_PERM=$(stat -c "%a" "$TARGET_FILE")
-
-        if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_PERM" -le 400 ]; then
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="/etc/shadow 파일 소유자 및 권한이 기준에 맞게 조치가 완료되었습니다. "
-            EVIDENCE+="→ 조치 후 상태: owner=$AFTER_OWNER, perm=$AFTER_PERM"
-            GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
-        else
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            ACTION_LOG="조치 수행 후에도 설정이 기준을 만족하지 못하고 있습니다. 수동으로 확인해주시기 바랍니다."
-            EVIDENCE+="→ 조치 후 상태:  owner=$AFTER_OWNER, perm=$AFTER_PERM 로 여전히 취약합니다."
-            GUIDE="/etc/shadow 파일 소유자를 root로 변경하고 권한도 400 이하로 변경하십시오."
-        fi
+      REASON_LINE="/etc/shadow 파일의 소유자/그룹이 root이고 권한이 400 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     fi
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 /etc/shadow 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
 else
-    # 파일 자체가 없는 경우
-    STATUS="FAIL"
-    ACTION_RESULT="ERROR"
-    ACTION_LOG="조치 대상 파일(/etc/shadow)이 존재하지 않습니다."
-    EVIDENCE="조치 대상 파일(/etc/shadow)이 존재하지 않습니다."
-    GUIDE="/etc/shadow 파일 소유자를 root로 변경하고 권한도 400 이하로 변경하십시오."
+  IS_SUCCESS=0
+  REASON_LINE="조치 대상 파일(/etc/shadow)이 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 fi
 
-# 3. JSON 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

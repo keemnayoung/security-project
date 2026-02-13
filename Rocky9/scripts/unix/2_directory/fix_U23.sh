@@ -20,73 +20,70 @@
 #######################
 
 
+#!/bin/bash
+
+# 기본 변수
 ID="U-23"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="SUID, SGID, Sticky bit 설정 파일 점검"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG=""
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 1. 실제 조치 프로세스 시작
-SUID_SGID_FILES=$(find / -user root -type f \( -perm -04000 -o -perm -02000 \) -xdev 2>/dev/null)
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
-if [ -z "$SUID_SGID_FILES" ]; then
-    ACTION_RESULT="SUCCESS"
-    STATUS="PASS"
-    ACTION_LOG="SUID 또는 SGID가 설정된 불필요한 파일이 존재하지 않아 해당 항목에 보안 위협이 없습니다."
-    EVIDENCE="SUID 또는 SGID가 설정된 불필요한 파일이 존재하지 않아 해당 항목에 보안 위협이 없습니다."
-else
-    # 조치 전 상태 기록
-    BEFORE_LIST=$(echo "$SUID_SGID_FILES" | tr '\n' ',' | sed 's/,$//')
+CHECK_COMMAND="find / -xdev -user root -type f \\( -perm -04000 -o -perm -02000 \\) 2>/dev/null"
+TARGET_FILE="/ (xdev)"
 
-    # SUID / SGID 제거
-    for FILE in $SUID_SGID_FILES; do
-        chmod -s "$FILE" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            ACTION_LOG+="${FILE}의 권한 제거가 완료되었습니다. "
-        else
-            ACTION_LOG+="${FILE}의 권한 제거가 실패하였습니다. "
-        fi
-    done
+# SUID/SGID 대상 수집
+SUID_SGID_FILES=$(find / -xdev -user root -type f \( -perm -04000 -o -perm -02000 \) 2>/dev/null)
 
-    # 재확인
-    REMAIN_FILES=$(find / -user root -type f \( -perm -04000 -o -perm -02000 \) -xdev 2>/dev/null)
-
-    if [ -z "$REMAIN_FILES" ]; then
-        ACTION_RESULT="SUCCESS"
-        STATUS="PASS"
-        ACTION_LOG+="모든 파일의 SUID 및 SGID 권한이 제거되었습니다."
-        EVIDENCE="조치 전 상태: ${BEFORE_LIST} → 조치 후 상태: 미검출로 양호합니다."
-        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
-    else
-        ACTION_RESULT="PARTIAL_SUCCESS"
-        STATUS="FAIL"
-        AFTER_LIST=$(echo "$REMAIN_FILES" | tr '\n' ',' | sed 's/,$//')
-        ACTION_LOG+="일부 파일에서 권한 제거가 실패하였습니다."
-        EVIDENCE="조치 후에도 SUID/SGID 유지됨: ${AFTER_LIST}로 여전히 취약합니다. 수동 확인이 필요합니다."
-        GUIDE="불필요한 SUID, SGID 권한 또는 해당 파일을 제거하십시오. 애플리케이션에서 생성한 파일이나 사용자가 임의로 생성한 파일 등 의심스럽거나 특이한 파일에 SUID 권한이 부여된 경우 제거해야 합니다."
-    fi
+# 조치 수행
+if [ -n "$SUID_SGID_FILES" ]; then
+  for FILE in $SUID_SGID_FILES; do
+    chmod -s "$FILE" 2>/dev/null
+  done
 fi
 
-# 2. JSON 표준 출력
+# 조치 후 재확인(조치 후 상태만 detail에 표시)
+REMAIN_FILES=$(find / -xdev -user root -type f \( -perm -04000 -o -perm -02000 \) 2>/dev/null)
+
+if [ -z "$REMAIN_FILES" ]; then
+  IS_SUCCESS=1
+  if [ -z "$SUID_SGID_FILES" ]; then
+    REASON_LINE="SUID 또는 SGID가 설정된 대상 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
+    REASON_LINE="SUID 및 SGID 권한이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+  DETAIL_CONTENT=""
+else
+  IS_SUCCESS=0
+  REASON_LINE="조치를 수행했으나 SUID 또는 SGID 권한이 남아 있어 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT="$REMAIN_FILES"
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

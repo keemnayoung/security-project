@@ -19,93 +19,123 @@
 # 검토 필요 (수동 설정)
 #####################
 
-# 0. 기본 정보 정의
+# 기본 변수
 ID="U-28"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="접속 IP 및 포트 제한"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="MANUAL_REQUIRED"
-ACTION_LOG="N/A"
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE="/etc/hosts.allow
+/etc/hosts.deny"
 
+FIND_FLAG=0
 
-# 1. 실제 조치 프로세스
-FIND_FLAG=
-DETAIL_LOG=""
+CHECK_COMMAND="( [ -f /etc/hosts.allow ] && [ -f /etc/hosts.deny ] && { grep -nE '^ALL:ALL' /etc/hosts.deny 2>/dev/null; grep -nEv '^[[:space:]]*$|^[[:space:]]*#' /etc/hosts.allow 2>/dev/null; } )
+( command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null )
+( command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1 && firewall-cmd --list-rich-rules 2>/dev/null )
+( command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null && ufw status numbered 2>/dev/null )"
 
 # TCP Wrapper
+TCP_DENY_LINE=""
+TCP_ALLOW_LINES=""
 if [ -f /etc/hosts.allow ] && [ -f /etc/hosts.deny ]; then
-    if grep -q "^ALL:ALL" /etc/hosts.deny && \
-       grep -Ev '^\s*$|^\s*#' /etc/hosts.allow >/dev/null 2>&1; then
-        FIND_FLAG=1
-        DETAIL_LOG+="TCP Wrapper 접근제한 설정 정책이 존재합니다. "
-    fi
+  TCP_DENY_LINE=$(grep -nE '^ALL:ALL' /etc/hosts.deny 2>/dev/null | head -n 1)
+  TCP_ALLOW_LINES=$(grep -nEv '^[[:space:]]*$|^[[:space:]]*#' /etc/hosts.allow 2>/dev/null)
+
+  if [ -n "$TCP_DENY_LINE" ] && [ -n "$TCP_ALLOW_LINES" ]; then
+    FIND_FLAG=1
+  fi
 fi
 
 # iptables
+IPT_LINES=""
 if command -v iptables >/dev/null 2>&1; then
-    IPT_RULE=$(iptables -L INPUT -n 2>/dev/null | grep ACCEPT | grep dpt)
-    if [ -n "$IPT_RULE" ]; then
-        FIND_FLAG=1
-        DETAIL_LOG+="iptables IP 및 포트 제한 정책이 존재합니다. "
-    fi
+  IPT_LINES=$(iptables -S INPUT 2>/dev/null | grep -E -- '-A INPUT' | grep -E -- ' -j ACCEPT' | head -n 200)
+  if [ -n "$IPT_LINES" ]; then
+    FIND_FLAG=1
+  fi
 fi
 
 # firewalld
+FW_RICH=""
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    FW_RULE=$(firewall-cmd --list-rich-rules 2>/dev/null)
-    if [ -n "$FW_RULE" ]; then
-        FIND_FLAG=1
-        DETAIL_LOG+="firewalld rich-rule 접근제한 설정 정책이 존재합니다. "
-    fi
+  FW_RICH=$(firewall-cmd --list-rich-rules 2>/dev/null | sed '/^\s*$/d' | head -n 200)
+  if [ -n "$FW_RICH" ]; then
+    FIND_FLAG=1
+  fi
 fi
 
 # UFW
+UFW_SUMMARY=""
+UFW_RULES=""
 if command -v ufw >/dev/null 2>&1; then
-    if ufw status | grep -q "Status: active"; then
-        UFW_RULE=$(ufw status numbered | grep ALLOW | grep -E '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-        if [ -n "$UFW_RULE" ]; then
-            FIND_FLAG=1
-            DETAIL_LOG+="UFW IP 기반 접근제한 정책이 존재합니다. "
-        fi
+  UFW_SUMMARY=$(ufw status 2>/dev/null | head -n 50)
+  if echo "$UFW_SUMMARY" | grep -q "Status: active"; then
+    UFW_RULES=$(ufw status numbered 2>/dev/null | sed '/^\s*$/d' | head -n 200)
+    if echo "$UFW_RULES" | grep -qE '\bALLOW\b'; then
+      FIND_FLAG=1
     fi
+  fi
 fi
 
-# 2. 결과 판단
+# detail(조치 후 상태만: 설정값만 출력)
+DETAIL_CONTENT=""
+
+if [ -n "$TCP_DENY_LINE" ] || [ -n "$TCP_ALLOW_LINES" ]; then
+  DETAIL_CONTENT="${DETAIL_CONTENT}${TCP_DENY_LINE}
+${TCP_ALLOW_LINES}
+"
+fi
+
+if [ -n "$IPT_LINES" ]; then
+  DETAIL_CONTENT="${DETAIL_CONTENT}${IPT_LINES}
+"
+fi
+
+if [ -n "$FW_RICH" ]; then
+  DETAIL_CONTENT="${DETAIL_CONTENT}${FW_RICH}
+"
+fi
+
+if [ -n "$UFW_SUMMARY" ] || [ -n "$UFW_RULES" ]; then
+  DETAIL_CONTENT="${DETAIL_CONTENT}${UFW_SUMMARY}
+${UFW_RULES}
+"
+fi
+
+# 최종 판정
 if [ "$FIND_FLAG" -eq 1 ]; then
-    STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="접근 IP 및 포트 제한 설정이 확인되어 추가 조치가 필요하지 않습니다."
-    EVIDENCE="{$DETAIL_LOG} IP 및 포트 기반 접근제한 설정이 존재하여 보안 위협이 없습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+  IS_SUCCESS=1
+  REASON_LINE="접속 IP 및 포트 제한 설정이 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
 else
-    STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    ACTION_LOG="접근 IP 및 포트 제한 설정이 확인되지 않아 자동 조치를 수행하지 않았습니다. 정책에 따라 수동 설정이 필요합니다."
-    EVIDENCE="접근 IP 및 포트 제한 설정이 확인되지 않아 자동 조치를 수행하지 않았습니다. 정책에 따라 수동 설정이 필요합니다."
-    GUIDE="OS에 기본으로 제공하는 방화벽 애플리케이션이나 TCP Wrapper와 같은 호스트별 서비스 제한하고 애플리케이션을 사용하여 접근 허용 IP를 등록해주세요."
+  IS_SUCCESS=0
+  REASON_LINE="접속 IP 및 포트 제한 설정이 적용되어 있지 않아 조치가 완료되지 않았습니다."
 fi
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 2. JSON 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

@@ -15,67 +15,62 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-32"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="홈 디렉토리로 지정한 디렉토리의 존재 관리"
-IMPORTANCE="중"
 STATUS="PASS"
-EVIDENCE="홈 디렉토리가 존재하지 않는 계정이 발견되지 않음"
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 홈 디렉토리가 존재하지 않는 계정에 홈 디렉토리를 설정하거나 계정을 제거해주세요."
-ACTION_RESULT="N/A"
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 잘못된 계정에 조치할 경우 기존 서비스나 배치 작업의 실행 경로에 영향을 줄 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/passwd"
-FILE_HASH="$(sha256sum /etc/passwd 2>/dev/null | awk '{print $1}')"
-CHECK_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+CHECK_COMMAND='while IFS=: read -r u _ uid _ _ h _; do [ "$uid" -ge 1000 ] && echo "$u:$h"; done < /etc/passwd'
 
-
-# 2. 진단 로직
 MISSING_HOME_USERS=()
+FOUND_VULN="N"
+DETAIL_CONTENT=""
+REASON_LINE=""
 
+# /etc/passwd를 순회하며 홈 디렉터리 존재 여부 점검 (UID 1000 이상만)
 while IFS=: read -r username _ uid _ _ homedir _ ; do
-    # 시스템 계정 제외 (UID 1000 미만)
     if [ "$uid" -ge 1000 ]; then
         if [ ! -d "$homedir" ]; then
+            STATUS="FAIL"
+            FOUND_VULN="Y"
             MISSING_HOME_USERS+=("$username:$homedir")
         fi
     fi
 done < "$TARGET_FILE"
 
-if [ "${#MISSING_HOME_USERS[@]}" -ne 0 ]; then
-    STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-
-    IFS=", "
-    JOINED_USERS="${MISSING_HOME_USERS[*]}"
-    unset IFS
-
-    EVIDENCE="다음과 같은 홈 디렉토리가 존재하지 않는 계정이 발견되었습니다. ($JOINED_USERS)"
+# 결과에 따른 평가 이유 및 detail 구성
+if [ "$FOUND_VULN" = "Y" ]; then
+    REASON_LINE="일반 사용자 계정(UID 1000 이상) 중 홈 디렉터리가 존재하지 않는 계정이 있어 로그인 시 환경 초기화가 정상적으로 보장되지 않고 파일 생성/권한 관리가 예상과 다르게 동작할 위험이 있으므로 취약합니다. 해당 계정에 홈 디렉터리를 생성하여 할당하거나 불필요한 계정은 제거해야 합니다."
+    DETAIL_CONTENT="$(printf "%s\n" "${MISSING_HOME_USERS[@]}" | sed 's/[[:space:]]*$//')"
+else
+    STATUS="PASS"
+    REASON_LINE="일반 사용자 계정(UID 1000 이상)이 모두 존재하는 홈 디렉터리를 사용하도록 설정되어 있어 로그인 환경과 파일 권한 관리가 정상적으로 동작하므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="all_users_have_home"
 fi
 
-if [ "$STATUS" == "PASS" ]; then
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="사용자 계정들이 모두 홈 디렉토리를 소유하고 있어 이 항목에 대한 보안 위협이 없습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-fi
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

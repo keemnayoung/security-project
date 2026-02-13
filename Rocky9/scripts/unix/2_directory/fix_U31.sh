@@ -15,87 +15,135 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-31"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="홈디렉토리 소유자 및 권한 설정"
-IMPORTANCE="중"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
-CHECK_DATE=$(date '+%Y-%m-%d %H:%M:%S')
-ACTION_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
+PASSWD_FILE="/etc/passwd"
+CHECK_COMMAND="awk -F: '(\$3+0)>=1000 {print \$1 \":\" \$6}' /etc/passwd 2>/dev/null | while IFS=: read -r u h; do [ -d \"\$h\" ] && stat -c '%U %a %n' \"\$h\"; done"
 TARGET_FILE="/etc/passwd"
-# 1. 실제 조치 프로세스 시작
-if [ -f "$TARGET_FILE" ]; then
 
-    while IFS=: read -r USER _ USER_UID _ _ HOME _; do
+FAIL_FLAG=0
+FOUND=0
+MODIFIED=0
+DETAIL_CONTENT=""
 
-        # UID 1000 이상 사용자만 대상
-        UID_CLEAN=$(echo "$USER_UID" | tr -cd '0-9')
-        [[ -z "$UID_CLEAN" ]] && continue
-        (( UID_CLEAN < 1000 )) && continue
+# 조치 수행
+if [ -f "$PASSWD_FILE" ]; then
+  while IFS=: read -r USER _ UID _ _ HOME _; do
+    UID_CLEAN=$(echo "$UID" | tr -cd '0-9')
+    [ -z "$UID_CLEAN" ] && continue
+    [ "$UID_CLEAN" -lt 1000 ] && continue
 
-        # 홈 디렉터리 존재 시만 처리
-        [[ ! -d "$HOME" ]] && continue
+    [ -d "$HOME" ] || continue
+    FOUND=1
 
-        # 현재 상태 확인
-        CUR_OWNER=$(stat -c %U "$HOME" 2>/dev/null | tr -d '[:space:]')
-        CUR_PERM=$(stat -c %a "$HOME" 2>/dev/null | tr -d '[:space:]')
-        OTHER_WRITE=$((CUR_PERM % 10))
+    CUR_OWNER=$(stat -c "%U" "$HOME" 2>/dev/null | tr -d '[:space:]')
+    CUR_PERM=$(stat -c "%a" "$HOME" 2>/dev/null | tr -d '[:space:]')
 
-        # 조치 수행
-        if [[ "$CUR_OWNER" != "$USER" ]]; then
-            chown "$USER" "$HOME" 2>/dev/null
-        fi
+    if [ -n "$CUR_OWNER" ] && [ "$CUR_OWNER" != "$USER" ]; then
+      chown "$USER":"$USER" "$HOME" 2>/dev/null
+      MODIFIED=1
+    fi
 
-        if (( OTHER_WRITE >= 2 )); then
-            chmod o-w "$HOME" 2>/dev/null
-        fi
-
-        # 조치 후 재검증
-        NEW_OWNER=$(stat -c %U "$HOME" 2>/dev/null | tr -d '[:space:]')
-        NEW_PERM=$(stat -c %a "$HOME" 2>/dev/null | tr -d '[:space:]')
-        NEW_OTHER_WRITE=$((NEW_PERM % 10))
-
-        if [[ "$NEW_OWNER" != "$USER" || "$NEW_OTHER_WRITE" -ge 2 ]]; then
-            STATUS="FAIL"
-            ACTION_RESULT="PARTIAL_SUCCESS"
-            EVIDENCE+="[USER:$USER HOME:$HOME OWNER:$NEW_OWNER PERM:$NEW_PERM] "
-        else
-            STATUS="PASS"
-            ACTION_RESULT="SUCCESS"
-            EVIDENCE+="[USER:$USER HOME:$HOME 조치완료] "
-        fi
-
-    done < "$TARGET_FILE"
-
-    ACTION_LOG="홈 디렉터리 소유자 및 권한 조치 수행 완료"
-
-else
-    ACTION_RESULT="ERROR"
-    STATUS="FAIL"
-    ACTION_LOG="조치 대상 파일(/etc/passwd)이 존재하지 않습니다."
-    EVIDENCE="파일 없음"
+    if [ -n "$CUR_PERM" ]; then
+      OTHER_DIGIT=$((CUR_PERM % 10))
+      if [ "$OTHER_DIGIT" -ge 2 ]; then
+        chmod o-w "$HOME" 2>/dev/null
+        MODIFIED=1
+      fi
+    fi
+  done < "$PASSWD_FILE"
 fi
 
-# 2. JSON 표준 출력
+# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+if [ -f "$PASSWD_FILE" ]; then
+  while IFS=: read -r USER _ UID _ _ HOME _; do
+    UID_CLEAN=$(echo "$UID" | tr -cd '0-9')
+    [ -z "$UID_CLEAN" ] && continue
+    [ "$UID_CLEAN" -lt 1000 ] && continue
+
+    [ -d "$HOME" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$HOME" 2>/dev/null | tr -d '[:space:]')
+    AFTER_PERM=$(stat -c "%a" "$HOME" 2>/dev/null | tr -d '[:space:]')
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}user=$USER
+home=$HOME
+owner=$AFTER_OWNER
+perm=$AFTER_PERM
+
+"
+
+    if [ "$AFTER_OWNER" != "$USER" ]; then
+      FAIL_FLAG=1
+      continue
+    fi
+
+    if [ -n "$AFTER_PERM" ]; then
+      AFTER_OTHER=$((AFTER_PERM % 10))
+      if [ "$AFTER_OTHER" -ge 2 ]; then
+        FAIL_FLAG=1
+      fi
+    else
+      FAIL_FLAG=1
+    fi
+  done < "$PASSWD_FILE"
+else
+  FAIL_FLAG=1
+fi
+
+# 최종 판정
+if [ ! -f "$PASSWD_FILE" ]; then
+  IS_SUCCESS=0
+  REASON_LINE="조치 대상 파일(/etc/passwd)이 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
+elif [ "$FOUND" -eq 0 ]; then
+  IS_SUCCESS=1
+  REASON_LINE="UID 1000 이상의 사용자 홈 디렉터리 조치 대상이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT=""
+else
+  if [ "$FAIL_FLAG" -eq 0 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="UID 1000 이상의 사용자 홈 디렉터리 소유자가 해당 계정으로 설정되고 other 쓰기 권한이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    else
+      REASON_LINE="UID 1000 이상의 사용자 홈 디렉터리 소유자가 해당 계정으로 유지되고 other 쓰기 권한이 제거된 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    fi
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 일부 사용자 홈 디렉터리의 소유자 또는 other 쓰기 권한 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "${EVIDENCE:-정상}",
-    "guide": "KISA 가이드라인에 따른 홈 디렉터리 권한 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$ACTION_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

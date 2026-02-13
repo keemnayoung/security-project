@@ -15,69 +15,81 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-21"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/(r)syslog.conf 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
 STATUS="PASS"
-EVIDENCE=""
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 드물게 비-root 프로세스가 설정 파일을 직접 건드리던 레거시 환경에서는 권한 오류가 발생할 수 있습니다."
-GUIDE="/etc/(r)syslog.conf 파일 소유자를 root로 변경하고 권한도 640 이하로 변경해주세요."
-TARGET_FILE=""
-FILE_HASH="N/A"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# 2. 진단 로직
+TARGET_FILE="/etc/syslog.conf /etc/rsyslog.conf"
+CHECK_COMMAND='for f in /etc/syslog.conf /etc/rsyslog.conf; do [ -f "$f" ] && stat -c "%n owner=%U perm=%a" "$f"; done'
+
 LOG_FILES=("/etc/syslog.conf" "/etc/rsyslog.conf")
-EVIDENCE_LINES=""
+TARGET_FILES=()
+FOUND_ANY="N"
+FOUND_VULN="N"
+VULN_LINES=""
+
+# 대상 파일을 순회하며 소유자/권한 점검
 for FILE in "${LOG_FILES[@]}"; do
     if [ -f "$FILE" ]; then
-        TARGET_FILE="$TARGET_FILE $FILE"
+        FOUND_ANY="Y"
+        TARGET_FILES+=("$FILE")
 
-        OWNER=$(stat -c %U "$FILE")
-        PERM=$(stat -c %a "$FILE")
+        OWNER=$(stat -c %U "$FILE" 2>/dev/null)
+        PERM=$(stat -c %a "$FILE" 2>/dev/null)
 
         if [[ "$OWNER" =~ ^(root|bin|sys)$ ]] && [ "$PERM" -le 640 ]; then
-            EVIDENCE+=""
+            :
         else
             STATUS="FAIL"
-            EVIDENCE_LINES+="$FILE (owner=$OWNER, perm=$PERM); "
+            FOUND_VULN="Y"
+            VULN_LINES+="$FILE owner=$OWNER perm=$PERM"$'\n'
         fi
     fi
 done
 
-if [ -z "$TARGET_FILE" ]; then
+# 대상 파일이 하나도 없으면 FAIL 처리
+if [ "$FOUND_ANY" = "N" ]; then
     STATUS="FAIL"
-    EVIDENCE="syslog 설정 파일이 존재하지 않습니다."
-    GUIDE="대상 점검 파일이 존재하지 않습니다."
-fi
-
-if [ "$STATUS" == "PASS" ]; then
-    EVIDENCE="/etc/(r)syslog.conf 파일의 소유자 및 권한이 모두 적절하게 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+    REASON_LINE="syslog 설정 파일(/etc/syslog.conf 또는 /etc/rsyslog.conf)이 존재하지 않아 로그 정책 설정의 무결성과 관리가 보장되지 않으므로 취약합니다. 해당 설정 파일을 생성(복구)하고 소유자를 root(또는 bin/sys), 권한을 640 이하로 설정해야 합니다."
+    DETAIL_CONTENT="file_not_found"
 else
-    EVIDENCE="다음 파일의 소유자 또는 권한이 부적절하게 설정되어 있어 재설정이 필요합니다. "
-    EVIDENCE+=$EVIDENCE_LINES
+    # target_file은 실제 존재하는 파일만 공백으로 연결
+    TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}" | sed 's/[[:space:]]*$//')
+
+    # 취약/양호에 따른 평가 이유 및 detail 구성
+    if [ "$FOUND_VULN" = "Y" ]; then
+        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys가 아니거나 권한이 640 초과로 설정되어 비인가 사용자가 로그 설정을 변경할 위험이 있으므로 취약합니다. 소유자를 root(또는 bin/sys)로 변경하고 권한을 640 이하로 설정해야 합니다."
+        DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
+    else
+        STATUS="PASS"
+        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys로 설정되어 있고 권한이 640 이하로 제한되어 로그 설정 파일의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+        DETAIL_CONTENT="all_files_ok"
+    fi
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "guide": "$GUIDE",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

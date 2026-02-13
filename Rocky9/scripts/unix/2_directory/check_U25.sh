@@ -15,71 +15,59 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-25"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="world writable 파일 점검"
-IMPORTANCE="상"
 STATUS="PASS"
-EVIDENCE=""
-GUIDE="해당 항목은 자동 조치 시 시스템 장애 위험이 커서 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 world writable 파일 존재 여부를 확인하고 불필요한 경우 제거해주세요."
-ACTION_RESULT="N/A"
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 world writable 권한을 전제로 동작하던 스크립트나 서비스가 있다면 일부 기능 장애가 발생할 수 있습니다."
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/"
-FILE_HASH="N/A"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND='find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null'
 
-# 2. 진단 로직
 TMP_RESULT_FILE="/tmp/U25_world_writable_files.txt"
+DETAIL_CONTENT=""
+REASON_LINE=""
 
-# world writable 파일 탐색
+# world writable 파일 탐색 (결과는 임시 파일에 저장)
 find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null > "$TMP_RESULT_FILE"
 
-FILE_COUNT=$(wc -l < "$TMP_RESULT_FILE")
+FILE_COUNT=$(wc -l < "$TMP_RESULT_FILE" 2>/dev/null | tr -d ' ')
 
+# 결과 유무에 따른 PASS/FAIL 결정
 if [ "$FILE_COUNT" -eq 0 ]; then
     STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="world writable 파일이 존재하지 않아 이 항목에서 보안 위협이 없습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+    REASON_LINE="world writable 권한이 설정된 파일이 존재하지 않아 비인가 사용자가 파일을 임의로 수정할 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="none"
 else
-    FILE_LIST=$(paste -sd ", " "$TMP_RESULT_FILE")
     STATUS="FAIL"
-    ACTION_RESULT="PARTIAL_SUCCESS"
-    EVIDENCE="world writable 파일이 존재하여 보안을 위해 다음 경로에 있는 파일들을 확인 후 불필요한 경우 제거하십시오. "
-    EVIDENCE+="($FILE_LIST)"
+    REASON_LINE="world writable 권한이 설정된 파일이 존재하여 비인가 사용자가 파일을 임의로 수정하거나 악성 코드 삽입을 할 위험이 있으므로 취약합니다. 불필요한 world writable 권한을 제거하거나 해당 파일을 제거해야 합니다."
+    DETAIL_CONTENT="$(cat "$TMP_RESULT_FILE")"
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 무결성 정보
-if command -v sha256sum >/dev/null 2>&1; then
-    FILE_HASH=$(sha256sum "$TMP_RESULT_FILE" | awk '{print $1}')
-else
-    FILE_HASH="N/A"
-fi
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-
-
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "check_date": "$CHECK_DATE"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF
 
-# 5. 임시 파일 정리
+# 임시 파일 정리
 rm -f "$TMP_RESULT_FILE"

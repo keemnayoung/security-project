@@ -15,94 +15,75 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-16"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="/etc/passwd 파일 소유자 및 권한 설정"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-
-# 1. 실제 조치 프로세스 시작
+CHECK_COMMAND="stat -c '%U %G %a %n' /etc/passwd 2>/dev/null"
+REASON_LINE=""
+DETAIL_CONTENT=""
 TARGET_FILE="/etc/passwd"
 
 if [ -f "$TARGET_FILE" ]; then
+  MODIFIED=0
 
-    # 1-1. 조치 전 상태 수집
-    BEFORE_OWNER=$(stat -c "%U" "$TARGET_FILE")
-    BEFORE_PERM=$(stat -c "%a" "$TARGET_FILE")
-    EVIDENCE="조치 전 설정: owner=$BEFORE_OWNER, perm=$BEFORE_PERM"
+  BEFORE_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  BEFORE_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+  BEFORE_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    # 1-2. 백업 생성
-    BACKUP_FILE="${TARGET_FILE}_bak_$(date +%Y%m%d_%H%M%S)"
-    cp -p "$TARGET_FILE" "$BACKUP_FILE"
+  if [ "$BEFORE_OWNER" != "root" ] || [ "$BEFORE_GROUP" != "root" ]; then
+    chown root:root "$TARGET_FILE" 2>/dev/null
+    MODIFIED=1
+  fi
 
-    MODIFIED=0
+  if [ -n "$BEFORE_PERM" ] && [ "$BEFORE_PERM" -gt 644 ]; then
+    chmod 644 "$TARGET_FILE" 2>/dev/null
+    MODIFIED=1
+  fi
 
-    # 1-3. 소유자 조치
-    if [ "$BEFORE_OWNER" != "root" ]; then
-        chown root:root "$TARGET_FILE"
-        MODIFIED=1
-    fi
+  AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+  AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    # 1-4. 권한 조치
-    if [ "$BEFORE_PERM" -gt 644 ]; then
-        chmod 644 "$TARGET_FILE"
-        MODIFIED=1
-    fi
+  DETAIL_CONTENT="owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM"
 
-    # 1-5. 조치 후 상태 검증
-    AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE")
-    AFTER_PERM=$(stat -c "%a" "$TARGET_FILE")
-
-    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_PERM" -le 644 ]; then
-        STATUS="PASS"
-        EVIDENCE+="→ 조치 후 설정: owner=$AFTER_OWNER, perm=$AFTER_PERM"
-        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
-        if [ "$MODIFIED" -eq 1 ]; then
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="/etc/passwd 소유자 및 권한 변경을 완료하였습니다."
-        else
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="취약한 설정이 없습니다. PATH가 이미 안전한 상태였습니다."
-        fi
-
-        EVIDENCE+="→ 조치 후 설정: owner=$AFTER_OWNER, perm=$AFTER_PERM"
-
+  if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -le 644 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="/etc/passwd 파일의 소유자/그룹이 root로 설정되고 권한이 644 이하로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     else
-        STATUS="FAIL"
-        ACTION_RESULT="PARTIAL_SUCCESS"
-        ACTION_LOG="조치를 수행했으나 기준을 완전히 충족하지 못함. 수동 확인 필요."
-        EVIDENCE="$EVIDENCE → 조치 후 설정: owner=$AFTER_OWNER, perm=$AFTER_PERM"
-        GUIDE="/etc/passwd 파일 소유자를 root로 변경하고 권한을 644 이하로 변경하십시오."
+      REASON_LINE="/etc/passwd 파일의 소유자/그룹이 root이고 권한이 644 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     fi
-
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 /etc/passwd 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
 else
-    ACTION_RESULT="ERROR"
-    STATUS="FAIL"
-    ACTION_LOG="조치 대상 파일($TARGET_FILE)이 없습니다."
-    EVIDENCE="파일 없음"
+  IS_SUCCESS=0
+  REASON_LINE="조치 대상 파일(/etc/passwd)이 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 fi
 
-# 2. JSON 표준 출력
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

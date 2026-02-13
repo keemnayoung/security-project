@@ -15,110 +15,115 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+#!/bin/bash
+
+# 기본 변수
 ID="U-17"
-CATEGORY="파일 및 디렉토리 관리"
-TITLE="시스템 시작 스크립트 파일 권한 설정"
-IMPORTANCE="상"
-STATUS="FAIL"
-EVIDENCE=""
-GUIDE=""
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
+CHECK_COMMAND=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
 
-# 1. 조치 대상 수집
-EVIDENCE_LINES=()
 MODIFIED=0
 FAIL_FLAG=0
 
+# 조치 대상 수집
+INIT_FILES=""
+SYSTEMD_FILES=""
 
 if [ -d /etc/rc.d ]; then
-    INIT_FILES=$(readlink -f /etc/rc.d/*/* 2>/dev/null | sed 's/$/*/')
+  INIT_FILES=$(readlink -f /etc/rc.d/*/* 2>/dev/null | sed 's/$/*/')
 fi
 
 if [ -d /etc/systemd/system ]; then
-    SYSTEMD_FILES=$(readlink -f /etc/systemd/system/* 2>/dev/null | sed 's/$/*/')
+  SYSTEMD_FILES=$(readlink -f /etc/systemd/system/* 2>/dev/null | sed 's/$/*/')
 fi
 
-ALL_FILES=$(echo -e "$INIT_FILES\n$SYSTEMD_FILES" | sort -u)
+ALL_FILES=$(echo -e "$INIT_FILES\n$SYSTEMD_FILES" | sed '/^\s*$/d' | sort -u)
 
+# 확인 명령어(command) 및 target_file 구성
+CHECK_COMMAND="for f in \$(readlink -f /etc/rc.d/*/* 2>/dev/null; readlink -f /etc/systemd/system/* 2>/dev/null); do [ -e \"\$f\" ] && stat -c '%U %A %n' \"\$f\"; done"
+TARGET_FILE=$(printf "%s\n" $ALL_FILES)
 
-# 2. 조치 수행
+# 조치 수행
 if [ -z "$ALL_FILES" ]; then
-    ACTION_RESULT="ERROR"
-    STATUS="FAIL"
-    ACTION_LOG="조치 대상 시스템 시작 스크립트 파일이 존재하지 않습니다."
-    EVIDENCE="조치 대상 파일이 존재하지 않습니다."
+  IS_SUCCESS=0
+  TARGET_FILE="/etc/rc.d/*/*\n/etc/systemd/system/*"
+  REASON_LINE="시스템 시작 스크립트 파일이 존재하지 않아 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT=""
 else
-    for FILE in $ALL_FILES; do
-        [ -e "$FILE" ] || continue
+  for FILE in $ALL_FILES; do
+    [ -e "$FILE" ] || continue
 
-        # 소유자 및 권한 조치
-        OWNER=$(stat -c "%U" "$FILE")
-        PERM=$(stat -c "%A" "$FILE")
+    OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    PERM=$(stat -c "%A" "$FILE" 2>/dev/null)
 
-        if [ "$OWNER" != "root" ]; then
-            chown root:root "$FILE"
-            MODIFIED=1
-        fi
-
-        if [ "$(echo "$PERM" | cut -c9)" = "w" ]; then
-            chmod o-w "$FILE"
-            MODIFIED=1
-        fi
-    done
-
-    # 3. 조치 후 재검증
-    for FILE in $ALL_FILES; do
-        [ -e "$FILE" ] || continue
-
-        AFTER_OWNER=$(stat -c "%U" "$FILE")
-        AFTER_PERM=$(stat -c "%A" "$FILE")
-
-        if [ "$AFTER_OWNER" = "root" ] && [ "$(echo "$AFTER_PERM" | cut -c9)" != "w" ]; then
-            EVIDENCE_LINES+=("[양호] $FILE (owner=$AFTER_OWNER, perm=$AFTER_PERM)")
-        else
-            EVIDENCE_LINES+=("[취약] $FILE (owner=$AFTER_OWNER, perm=$AFTER_PERM)")
-            FAIL_FLAG=1    
-
-        fi
-    done
-
-    if [ "$FAIL_FLAG" -eq 0 ]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        GUIDE="KISA 가이드라인에 따른 보안 설정이 완료되었습니다."
-        if [ "$MODIFIED" -eq 1 ]; then
-            ACTION_LOG="시스템 시작 스크립트 파일 소유자 및 권한 조치가 완료되었습니다."
-        else
-            ACTION_LOG="조치 대상이 존재하지 않습니다."
-        fi
-    else
-        STATUS="FAIL"
-        ACTION_RESULT="PARTIAL_SUCCESS"
-        ACTION_LOG="일부 시스템 시작 스크립트 파일이 기준에 부합하지 않습니다. 수동으로 확인해주시길 바랍니다."
-        GUIDE="시스템 시작 스크립트 파일(/etc/rc.d/*/*와 /etc/systemd/system/*)의 소유자를 root 또는 적절한 계정 사용자로 변경하고 권한도 o-w로 변경하십시오."
+    if [ "$OWNER" != "root" ]; then
+      chown root:root "$FILE" 2>/dev/null
+      MODIFIED=1
     fi
 
-    EVIDENCE=$(printf "%s, " "${EVIDENCE_LINES[@]}" | sed 's/"/\\"/g')
+    if [ "$(echo "$PERM" | cut -c9)" = "w" ]; then
+      chmod o-w "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+  done
+
+  # 조치 후 재검증
+  DETAIL_CONTENT=""
+  for FILE in $ALL_FILES; do
+    [ -e "$FILE" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%A" "$FILE" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}${AFTER_OWNER} ${AFTER_PERM} ${FILE}
+"
+
+    if [ "$AFTER_OWNER" != "root" ] || [ "$(echo "$AFTER_PERM" | cut -c9)" = "w" ]; then
+      FAIL_FLAG=1
+    fi
+  done
+
+  if [ "$FAIL_FLAG" -eq 0 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="시스템 시작 스크립트 파일의 소유자가 root로 설정되고 other 쓰기 권한이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    else
+      REASON_LINE="시스템 시작 스크립트 파일의 소유자가 root이고 other 쓰기 권한이 제거된 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    fi
+  else
+    IS_SUCCESS=0
+    REASON_LINE="일부 시스템 시작 스크립트 파일에서 소유자 또는 other 쓰기 권한 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
 fi
 
-# 4. JSON 표준 출력
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
+    "item_code": "$ID",
     "action_date": "$ACTION_DATE",
-    "check_date": "$CHECK_DATE"
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF
