@@ -45,31 +45,39 @@ get_unused_uid() {
   echo "$uid"
 }
 
-# UID 변경 후 파일 소유권(숫자 UID) 정리 (필수 보강)
+# UID 변경 후 파일 소유권(숫자 UID) 정리
 fix_file_ownership_by_uid() {
   local old_uid="$1"
   local user="$2"
 
-  # 특수 파일시스템/가상 경로는 제외, 같은 파일시스템(-xdev) 범위에서만 정리
-  # old_uid 숫자로 남아있는 소유 파일을 새 사용자(user)로 변경
   find / -xdev \
     \( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /var/run \) -prune -o \
     -uid "$old_uid" -exec chown -h "$user" {} + 2>/dev/null
 }
 
+# 특정 사용자 프로세스 사용 여부 확인(필수 보강)
+# - 프로세스가 있으면 usermod가 실패할 수 있으므로 자동 조치 중단
+is_user_in_use() {
+  local user="$1"
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -u "$user" >/dev/null 2>&1
+    return $?
+  else
+    # pgrep 없을 경우 ps로 대체
+    ps -u "$user" >/dev/null 2>&1
+    return $?
+  fi
+}
+
+# PID 1이 특정 사용자로 표시되는지 확인(필수 보강)
+is_pid1_mapped_to_user() {
+  local user="$1"
+  local u
+  u=$(ps -p 1 -o user= 2>/dev/null | awk '{print $1}')
+  [ "$u" = "$user" ]
+}
+
 # --- 조치 수행 ---
-
-# 1) NSS 기준(getent)으로 UID=0(root 제외) 계정 수집 (필수 보강)
-EXTRA_ROOT_NSS=""
-if command -v getent >/dev/null 2>&1; then
-  EXTRA_ROOT_NSS=$(getent passwd 2>/dev/null | awk -F: '$3 == 0 && $1 != "root" {print $1}' | sed 's/[[:space:]]*$//')
-fi
-
-# 2) 로컬(/etc/passwd)에서 조치 가능한 UID=0(root 제외) 계정 수집
-EXTRA_ROOT_LOCAL=""
-if [ -f "$PASSWD_FILE" ]; then
-  EXTRA_ROOT_LOCAL=$(awk -F: '$3 == 0 && $1 != "root" {print $1}' "$PASSWD_FILE" 2>/dev/null | sed 's/[[:space:]]*$//')
-fi
 
 # /etc/passwd 자체가 없으면 조치 불가
 if [ ! -f "$PASSWD_FILE" ]; then
@@ -77,73 +85,75 @@ if [ ! -f "$PASSWD_FILE" ]; then
   REASON_LINE="/etc/passwd 파일을 확인할 수 없어 조치를 수행할 수 없습니다."
   DETAIL_CONTENT="passwd_not_found"
 else
-  # NSS에는 있는데 로컬에는 없는 UID=0 계정은 usermod로 조치 불가 → 필수로 FAIL 처리
-  NSS_ONLY_USERS=""
-  if [ -n "$EXTRA_ROOT_NSS" ]; then
-    for u in $EXTRA_ROOT_NSS; do
-      if ! awk -F: -v UU="$u" '$1==UU {found=1} END{exit(found?0:1)}' "$PASSWD_FILE" 2>/dev/null; then
-        NSS_ONLY_USERS="${NSS_ONLY_USERS}${u}"$'\n'
-      fi
-    done
-    NSS_ONLY_USERS=$(printf "%s" "$NSS_ONLY_USERS" | sed '/^$/d')
-  fi
+  # 로컬(/etc/passwd)에서 조치 가능한 UID=0(root 제외) 계정 수집
+  EXTRA_ROOT_LOCAL=$(awk -F: '$3 == 0 && $1 != "root" {print $1}' "$PASSWD_FILE" 2>/dev/null | sed 's/[[:space:]]*$//')
 
-  # 로컬에 조치할 계정이 없고, NSS-only도 없으면 성공
-  if [ -z "$EXTRA_ROOT_LOCAL" ] && [ -z "$NSS_ONLY_USERS" ]; then
+  if [ -z "$EXTRA_ROOT_LOCAL" ]; then
     IS_SUCCESS=1
     REASON_LINE="root 이외에 UID가 0인 계정이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
     DETAIL_CONTENT=""
   else
-    # 로컬(/etc/passwd)에 존재하는 UID=0 계정은 UID 변경 조치 진행
-    if [ -n "$EXTRA_ROOT_LOCAL" ]; then
+    # 필수 보강: PID 1 매핑/사용 중 계정은 자동 조치 중단
+    BLOCKED_USERS=""
+    for user in $EXTRA_ROOT_LOCAL; do
+      if is_pid1_mapped_to_user "$user"; then
+        BLOCKED_USERS="${BLOCKED_USERS}${user}:pid1_mapped"$'\n'
+      elif is_user_in_use "$user"; then
+        BLOCKED_USERS="${BLOCKED_USERS}${user}:in_use"$'\n'
+      fi
+    done
+    BLOCKED_USERS=$(printf "%s" "$BLOCKED_USERS" | sed '/^$/d')
+
+    if [ -n "$BLOCKED_USERS" ]; then
+      IS_SUCCESS=0
+      FAIL_FLAG=1
+      REASON_LINE="UID=0(root 제외) 계정이 현재 실행 중인 프로세스에서 사용 중이거나(PID 1 포함) 사용자 매핑에 영향이 있어 자동 조치를 중단했습니다. 먼저 해당 계정 사용 프로세스를 종료하거나(가능한 경우), /etc/passwd에서 UID 0 중복을 해소한 뒤 재실행해야 합니다."
+      DETAIL_CONTENT="$BLOCKED_USERS"
+    else
+      # 사용 중이 아닌 경우에만 UID 변경 진행
       for user in $EXTRA_ROOT_LOCAL; do
         OLD_UID=$(awk -F: -v U="$user" '$1==U {print $3}' "$PASSWD_FILE" 2>/dev/null)
         NEW_UID=$(get_unused_uid)
 
-        if usermod -u "$NEW_UID" "$user" >/dev/null 2>&1; then
+        # usermod 에러를 detail에 남기기(필수 보강)
+        USERMOD_ERR=""
+        USERMOD_ERR=$(usermod -u "$NEW_UID" "$user" 2>&1 >/dev/null)
+        RC=$?
+
+        if [ $RC -eq 0 ]; then
           MODIFIED=1
-          # 필수 보강: 기존 OLD_UID 숫자로 남아있는 파일 소유권 정리
+          # 기존 숫자 UID로 남아있는 파일 소유권 정리
           if [ -n "$OLD_UID" ]; then
             fix_file_ownership_by_uid "$OLD_UID" "$user"
           fi
         else
           FAIL_FLAG=1
+          DETAIL_CONTENT="${DETAIL_CONTENT}${user}:usermod_failed:${USERMOD_ERR}"$'\n'
         fi
       done
-    fi
 
-    # 조치 후 상태 수집: NSS 기준 + 로컬 기준 모두 반영
-    REMAIN_USERS=""
-    if command -v getent >/dev/null 2>&1; then
-      REMAIN_USERS=$(getent passwd 2>/dev/null | awk -F: '$3 == 0 && $1 != "root" {print $1}' | sed 's/[[:space:]]*$//')
-    else
+      # 조치 후 상태 수집(로컬 기준)
       REMAIN_USERS=$(awk -F: '$3 == 0 && $1 != "root" {print $1}' "$PASSWD_FILE" 2>/dev/null | sed 's/[[:space:]]*$//')
-    fi
 
-    if [ -n "$REMAIN_USERS" ]; then
-      DETAIL_CONTENT="$REMAIN_USERS"
-    else
-      DETAIL_CONTENT=""
-    fi
-
-    # NSS-only 계정이 있으면 조치 불가이므로 실패로 처리(필수)
-    if [ -n "$NSS_ONLY_USERS" ]; then
-      IS_SUCCESS=0
-      FAIL_FLAG=1
-      REASON_LINE="UID=0(root 제외) 계정이 NSS(getent)에는 존재하지만 /etc/passwd에는 없어 로컬 usermod로 조치할 수 없습니다(LDAP/NIS 등). 해당 계정 저장소에서 UID 변경/계정 제거가 필요합니다."
-      # detail은 남아있는 UID=0 계정 목록을 우선 표시
-      [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="$NSS_ONLY_USERS"
-    else
       if [ -z "$REMAIN_USERS" ] && [ "$FAIL_FLAG" -eq 0 ]; then
         IS_SUCCESS=1
-        if [ "$MODIFIED" -eq 1 ]; then
-          REASON_LINE="root 이외의 UID 0 계정이 일반 UID로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        else
-          REASON_LINE="root 이외의 UID 0 계정이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        fi
+        REASON_LINE="root 이외의 UID 0 계정이 일반 UID로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+        # 성공이면 detail에는 남은 계정 없음
+        DETAIL_CONTENT=""
       else
         IS_SUCCESS=0
         REASON_LINE="조치를 수행했으나 root 이외의 UID 0 계정이 남아 있거나 UID 변경이 정상 처리되지 않아 조치가 완료되지 않았습니다."
+        # usermod 실패 로그가 없다면 남은 계정만 표시
+        if [ -z "$(printf "%s" "$DETAIL_CONTENT" | sed '/^$/d')" ] && [ -n "$REMAIN_USERS" ]; then
+          DETAIL_CONTENT="$REMAIN_USERS"
+        else
+          # 둘 다 있으면 이어붙임
+          if [ -n "$REMAIN_USERS" ]; then
+            DETAIL_CONTENT="$(printf "%s\n%s" "$(printf "%s" "$DETAIL_CONTENT" | sed '/^$/d')" "$REMAIN_USERS" | sed '/^$/d')"
+          else
+            DETAIL_CONTENT="$(printf "%s" "$DETAIL_CONTENT" | sed '/^$/d')"
+          fi
+        fi
       fi
     fi
   fi
