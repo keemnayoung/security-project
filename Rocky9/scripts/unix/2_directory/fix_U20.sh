@@ -33,11 +33,20 @@ FILES=(
 
 DIR="/etc/systemd"
 
-CHECK_COMMAND="for f in /etc/inetd.conf /etc/xinetd.conf /etc/systemd/system.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done; [ -d /etc/systemd ] && find /etc/systemd -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null"
+# [추가] xinetd.d 디렉터리(가이드 Step 2)
+XINETD_DIR="/etc/xinetd.d"
+
+CHECK_COMMAND="for f in /etc/inetd.conf /etc/xinetd.conf /etc/systemd/system.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done; [ -d /etc/systemd ] && find /etc/systemd -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null; [ -d /etc/xinetd.d ] && find /etc/xinetd.d -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null"
+
 TARGET_FILE=$(printf "%s\n" "${FILES[@]}")
 if [ -d "$DIR" ]; then
   TARGET_FILE="${TARGET_FILE}
 $DIR/*"
+fi
+# [추가] xinetd.d 타겟 포함
+if [ -d "$XINETD_DIR" ]; then
+  TARGET_FILE="${TARGET_FILE}
+$XINETD_DIR/*"
 fi
 
 FAIL_FLAG=0
@@ -86,6 +95,27 @@ if [ -d "$DIR" ]; then
   done < <(find "$DIR" -type f 2>/dev/null)
 fi
 
+# [추가] xinetd.d 디렉터리 내 파일 조치(가이드 Step 2)
+if [ -d "$XINETD_DIR" ]; then
+  while IFS= read -r FILE; do
+    [ -f "$FILE" ] || continue
+
+    OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
+
+    if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+      chown root:root "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+
+    if [ -n "$PERM" ] && [ "$PERM" -gt 600 ]; then
+      chmod 600 "$FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+  done < <(find "$XINETD_DIR" -type f 2>/dev/null)
+fi
+
 # 조치 후 상태 수집(조치 후 상태만 detail에 표시)
 for FILE in "${FILES[@]}"; do
   if [ -f "$FILE" ]; then
@@ -125,6 +155,28 @@ file=$FILE
       FAIL_FLAG=1
     fi
   done < <(find "$DIR" -type f 2>/dev/null)
+fi
+
+# [추가] xinetd.d 조치 후 상태 수집/검증
+if [ -d "$XINETD_DIR" ]; then
+  while IFS= read -r FILE; do
+    [ -f "$FILE" ] || continue
+
+    AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
+
+    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+file=$FILE
+
+"
+
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+      FAIL_FLAG=1
+    fi
+  done < <(find "$XINETD_DIR" -type f 2>/dev/null)
 fi
 
 # 최종 판정

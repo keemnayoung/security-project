@@ -21,22 +21,22 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/"
-CHECK_COMMAND='find / -xdev \( -nouser -o -nogroup \) 2>/dev/null'
+CHECK_COMMAND='find / -xdev \( -nouser -o -nogroup \) -ls 2>/dev/null'
 
-# 고아 파일/디렉터리 목록 수집
+# 고아 파일/디렉터리 목록 수집 (가이드 Step1: -ls 포함)
 ORPHAN_FILES_RAW=$(find / \
     -xdev \
     \( -nouser -o -nogroup \) \
-    2>/dev/null)
+    -ls 2>/dev/null)
 
 # 결과 유무에 따른 PASS/FAIL 결정
 if [ -n "$ORPHAN_FILES_RAW" ]; then
     STATUS="FAIL"
-    REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일/디렉터리가 발견되어 관리 주체가 불명확하고 접근 통제가 어려우므로 취약합니다. 해당 파일/디렉터리를 제거하거나 적절한 소유자 및 그룹으로 변경해야 합니다."
+    REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일/디렉터리가 발견되었습니다. (※ 소유자/그룹이 없으면 ls 결과에서 UID/GID가 숫자로 표시됨) 해당 파일/디렉터리를 제거하거나 적절한 소유자 및 그룹으로 변경해야 합니다."
     DETAIL_CONTENT="$ORPHAN_FILES_RAW"
 else
     STATUS="PASS"
-    REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일/디렉터리가 발견되지 않아 관리 주체가 명확하며 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일/디렉터리가 발견되지 않았습니다."
     DETAIL_CONTENT="none"
 fi
 

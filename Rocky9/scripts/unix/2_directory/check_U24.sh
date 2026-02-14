@@ -20,7 +20,7 @@ ID="U-24"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-CHECK_COMMAND='for u in /etc/passwd; do 홈디렉터리 내 (.profile .kshrc .cshrc .bashrc .bash_profile .login .exrc .netrc) 파일에 대해 소유자(root 또는 계정) 및 group/other 쓰기 권한 여부(stat) 점검'
+CHECK_COMMAND='while IFS=: read -r user _ _ _ _ home _; do [ -d "$home" ] || continue; for f in .profile .kshrc .cshrc .bashrc .bash_profile .login .exrc .netrc; do p="$home/$f"; [ -f "$p" ] || continue; stat -c "%U %A" "$p"; done; done < /etc/passwd'
 TARGET_FILE=""
 
 ENV_FILES=(
@@ -47,8 +47,18 @@ while IFS=: read -r USER _ _ _ _ HOME_DIR _; do
     FILE_PATH="$HOME_DIR/$ENV_FILE"
     [ -f "$FILE_PATH" ] || continue
 
+    # --- [필수 보완] stat 실패(확인 불가) 처리 ---
     OWNER="$(stat -c %U "$FILE_PATH" 2>/dev/null)"
     PERM="$(stat -c %A "$FILE_PATH" 2>/dev/null)"
+
+    if [ -z "$OWNER" ] || [ -z "$PERM" ]; then
+      STATUS="FAIL"
+      FOUND_VULN="Y"
+      VULN_LINES+="$FILE_PATH owner=${OWNER:-unknown} user=$USER perm=${PERM:-unknown} (stat_failed)"$'\n'
+      TARGET_FILE+="$FILE_PATH "
+      continue
+    fi
+    # --- 보완 끝 ---
 
     # 소유자(root 또는 해당 계정) 조건 위반
     if [[ "$OWNER" != "root" && "$OWNER" != "$USER" ]]; then
@@ -59,7 +69,7 @@ while IFS=: read -r USER _ _ _ _ HOME_DIR _; do
       continue
     fi
 
-    # group/other 쓰기 권한 존재 여부 점검
+    # group/other 쓰기 권한 존재 여부 점검 (root/소유자 외 쓰기 금지)
     if [[ "${PERM:5:1}" == "w" || "${PERM:8:1}" == "w" ]]; then
       STATUS="FAIL"
       FOUND_VULN="Y"
@@ -71,7 +81,7 @@ done < /etc/passwd
 
 # 결과에 따른 평가 이유 및 detail 구성
 if [ "$FOUND_VULN" = "Y" ]; then
-  REASON_LINE="사용자 환경변수 파일의 소유자가 root 또는 해당 계정이 아니거나, group/other 쓰기 권한이 허용되어 있어 환경 초기화 스크립트가 임의로 변조될 위험이 있으므로 취약합니다. 각 파일의 소유자를 root 또는 해당 사용자로 변경하고 group/other 쓰기 권한(o-w, g-w)을 제거해야 합니다."
+  REASON_LINE="사용자 환경변수 파일의 소유자가 root 또는 해당 계정이 아니거나, group/other 쓰기 권한이 허용되어 있거나(또는 권한/소유자 확인이 불가하여) 환경 초기화 스크립트가 임의로 변조될 위험이 있으므로 취약합니다. 각 파일의 소유자를 root 또는 해당 사용자로 변경하고 group/other 쓰기 권한(o-w, g-w)을 제거해야 합니다."
   DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
   TARGET_FILE="$(echo "$TARGET_FILE" | tr -s ' ' | sed 's/[[:space:]]*$//')"
 else

@@ -15,32 +15,36 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+
 # 기본 변수
 ID="U-25"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/"
-CHECK_COMMAND='find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null'
+# [필수 보완] 가상/런타임 파일시스템 제외(/proc, /sys, /run, /dev)
+CHECK_COMMAND='find / \( -path /proc -o -path /sys -o -path /run -o -path /dev \) -prune -o -type f -perm -2 -exec ls -l {} \; 2>/dev/null'
 
 TMP_RESULT_FILE="/tmp/U25_world_writable_files.txt"
 DETAIL_CONTENT=""
 REASON_LINE=""
 
 # world writable 파일 탐색 (결과는 임시 파일에 저장)
-find / -type f -perm -2 -exec ls -l {} \; 2>/dev/null > "$TMP_RESULT_FILE"
+# [필수 보완] CHECK_COMMAND와 동일한 제외 조건 적용
+find / \( -path /proc -o -path /sys -o -path /run -o -path /dev \) -prune -o -type f -perm -2 -exec ls -l {} \; 2>/dev/null > "$TMP_RESULT_FILE"
 
 FILE_COUNT=$(wc -l < "$TMP_RESULT_FILE" 2>/dev/null | tr -d ' ')
 
 # 결과 유무에 따른 PASS/FAIL 결정
 if [ "$FILE_COUNT" -eq 0 ]; then
     STATUS="PASS"
-    REASON_LINE="world writable 권한이 설정된 파일이 존재하지 않아 비인가 사용자가 파일을 임의로 수정할 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="world writable 권한이 설정된 파일이 존재하지 않아 비인가 사용자가 파일을 임의로 수정할 위험이 없으므로 이 항목은 양호입니다."
     DETAIL_CONTENT="none"
 else
     STATUS="FAIL"
-    REASON_LINE="world writable 권한이 설정된 파일이 존재하여 비인가 사용자가 파일을 임의로 수정하거나 악성 코드 삽입을 할 위험이 있으므로 취약합니다. 불필요한 world writable 권한을 제거하거나 해당 파일을 제거해야 합니다."
-    DETAIL_CONTENT="$(cat "$TMP_RESULT_FILE")"
+    # [필수 보완] '설정 이유 인지' 판단은 사람 확인 필요(인지 시 예외 가능) 문구 포함
+    REASON_LINE="world writable 권한이 설정된 파일이 존재하여 비인가 사용자가 파일을 임의로 수정하거나 악성 코드 삽입을 할 위험이 있으므로 기술적으로 취약입니다. 단, 운영 정책상 필요하여 설정 이유를 인지하고 있는 경우 양호로 예외 처리될 수 있으니 관리자 확인이 필요합니다."
+    DETAIL_CONTENT="총 ${FILE_COUNT}건 발견\n$(cat "$TMP_RESULT_FILE")"
 fi
 
 # raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)

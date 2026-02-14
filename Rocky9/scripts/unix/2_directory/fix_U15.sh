@@ -19,51 +19,51 @@
 # 수동 조치 필요
 ######################
 
-# 기본 변수
-ID="U-15"
-ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-IS_SUCCESS=0
+# # 기본 변수
+# ID="U-15"
+# ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+# IS_SUCCESS=0
 
-CHECK_COMMAND="find / -xdev \\( -nouser -o -nogroup \\) ! -path \"/proc/*\" ! -path \"/sys/*\" ! -path \"/dev/*\" 2>/dev/null"
-REASON_LINE=""
-DETAIL_CONTENT=""
-TARGET_FILE="/ (excluding: /proc, /sys, /dev)"
+# CHECK_COMMAND="find / -xdev \\( -nouser -o -nogroup \\) ! -path \"/proc/*\" ! -path \"/sys/*\" ! -path \"/dev/*\" 2>/dev/null"
+# REASON_LINE=""
+# DETAIL_CONTENT=""
+# TARGET_FILE="/ (excluding: /proc, /sys, /dev)"
 
-ORPHAN_FILES=$(find / \
-  -xdev \
-  \( -nouser -o -nogroup \) \
-  ! -path "/proc/*" \
-  ! -path "/sys/*" \
-  ! -path "/dev/*" \
-  2>/dev/null)
+# ORPHAN_FILES=$(find / \
+#   -xdev \
+#   \( -nouser -o -nogroup \) \
+#   ! -path "/proc/*" \
+#   ! -path "/sys/*" \
+#   ! -path "/dev/*" \
+#   2>/dev/null)
 
-if [ -n "$ORPHAN_FILES" ]; then
-  IS_SUCCESS=0
-  REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 발견되어 조치가 완료되지 않았습니다."
-  DETAIL_CONTENT="$ORPHAN_FILES"
-else
-  IS_SUCCESS=1
-  REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 존재하지 않아 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT=""
-fi
+# if [ -n "$ORPHAN_FILES" ]; then
+#   IS_SUCCESS=0
+#   REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 발견되어 조치가 완료되지 않았습니다."
+#   DETAIL_CONTENT="$ORPHAN_FILES"
+# else
+#   IS_SUCCESS=1
+#   REASON_LINE="소유자 또는 그룹이 존재하지 않는 파일 및 디렉터리가 존재하지 않아 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+#   DETAIL_CONTENT=""
+# fi
 
-RAW_EVIDENCE=$(cat <<EOF
-{
-  "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
-}
-EOF
-)
+# RAW_EVIDENCE=$(cat <<EOF
+# {
+#   "command": "$CHECK_COMMAND",
+#   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+#   "target_file": "$TARGET_FILE"
+# }
+# EOF
+# )
 
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+# RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
-echo ""
-cat << EOF
-{
-    "item_code": "$ID",
-    "action_date": "$ACTION_DATE",
-    "is_success": $IS_SUCCESS,
-    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
-}
-EOF
+# echo ""
+# cat << EOF
+# {
+#     "item_code": "$ID",
+#     "action_date": "$ACTION_DATE",
+#     "is_success": $IS_SUCCESS,
+#     "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
+# }
+# EOF

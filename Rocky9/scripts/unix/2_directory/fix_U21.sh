@@ -28,27 +28,32 @@ TARGET_FILE=""
 LOG_FILES=("/etc/syslog.conf" "/etc/rsyslog.conf")
 
 CHECK_COMMAND="for f in /etc/syslog.conf /etc/rsyslog.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done 2>/dev/null"
-TARGET_FILE=$(printf "%s\n" "${LOG_FILES[@]}")
 
 FOUND=0
 FAIL_FLAG=0
 MODIFIED=0
 DETAIL_CONTENT=""
 
+# evidence에 넣을 실제 존재 파일 목록
+TARGET_FILES_EXIST=""
+
 # 조치 수행
 for FILE in "${LOG_FILES[@]}"; do
   if [ -f "$FILE" ]; then
     FOUND=1
+    TARGET_FILES_EXIST="${TARGET_FILES_EXIST}${FILE}"$'\n'
 
     OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
     GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
     PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-    if [ "$OWNER" != "root" ]; then
+    # [필수] 소유자 기준: root|bin|sys 허용 → 그 외만 root로 변경
+    if ! [[ "$OWNER" =~ ^(root|bin|sys)$ ]]; then
       chown root "$FILE" 2>/dev/null
       MODIFIED=1
     fi
 
+    # 권한 기준: 640 초과면 640으로 변경
     if [ -n "$PERM" ] && [ "$PERM" -gt 640 ]; then
       chmod 640 "$FILE" 2>/dev/null
       MODIFIED=1
@@ -70,11 +75,19 @@ file=$FILE
 
 "
 
-    if ! [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 640 ]; then
+    # [필수] 논리식 모호성 제거(오탐/미탐 방지)
+    if { ! [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]]; } || { [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 640 ]; }; then
       FAIL_FLAG=1
     fi
   fi
 done
+
+# target_file 구성: 실제 존재 파일만 (없으면 원래 리스트 출력)
+if [ -n "$TARGET_FILES_EXIST" ]; then
+  TARGET_FILE="$(printf "%s" "$TARGET_FILES_EXIST" | sed 's/[[:space:]]*$//')"
+else
+  TARGET_FILE=$(printf "%s\n" "${LOG_FILES[@]}")
+fi
 
 # 최종 판정
 if [ "$FOUND" -eq 0 ]; then

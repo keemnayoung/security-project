@@ -20,27 +20,38 @@ ID="U-26"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="/dev/*"
-CHECK_COMMAND='find /dev -type f 2>/dev/null'
+TARGET_FILE="/dev (exclude: /dev/mqueue, /dev/shm)"
+CHECK_COMMAND='find /dev -type f -exec ls -l {} \; (exclude: /dev/mqueue, /dev/shm)'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
 
-# /dev 디렉터리 내 일반 파일 탐색
-INVALID_FILES=$(find /dev -type f 2>/dev/null)
+# /dev 디렉터리 내 일반 파일 탐색 (가이드 예외: /dev/mqueue, /dev/shm)
+INVALID_FILES=$(find /dev \
+  \( -path /dev/mqueue -o -path /dev/mqueue/\* -o -path /dev/shm -o -path /dev/shm/\* \) -prune -o \
+  -type f -print 2>/dev/null)
 
 # 결과 유무에 따른 PASS/FAIL 결정
 if [ -n "$INVALID_FILES" ]; then
   STATUS="FAIL"
-  REASON_LINE="/dev 디렉터리에 일반 파일이 존재하여 정상적인 디바이스 노드가 아닌 파일이 포함될 가능성이 있고, 악성 파일이 위장되어 동작하거나 보안 정책을 우회할 위험이 있으므로 취약합니다. 해당 파일들을 확인 후 불필요한 파일은 제거해야 합니다."
-  DETAIL_CONTENT="$INVALID_FILES"
+  REASON_LINE="/dev 디렉터리에 정상적인 디바이스 노드가 아닌 일반 파일이 존재합니다. 이는 악성 파일이 디바이스 파일로 위장하거나 보안 정책을 우회할 위험이 있어 취약합니다. (가이드 예외 경로: /dev/mqueue, /dev/shm 제외)"
+
+  # 여러 경로는 줄바꿈이 아닌 쉼표로 구분(요구사항 반영)
+  INVALID_FILES_CSV=$(echo "$INVALID_FILES" | paste -sd ", " -)
+
+  # 가이드 예시 반영: ls -l로 소유자/권한 근거 추가
+  LS_INFO=$(echo "$INVALID_FILES" | xargs -r ls -l 2>/dev/null)
+
+  DETAIL_CONTENT="발견 파일(쉼표 구분): $INVALID_FILES_CSV
+ls -l 결과:
+$LS_INFO"
 else
   STATUS="PASS"
-  REASON_LINE="/dev 디렉터리에 일반 파일이 존재하지 않아 비정상적인 디바이스 위장 파일로 인한 보안 위협이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+  REASON_LINE="/dev 디렉터리에 일반 파일이 존재하지 않습니다. (가이드 예외 경로: /dev/mqueue, /dev/shm 제외)"
   DETAIL_CONTENT="none"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# raw_evidence 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

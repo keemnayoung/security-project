@@ -21,13 +21,16 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/etc/syslog.conf /etc/rsyslog.conf"
-CHECK_COMMAND='for f in /etc/syslog.conf /etc/rsyslog.conf; do [ -f "$f" ] && stat -c "%n owner=%U perm=%a" "$f"; done'
+CHECK_COMMAND='for f in /etc/syslog.conf /etc/rsyslog.conf; do if [ -f "$f" ]; then stat -c "%n owner=%U perm=%a" "$f"; else echo "$f not_found"; fi; done'
 
 LOG_FILES=("/etc/syslog.conf" "/etc/rsyslog.conf")
 TARGET_FILES=()
 FOUND_ANY="N"
 FOUND_VULN="N"
 VULN_LINES=""
+
+REASON_LINE=""
+DETAIL_CONTENT=""
 
 # 대상 파일을 순회하며 소유자/권한 점검
 for FILE in "${LOG_FILES[@]}"; do
@@ -48,11 +51,12 @@ for FILE in "${LOG_FILES[@]}"; do
     fi
 done
 
-# 대상 파일이 하나도 없으면 FAIL 처리
+# 대상 파일이 하나도 없으면: 가이드상 필수 취약 조건이 아니므로 PASS(점검대상 없음) 처리
 if [ "$FOUND_ANY" = "N" ]; then
-    STATUS="FAIL"
-    REASON_LINE="syslog 설정 파일(/etc/syslog.conf 또는 /etc/rsyslog.conf)이 존재하지 않아 로그 정책 설정의 무결성과 관리가 보장되지 않으므로 취약합니다. 해당 설정 파일을 생성(복구)하고 소유자를 root(또는 bin/sys), 권한을 640 이하로 설정해야 합니다."
+    STATUS="PASS"
+    REASON_LINE="syslog 설정 파일(/etc/syslog.conf, /etc/rsyslog.conf)이 시스템에 존재하지 않습니다. 이는 rsyslog/syslog 구성이 다른 경로로 관리되거나 서비스가 미사용인 경우일 수 있으므로 본 항목은 점검대상 없음으로 판단합니다. (해당 서비스 사용 시 설정 파일 존재 여부 및 소유자(root/bin/sys), 권한 640 이하를 확인 필요)"
     DETAIL_CONTENT="file_not_found"
+    TARGET_FILE=""
 else
     # target_file은 실제 존재하는 파일만 공백으로 연결
     TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}" | sed 's/[[:space:]]*$//')
@@ -63,7 +67,7 @@ else
         DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
     else
         STATUS="PASS"
-        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys로 설정되어 있고 권한이 640 이하로 제한되어 로그 설정 파일의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys로 설정되어 있고 권한이 640 이하로 제한되어 로그 설정 파일의 임의 수정 위험이 없으므로 양호합니다."
         DETAIL_CONTENT="all_files_ok"
     fi
 fi

@@ -21,7 +21,7 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/etc/services"
-CHECK_COMMAND='stat -c "%U %a" /etc/services'
+CHECK_COMMAND='[ -f /etc/services ] && stat -c "%U %a" /etc/services 2>/dev/null || echo "services_not_found_or_stat_failed"'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
@@ -35,17 +35,24 @@ else
     FILE_OWNER=$(stat -c %U "$TARGET_FILE" 2>/dev/null)
     FILE_PERM=$(stat -c %a "$TARGET_FILE" 2>/dev/null)
 
-    # 소유자/권한 기준에 따른 분기 (소유자: root|bin|sys, 권한: 644 이하)
-    if [[ "$FILE_OWNER" =~ ^(root|bin|sys)$ ]] && [ "$FILE_PERM" -le 644 ]; then
-        STATUS="PASS"
-        REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 허용)이고 권한이 $FILE_PERM(644 이하)로 제한되어 비인가 사용자의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
-    else
+    # stat 실패(권한 문제 등) 처리
+    if [ -z "$FILE_OWNER" ] || [ -z "$FILE_PERM" ]; then
         STATUS="FAIL"
-        REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 외) 이거나 권한이 $FILE_PERM(644 초과)로 설정되어 비인가 사용자가 서비스-포트 매핑 정보를 변경할 위험이 있으므로 취약합니다. 소유자를 root(또는 bin/sys)로 변경하고 권한을 644 이하로 설정해야 합니다."
-    fi
+        REASON_LINE="/etc/services 파일의 소유자/권한 정보를 확인할 수 없어(예: stat 실패) 현재 설정의 적절성을 검증할 수 없으므로 취약으로 판단합니다. 파일 접근 권한 및 파일 상태를 확인한 뒤 소유자를 root(또는 bin/sys), 권한을 644 이하로 설정해야 합니다."
+        DETAIL_CONTENT="stat_failed_or_no_output"
+    else
+        # 소유자/권한 기준에 따른 분기 (소유자: root|bin|sys, 권한: 644 이하)
+        if [[ "$FILE_OWNER" =~ ^(root|bin|sys)$ ]] && [ "$FILE_PERM" -le 644 ]; then
+            STATUS="PASS"
+            REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 허용)이고 권한이 $FILE_PERM(644 이하)로 제한되어 비인가 사용자의 임의 수정 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+        else
+            STATUS="FAIL"
+            REASON_LINE="/etc/services 파일의 소유자가 $FILE_OWNER(root/bin/sys 외) 이거나 권한이 $FILE_PERM(644 초과)로 설정되어 비인가 사용자가 서비스-포트 매핑 정보를 변경할 위험이 있으므로 취약합니다. 소유자를 root(또는 bin/sys)로 변경하고 권한을 644 이하로 설정해야 합니다."
+        fi
 
-    # 소유자/권한은 한 줄로 출력
-    DETAIL_CONTENT="owner=$FILE_OWNER perm=$FILE_PERM"
+        # 소유자/권한은 한 줄로 출력
+        DETAIL_CONTENT="owner=$FILE_OWNER perm=$FILE_PERM"
+    fi
 fi
 
 # raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)

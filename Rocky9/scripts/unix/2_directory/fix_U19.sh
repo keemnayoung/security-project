@@ -32,43 +32,60 @@ CHECK_COMMAND="stat -c '%U %G %a %n' /etc/hosts 2>/dev/null"
 if [ -f "$TARGET_FILE" ]; then
   MODIFIED=0
 
-  OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
-  GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
-  PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+  # 조치 전 상태 수집
+  BEFORE_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  BEFORE_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+  BEFORE_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-  if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
-    chown root:root "$TARGET_FILE" 2>/dev/null
-    MODIFIED=1
-  fi
-
-  if [ -n "$PERM" ] && [ "$PERM" -ne 644 ]; then
-    chmod 644 "$TARGET_FILE" 2>/dev/null
-    MODIFIED=1
-  fi
-
-  AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
-  AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
-  AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
-
-  DETAIL_CONTENT="owner=$AFTER_OWNER
-group=$AFTER_GROUP
-perm=$AFTER_PERM"
-
-  if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -eq 644 ]; then
-    IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ]; then
-      REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root로 설정되고 권한이 644로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root이고 권한이 644로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
-  else
+  # stat 결과 수집 실패 처리(필수)
+  if [ -z "$BEFORE_OWNER" ] || [ -z "$BEFORE_GROUP" ] || [ -z "$BEFORE_PERM" ]; then
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 /etc/hosts 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    REASON_LINE="/etc/hosts 파일의 소유자/그룹/권한 정보를 수집하지 못해 조치 수행 및 검증이 불가능하므로 조치가 완료되지 않았습니다."
+    DETAIL_CONTENT="before_owner=${BEFORE_OWNER:-unknown}
+before_group=${BEFORE_GROUP:-unknown}
+before_perm=${BEFORE_PERM:-unknown}"
+  else
+    # 1) 소유자/그룹 조치 (그룹은 기준에는 없지만 root:root로 통일)
+    if [ "$BEFORE_OWNER" != "root" ] || [ "$BEFORE_GROUP" != "root" ]; then
+      chown root:root "$TARGET_FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+
+    # 2) 권한 조치 (기준은 644 이하이지만, 조치 방식은 644로 표준화)
+    if [ "$BEFORE_PERM" != "644" ]; then
+      chmod 644 "$TARGET_FILE" 2>/dev/null
+      MODIFIED=1
+    fi
+
+    # 조치 후 상태 수집
+    AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+
+    DETAIL_CONTENT="before_owner=$BEFORE_OWNER
+before_group=$BEFORE_GROUP
+before_perm=$BEFORE_PERM
+after_owner=$AFTER_OWNER
+after_group=$AFTER_GROUP
+after_perm=$AFTER_PERM"
+
+    # 최종 검증
+    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -eq 644 ]; then
+      IS_SUCCESS=1
+      if [ "$MODIFIED" -eq 1 ]; then
+        REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root로 설정되고 권한이 644로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      else
+        REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root이고 권한이 644로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      fi
+    else
+      IS_SUCCESS=0
+      REASON_LINE="조치를 수행했으나 /etc/hosts 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    fi
   fi
 else
   IS_SUCCESS=0
   REASON_LINE="조치 대상 파일(/etc/hosts)이 존재하지 않아 조치가 완료되지 않았습니다."
-  DETAIL_CONTENT=""
+  DETAIL_CONTENT="file_not_found"
 fi
 
 # raw_evidence 구성
