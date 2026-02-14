@@ -12,7 +12,10 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 
 run_mysql() {
@@ -84,13 +87,17 @@ else
     VULN=0
     while IFS=$'\t' read -r user host auth locked; do
       [[ -z "$user" && -z "$host" ]] && continue
+
       if [[ "$user" == "root" ]]; then
-        [[ -z "$auth" && "$locked" != "Y" ]] && VULN=1
+        ### CHANGE HERE: 자동 조치 범위는 "원격 root 잠금"만 재검증
         case "$host" in
-          localhost|127.0.0.1|::1) ;;
-          *) [[ "$locked" != "Y" ]] && VULN=1 ;;
+          localhost|127.0.0.1|::1)
+            : ;;  # 로컬 root 비밀번호는 수동 조치이므로 PASS/FAIL 판단에서 제외
+          *)
+            [[ "$locked" != "Y" ]] && VULN=1 ;;
         esac
       else
+        ### CHANGE HERE: 익명 계정('')은 잠금되어야 함
         [[ "$locked" != "Y" ]] && VULN=1
       fi
     done <<< "$AFTER"
@@ -98,8 +105,9 @@ else
     if [[ $VULN -eq 0 ]]; then
       STATUS="PASS"
       ACTION_RESULT="SUCCESS"
-      ACTION_LOG="root 비밀번호 변경 및 원격 root/익명 계정 잠금 조치를 완료했습니다."
-      EVIDENCE="D-01 기준 조치 후 재검증 PASS"
+      ### CHANGE HERE: 자동 조치 성공 + 수동 조치 안내
+      ACTION_LOG="원격 root/익명 계정 잠금 조치를 완료했습니다. (root 비밀번호는 수동으로 변경 필요)"
+      EVIDENCE="원격 root 차단 및 익명 계정 잠금 상태 정상 확인. 로컬 root 비밀번호는 정책에 맞게 수동 변경하세요."
     else
       ACTION_LOG="조치 일부 실패: 재검증에서 취약 상태가 남아 있습니다."
       EVIDENCE="D-01 조치 후에도 일부 계정 정책이 기준 미충족입니다."
@@ -119,7 +127,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"root 비밀번호 변경, 원격 root 제한, 익명 계정 잠금/삭제",
+  "guide":"원격 root 계정과 익명 계정을 잠금 조치하였으며, 로컬 root 비밀번호는 기관의 비밀번호 정책에 맞게 변경하여 안전하게 관리하시기 바랍니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
