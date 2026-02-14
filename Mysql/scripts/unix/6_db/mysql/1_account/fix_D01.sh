@@ -28,24 +28,9 @@ run_mysql() {
   return $?
 }
 
-sql_escape() {
-  local s="$1"
-  s="${s//\'/\'\'}"
-  printf "%s" "$s"
-}
-
-gen_pass() {
-  local p
-  p="$(tr -dc 'A-Za-z0-9@#%+=_' </dev/urandom | head -c 20)"
-  [[ ${#p} -lt 12 ]] && p="RootFix$(date +%s)Aa1!"
-  printf "%s" "$p"
-}
-
-# NEW_PASS="${NEW_PASS:-$(gen_pass)}"        ### CHANGED: 비밀번호 변경용 새 비밀번호 생성(비활성화)
-# esc_pass="$(sql_escape "$NEW_PASS")"       ### CHANGED: 비밀번호 문자열 SQL 이스케이프(비활성화)
-
 Q1="SELECT user,host,COALESCE(authentication_string,''),COALESCE(account_locked,'N') FROM mysql.user WHERE user='root' OR user='';"
 Q2="SELECT user,host,COALESCE(authentication_string,''),'N' FROM mysql.user WHERE user='root' OR user='';"
+Q3="SELECT user,host,COALESCE(password,''),'N' FROM mysql.user WHERE user='root' OR user='';"
 
 ROWS="$(run_mysql "$Q1")"
 RC=$?
@@ -53,68 +38,81 @@ if [[ $RC -ne 0 ]]; then
   ROWS="$(run_mysql "$Q2")"
   RC=$?
 fi
+if [[ $RC -ne 0 ]]; then
+  ROWS="$(run_mysql "$Q3")"
+  RC=$?
+fi
 
 if [[ $RC -eq 124 ]]; then
-  ACTION_LOG="조치 중단: 계정 조회 시간 초과"
+  ACTION_LOG="수동 조치 안내: 계정 조회 시간 초과로 자동 판정을 중단했습니다."
   EVIDENCE="mysql.user 조회가 ${MYSQL_TIMEOUT}초를 초과했습니다."
+  ACTION_RESULT="MANUAL_REQUIRED"
 elif [[ $RC -ne 0 || -z "$ROWS" ]]; then
-  ACTION_LOG="조치 실패: root/기본 계정 조회 실패"
+  ACTION_LOG="수동 조치 안내: root/기본 계정 조회 실패로 자동 판정을 수행할 수 없습니다."
   EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 D-01 조치를 수행할 수 없습니다."
+  ACTION_RESULT="MANUAL_REQUIRED"
 else
-  FAIL=0
+  ROOT_COUNT=0
+  VULN_COUNT=0
+  REASONS=""
+
+  add_reason() {
+    local r="$1"
+    if [[ -z "$REASONS" ]]; then
+      REASONS="$r"
+    else
+      REASONS="${REASONS}; ${r}"
+    fi
+  }
+
   while IFS=$'\t' read -r user host auth locked; do
     [[ -z "$user" && -z "$host" ]] && continue
-    esc_user="$(sql_escape "$user")"
-    esc_host="$(sql_escape "$host")"
+
+    [[ "$locked" == "Y" ]] && is_locked="Y" || is_locked="N"
+
+    # 익명 기본 계정은 잠금/삭제가 되어야 안전
+    if [[ -z "$user" ]]; then
+      if [[ "$is_locked" != "Y" ]]; then
+        VULN_COUNT=$((VULN_COUNT + 1))
+        add_reason "anonymous@${host}: 기본(익명) 계정이 활성 상태(잠금/삭제 필요)"
+      fi
+      continue
+    fi
 
     if [[ "$user" == "root" ]]; then
-      # run_mysql "ALTER USER '${esc_user}'@'${esc_host}' IDENTIFIED BY '${esc_pass}';" >/dev/null || FAIL=1   ### CHANGED: root 비밀번호 변경(비활성화)
-      case "$host" in
-        localhost|127.0.0.1|::1) ;;
-        *) run_mysql "ALTER USER '${esc_user}'@'${esc_host}' ACCOUNT LOCK;" >/dev/null || FAIL=1 ;;
-      esac
-    else
-      run_mysql "ALTER USER ''@'${esc_host}' ACCOUNT LOCK;" >/dev/null || FAIL=1
+      ROOT_COUNT=$((ROOT_COUNT + 1))
+
+      # root 비밀번호가 공란이고 잠금도 아니면 취약
+      if [[ "$is_locked" != "Y" && -z "$auth" ]]; then
+        VULN_COUNT=$((VULN_COUNT + 1))
+        add_reason "root@${host}: 비밀번호 미설정(초기/공란) 상태"
+        continue
+      fi
+
+      # 권한/접근 정책: 원격 root 계정이 활성화되어 있으면 위험
+      if [[ "$is_locked" != "Y" ]]; then
+        case "$host" in
+          localhost|127.0.0.1|::1) : ;;
+          *) VULN_COUNT=$((VULN_COUNT + 1)); add_reason "root@${host}: 원격 root 계정 활성(로컬 제한/잠금/삭제 필요)" ;;
+        esac
+      fi
     fi
   done <<< "$ROWS"
 
-  run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
-
-  # 조치 후 재검증
-  AFTER="$(run_mysql "$Q1")"
-  RC2=$?
-  if [[ $FAIL -eq 0 && $RC2 -eq 0 ]]; then
-    VULN=0
-    while IFS=$'\t' read -r user host auth locked; do
-      [[ -z "$user" && -z "$host" ]] && continue
-
-      if [[ "$user" == "root" ]]; then
-        ### CHANGE HERE: 자동 조치 범위는 "원격 root 잠금"만 재검증
-        case "$host" in
-          localhost|127.0.0.1|::1)
-            : ;;  # 로컬 root 비밀번호는 수동 조치이므로 PASS/FAIL 판단에서 제외
-          *)
-            [[ "$locked" != "Y" ]] && VULN=1 ;;
-        esac
-      else
-        ### CHANGE HERE: 익명 계정('')은 잠금되어야 함
-        [[ "$locked" != "Y" ]] && VULN=1
-      fi
-    done <<< "$AFTER"
-
-    if [[ $VULN -eq 0 ]]; then
-      STATUS="PASS"
-      ACTION_RESULT="SUCCESS"
-      ### CHANGE HERE: 자동 조치 성공 + 수동 조치 안내
-      ACTION_LOG="원격 root/익명 계정 잠금 조치를 완료했습니다. (root 비밀번호는 수동으로 변경 필요)"
-      EVIDENCE="원격 root 차단 및 익명 계정 잠금 상태 정상 확인. 로컬 root 비밀번호는 정책에 맞게 수동 변경하세요."
-    else
-      ACTION_LOG="조치 일부 실패: 재검증에서 취약 상태가 남아 있습니다."
-      EVIDENCE="D-01 조치 후에도 일부 계정 정책이 기준 미충족입니다."
-    fi
+  if [[ "$ROOT_COUNT" -eq 0 ]]; then
+    ACTION_LOG="수동 조치 안내: root 기본 계정을 확인할 수 없어 자동 판정 불가"
+    EVIDENCE="root 기본 계정을 확인할 수 없어 D-01 판정 불가"
+    ACTION_RESULT="MANUAL_REQUIRED"
+  elif [[ "$VULN_COUNT" -eq 0 ]]; then
+    STATUS="PASS"
+    ACTION_RESULT="NOT_REQUIRED"
+    ACTION_LOG="추가 조치 불필요: 기본 계정(root/익명)의 초기 비밀번호/사용 정책이 기준을 충족합니다."
+    EVIDENCE="D-01 양호: 기본 계정의 초기 비밀번호 사용이 확인되지 않고, 불필요한 기본 계정 사용이 제한되어 있습니다."
   else
-    ACTION_LOG="조치 실패: SQL 적용 또는 재검증 과정에서 오류가 발생했습니다."
-    EVIDENCE="권한/버전/정책 제약으로 D-01 자동 조치를 완료하지 못했습니다."
+    STATUS="FAIL"
+    ACTION_RESULT="MANUAL_REQUIRED"
+    ACTION_LOG="수동 조치 필요: 기본 계정의 초기 비밀번호를 변경하고, 불필요한 기본 계정 사용을 제한해야 합니다."
+    EVIDENCE="D-01 취약: ${REASONS}"
   fi
 fi
 
@@ -127,7 +125,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"원격 root 계정과 익명 계정을 잠금 조치하였으며, 로컬 root 비밀번호는 기관의 비밀번호 정책에 맞게 변경하여 안전하게 관리하시기 바랍니다.",
+  "guide":"MySQL에서는 root 비밀번호를 기관 정책에 맞게 변경하고, 불필요한 root 원격 접속 계정과 익명 계정을 삭제 또는 잠금 처리하며, 비밀번호 변경 시 관련 애플리케이션·배치·모니터링 설정에도 동일하게 반영해야 합니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
