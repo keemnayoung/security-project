@@ -11,7 +11,7 @@
 # @Platform    : MySQL
 # @Severity    : 상
 # @Title       : 기본 계정의 비밀번호, 정책 등을 변경하여 사용
-# @Description : 기본 계정(root/익명)의 비밀번호 미변경(공란) 또는 잠금 미적용 상태를 점검
+# @Description : 기본 계정의 초기 비밀번호 사용 또는 사용 제한 미적용 상태를 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -19,24 +19,26 @@ ID="D-01"
 CATEGORY="계정 관리"
 TITLE="기본 계정의 비밀번호, 정책 등을 변경하여 사용"
 IMPORTANCE="상"
-TARGET_FILE="mysql.user(table)"
+TARGET_FILE="mysql.user"
 
 # 기본 결과값: 점검 전에는 FAIL로 두고, 조건 충족 시 PASS로 변경
 STATUS="FAIL"
 EVIDENCE="N/A"
 
 # 실행 안정성: DB 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
-TIMEOUT_BIN=""
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 MYSQL_TIMEOUT_SEC=5
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD_BASE="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
-# [가이드 3~5p 대응] 기본 계정(root) + 익명 계정(user='')의 비밀번호/잠금 상태 조회
+# [가이드 D-01(MySQL) 대응] 기본 계정(root/익명) 비밀번호/잠금 상태 조회
+# - authentication_string: MySQL 5.7/8.0 계열
+# - password: 구버전 호환(있는 경우)
 QUERY_PRIMARY="SELECT user, host, COALESCE(authentication_string,''), COALESCE(account_locked,'N') FROM mysql.user WHERE user='root' OR user='';"
-# 구버전 호환: account_locked 컬럼이 없을 때 대체 조회
-QUERY_FALLBACK="SELECT user, host, COALESCE(authentication_string,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
+QUERY_FALLBACK1="SELECT user, host, COALESCE(authentication_string,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
+QUERY_FALLBACK2="SELECT user, host, COALESCE(password,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
 
 # 공통 실행 함수: timeout 적용 + 오류 토큰(ERROR/ERROR_TIMEOUT) 표준화
 run_mysql_query() {
@@ -50,9 +52,8 @@ run_mysql_query() {
 
 # 1차 조회(신규버전) 후 실패 시 2차 조회(구버전)로 재시도
 ACCOUNT_INFO="$(run_mysql_query "$QUERY_PRIMARY")"
-if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then
-    ACCOUNT_INFO="$(run_mysql_query "$QUERY_FALLBACK")"
-fi
+if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUERY_FALLBACK1")"; fi
+if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUERY_FALLBACK2")"; fi
 
 # 점검 불가 상황(시간초과/접속실패) 처리
 if [[ "$ACCOUNT_INFO" == "ERROR_TIMEOUT" ]]; then
@@ -64,6 +65,7 @@ elif [[ "$ACCOUNT_INFO" == "ERROR" ]]; then
 else
     VULN_COUNT=0
     ROOT_COUNT=0
+    ANON_COUNT=0
     REASONS=()
 
     # 조회 결과를 1행씩 판정
@@ -71,35 +73,32 @@ else
         [[ -z "$user" && -z "$host" ]] && continue
         [[ "$locked" == "Y" ]] && is_locked="Y" || is_locked="N"
 
-        # [가이드 3~5p 대응] 익명 기본 계정은 잠금되어야 양호
+        # 익명 기본 계정은 잠금(또는 삭제)되어야 안전
         if [[ -z "$user" ]]; then
+            ANON_COUNT=$((ANON_COUNT + 1))
             if [[ "$is_locked" != "Y" ]]; then
                 VULN_COUNT=$((VULN_COUNT + 1))
-                REASONS+=("anonymous@${host}: 기본(익명) 계정이 잠금되지 않음")
+                REASONS+=("anonymous@${host}: 기본(익명) 계정이 활성 상태(잠금/삭제 필요)")
             fi
             continue
         fi
 
-        # root 계정만 대상으로 비밀번호/원격접속 정책 점검
+        # root 계정: 초기 비밀번호(공란) 사용 여부 + 사용 정책(원격 root 제한)
         if [[ "$user" == "root" ]]; then
             ROOT_COUNT=$((ROOT_COUNT + 1))
 
-            # [가이드 3~5p 대응] root 비밀번호가 공란(초기값)이고 미잠금이면 취약
+            # root 비밀번호가 공란(초기값)이고 미잠금이면 취약
             if [[ "$is_locked" != "Y" && -z "$auth" ]]; then
                 VULN_COUNT=$((VULN_COUNT + 1))
                 REASONS+=("root@${host}: 비밀번호 미설정(초기/공란) 상태")
                 continue
             fi
 
-            # [가이드 3~5p 대응] root 원격접속 허용 계정은 잠금/제거 필요
+            # 권한/접근 정책 관점: 원격(root@'%' 등) 기본 계정이 활성화되어 있으면 위험(운영 기준에 따라 D-10과 중복될 수 있음)
             if [[ "$is_locked" != "Y" ]]; then
                 case "$host" in
-                    "localhost"|"127.0.0.1"|"::1")
-                        : ;;
-                    *)
-                        VULN_COUNT=$((VULN_COUNT + 1))
-                        REASONS+=("root@${host}: 원격 접속 허용 상태(로컬 제한/잠금 필요)")
-                        ;;
+                    "localhost"|"127.0.0.1"|"::1") : ;;
+                    *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host}: 원격 root 계정 활성(로컬 제한/잠금/삭제 필요)") ;;
                 esac
             fi
         fi
@@ -113,7 +112,7 @@ else
         # 취약 사유가 없으면 양호(PASS), 있으면 취약(FAIL)
         if [[ "$VULN_COUNT" -eq 0 ]]; then
             STATUS="PASS"
-            EVIDENCE="D-01 양호: root 계정은 비밀번호가 설정되어 있고(공란 아님), 원격 접속이 제한되었거나 계정 잠금 상태이며, 익명 계정은 잠금되어 있습니다."
+            EVIDENCE="D-01 양호: 기본 계정의 초기 비밀번호 사용이 확인되지 않고, 불필요한 기본 계정이 제한되어 있습니다."
         else
             STATUS="FAIL"
             EVIDENCE="D-01 취약: ${REASONS[*]}"
@@ -136,7 +135,7 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "root@localhost 비밀번호를 변경하십시오. 로컬(host=localhost/127.0.0.1/::1) 외 root 계정은 삭제하거나 잠그십시오. 익명(''@host) 계정은 삭제하거나 잠그십시오.",
+    "guide": "MySQL D-01 조치로 기본 관리자 계정(root)의 초기 비밀번호를 ALTER USER 등으로 정책에 맞게 변경하고, 불필요한 원격 root 계정과 익명 계정은 잠금 또는 삭제하며, 비밀번호는 복잡도 기준을 충족하고 시스템별로 다르게 설정·주기적으로 변경하되 변경 시 애플리케이션·배치·모니터링 설정에도 동일하게 반영해야 합니다.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
     "impact_level": "$IMPACT_LEVEL",
