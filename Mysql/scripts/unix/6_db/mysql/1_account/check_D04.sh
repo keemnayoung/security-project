@@ -129,7 +129,7 @@ cat << EOF_JSON
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "관리자 권한이 필요하지 않은 계정에서는 SUPER/SYSTEM_USER 및 동적 관리자 권한을 회수하고, 필요한 계정만 인가 목록으로 관리하세요.",
+    "guide": "SUPER/SYSTEM_USER/CREATE USER/RELOAD/SHUTDOWN/PROCESS 및 동적 관리자 권한(*_ADMIN)은 인가된 관리자 계정에만 부여하십시오. 불필요한 계정에는 REVOKE로 회수하고, 인가 목록(ALLOWED_ADMIN_USERS_CSV, ALLOWED_ADMIN_PRINCIPALS_CSV)을 기관 정책에 맞게 관리하십시오.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
     "impact_level": "$IMPACT_LEVEL",
