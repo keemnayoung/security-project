@@ -12,7 +12,10 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
@@ -145,11 +148,11 @@ else
     if [[ $FAIL -eq 0 && $REMAIN -eq 0 ]]; then
       STATUS="PASS"
       ACTION_RESULT="SUCCESS"
-      ACTION_LOG="비인가 계정의 시스템 테이블 관련 권한 ${APPLIED}건을 회수했습니다."
-      EVIDENCE="D-11 조치 후 비인가 시스템 권한 미검출"
+      ACTION_LOG="비인가 계정의 시스템 테이블 관련 권한 ${APPLIED}건을 회수했습니다. 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 운영하세요."
+      EVIDENCE="D-11 조치 후 비인가 시스템 권한 미검출 (업무 DB 권한은 최소 범위로 수동 GRANT 필요)"
     else
-      ACTION_LOG="조치 일부 실패: 일부 비인가 시스템 권한이 남아 있을 수 있습니다."
-      EVIDENCE="D-11 자동 조치를 완료하지 못했습니다. (예: ${SAMPLE})"
+      ACTION_LOG="조치 일부 실패: 일부 비인가 시스템 권한이 남아 있을 수 있습니다. 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 운영하세요."
+      EVIDENCE="D-11 자동 조치를 완료하지 못했습니다. (예: ${SAMPLE}) (업무 DB 권한은 최소 범위로 수동 GRANT 필요)"
     fi
   fi
 fi
@@ -162,7 +165,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"시스템 스키마(mysql/performance_schema/sys/information_schema) 접근 권한을 DBA로 제한",
+  "guide":"일반 계정의 시스템 스키마(mysql/performance_schema/sys/information_schema) 접근 권한을 회수하고, 사용자 계정은 업무 DB에 필요한 권한만 수동으로 GRANT하여 최소 권한으로 운영하세요.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
