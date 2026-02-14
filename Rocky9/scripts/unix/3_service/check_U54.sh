@@ -19,84 +19,142 @@
 
 # [진단] 암호화되지 않는 FTP 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-54"
-CATEGORY="서비스 관리"
-TITLE="암호화되지 않는 FTP 서비스 비활성화"
-IMPORTANCE="중"
-TARGET_FILE="/etc/vsftpd.conf"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+CHECK_COMMAND='grep -nE "^[[:space:]]*ftp\b" /etc/inetd.conf; grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no" /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp 2>/dev/null; systemctl list-units --type=service | grep -Ei "vsftpd|proftpd|(^|[^a-z])ftp([^a-z]|$)"; systemctl is-active vsftpd proftpd'
 
 VULNERABLE=0
+DETAIL_LINES=""
 
-# [inetd]
-if [ -f "/etc/inetd.conf" ]; then
-    TARGET_FILE="/etc/inetd.conf"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    if grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*ftp"; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE /etc/inetd.conf에 FTP가 활성화되어 있습니다."
-    fi
-fi
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
+}
 
-# [xinetd]
-if [ -d "/etc/xinetd.d" ]; then
-    # ftp, proftp, vsftp 등 확인
-    for svc in ftp proftp vsftp; do
-        if [ -f "/etc/xinetd.d/$svc" ]; then
-            if grep -qiE "disable\s*=\s*no" "/etc/xinetd.d/$svc" 2>/dev/null; then
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE /etc/xinetd.d/$svc에서 disable=no로 설정되어 있습니다."
-            fi
-        fi
-    done
-fi
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
+}
 
-# [systemd] vsftpd, proftpd
-SYSTEMD_FTP=$(systemctl list-units --type=service 2>/dev/null | grep -E "vsftpd|proftpd|ftp" | awk '{print $1}' | tr '\n' ' ')
-if [ -n "$SYSTEMD_FTP" ]; then
-    # 업무상 필요한 경우를 제외하고는 차단해야 함.
-    # 하지만 자동화 점검에서는 활성화 여부를 확인하여 보고 (수동 판단 필요)
-    # 가이드 기준으로는 "불필요한 FTP"이므로, 일단 활성화되어 있으면 FAIL(또는 WARN)로 잡고 관리자가 판단하도록 함
+# -----------------------------
+# 1) inetd.conf 내 ftp 활성화 여부
+# -----------------------------
+INETD_FILE="/etc/inetd.conf"
+if [ -f "$INETD_FILE" ]; then
+  add_target_file "$INETD_FILE"
+  if grep -v '^[[:space:]]*#' "$INETD_FILE" 2>/dev/null | grep -qE '^[[:space:]]*ftp\b'; then
     VULNERABLE=1
-    EVIDENCE="$EVIDENCE 시스템 서비스가 활성화되어 있습니다."
-fi
-
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="FTP 서비스가 활성화되어 있어, 암호화되지 않은 통신으로 데이터가 노출될 수 있는 위험이 있습니다. $EVIDENCE"
+    append_detail "[inetd] ftp entry=ENABLED in $INETD_FILE"
+  else
+    append_detail "[inetd] ftp entry=NOT_FOUND(or commented) in $INETD_FILE"
+  fi
 else
-    STATUS="PASS"
-    EVIDENCE="FTP 서비스가 비활성화되어 있습니다."
+  append_detail "[inetd] $INETD_FILE=NOT_FOUND"
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+# -----------------------------
+# 2) xinetd.d 내 ftp 계열 서비스 활성화 여부(disable=no)
+# -----------------------------
+if [ -d "/etc/xinetd.d" ]; then
+  for svc in ftp proftp vsftp; do
+    f="/etc/xinetd.d/$svc"
+    if [ -f "$f" ]; then
+      add_target_file "$f"
+      if grep -vi '^[[:space:]]*#' "$f" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b'; then
+        VULNERABLE=1
+        append_detail "[xinetd] $svc disable=no -> ENABLED | file=$f"
+      else
+        append_detail "[xinetd] $svc disable=no NOT_FOUND -> likely disabled | file=$f"
+      fi
+    else
+      append_detail "[xinetd] $f=NOT_FOUND"
+    fi
+  done
+else
+  append_detail "[xinetd] /etc/xinetd.d=NOT_FOUND"
+fi
 
+# -----------------------------
+# 3) systemd 서비스(vsftpd/proftpd/ftp) 활성화 여부
+# -----------------------------
+SYSTEMD_FTP_LIST="$(systemctl list-units --type=service 2>/dev/null | grep -Ei 'vsftpd|proftpd|(^|[^a-z])ftp([^a-z]|$)' || true)"
+if [ -n "$SYSTEMD_FTP_LIST" ]; then
+  VULNERABLE=1
+  append_detail "[systemd] ftp-related service=FOUND | $(echo "$SYSTEMD_FTP_LIST" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+else
+  append_detail "[systemd] ftp-related service=NOT_FOUND"
+fi
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 암호화되지 않은 FTP를 사용하던 절차가 있다면 서비스 중지·비활성화 이후 이용이 불가능해지므로 운영 절차를 SFTP 등 암호화된 방식으로 전환한 뒤 적용해야 합니다."
+# is-active도 참고(보다 직관적인 상태)
+if systemctl is-active --quiet vsftpd 2>/dev/null; then
+  VULNERABLE=1
+  append_detail "[systemd] vsftpd_active=Y"
+else
+  append_detail "[systemd] vsftpd_active=N"
+fi
 
-# 3. 마스터 템플릿 표준 출력
+if systemctl is-active --quiet proftpd 2>/dev/null; then
+  VULNERABLE=1
+  append_detail "[systemd] proftpd_active=Y"
+else
+  append_detail "[systemd] proftpd_active=N"
+fi
+
+# -----------------------------
+# 4) 최종 판정/문구(U-15~U-16 톤)
+# -----------------------------
+if [ $VULNERABLE -eq 1 ]; then
+  STATUS="FAIL"
+  REASON_LINE="암호화되지 않은 FTP 서비스가 활성화되어 있어 취약합니다. FTP는 통신 내용이 평문으로 전송될 수 있어 계정 정보 및 데이터가 노출될 위험이 있으므로 서비스를 중지 및 비활성화하고, 파일 전송은 SFTP/FTPS 등 암호화된 방식으로 전환해야 합니다."
+else
+  STATUS="PASS"
+  REASON_LINE="암호화되지 않은 FTP 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+fi
+
+DETAIL_CONTENT="$DETAIL_LINES"
+[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/inetd.conf, /etc/xinetd.d/{ftp,proftp,vsftp}, systemd ftp-related units"
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "vsftpd.conf에 ssl_enable=YES, force_local_logins_ssl=YES, force_local_data_ssl=YES 설정으로 암호화를 활성화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

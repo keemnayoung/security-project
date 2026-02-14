@@ -19,148 +19,265 @@
 
 # [진단] U-57 Ftpusers 파일 설정
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-57"
-CATEGORY="서비스 관리"
-TITLE="Ftpusers 파일 설정"
-IMPORTANCE="중"
-TARGET_FILE="/etc/ftpusers"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+CHECK_COMMAND='command -v vsftpd; command -v proftpd; systemctl is-active vsftpd proftpd; grep -nE "^[[:space:]]*(userlist_enable|userlist_deny|userlist_file)" /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf 2>/dev/null; grep -nE "^[[:space:]]*(UseFtpUsers|RootLogin)" /etc/proftpd/proftpd.conf /etc/proftpd.conf 2>/dev/null; grep -nE "^[[:space:]]*root[[:space:]]*$" /etc/ftpusers /etc/ftpd/ftpusers /etc/vsftpd.ftpusers /etc/vsftpd/ftpusers /etc/vsftpd.user_list /etc/vsftpd/user_list 2>/dev/null'
 
 VULNERABLE=0
-FTP_CHECKED=0
+FTP_DETECTED=0
+DETAIL_LINES=""
 
-# 공통 함수: root 차단 여부 확인 (Blacklist 파일)
-check_root_blocked() {
-    local file=$1
-    if [ -f "$file" ]; then
-        TARGET_FILE="$file"
-        FILE_HASH=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
-        
-        # 주석 제외하고 root가 있는지 확인
-        if grep -v "^#" "$file" | grep -q "^root$"; then
-            EVIDENCE="$EVIDENCE $file에 root가 포함되어 있습니다(차단)."
-        else
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE $file에 root가 미포함되어 차단 설정이 미흡합니다."
-        fi
-    else
-        EVIDENCE="$EVIDENCE $file 파일이 존재하지 않습니다."
-    fi
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
 }
 
-# [vsFTP]
-if command -v vsftpd &>/dev/null; then
-    FTP_CHECKED=1
-    CONF="/etc/vsftpd.conf"
-    [ ! -f "$CONF" ] && CONF="/etc/vsftpd/vsftpd.conf"
-    
-    if [ -f "$CONF" ]; then
-        USERLIST_ENABLE=$(grep "userlist_enable" "$CONF" | cut -d= -f2 | tr -d ' ')
-        USERLIST_DENY=$(grep "userlist_deny" "$CONF" | cut -d= -f2 | tr -d ' ')
-        
-        if [ "$USERLIST_ENABLE" == "YES" ]; then
-            TARGET="/etc/vsftpd.user_list"
-            [ ! -f "$TARGET" ] && TARGET="/etc/vsftpd/user_list"
-            
-            check_root_blocked "$TARGET"
-            
-            # userlist_deny=NO (Whitelist)인 경우 root가 있으면 허용이므로 취약
-            if [ "$USERLIST_DENY" == "NO" ]; then
-                if grep -v "^#" "$TARGET" | grep -q "^root$"; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE userlist_deny=NO(Whitelist)이나 root가 존재하여 접속이 허용되어 있습니다."
-                else
-                    # root가 없으면 접속 불가하므로 안전 (앞선 check_root_blocked에서 root없음=취약으로 잡았을 테니 보정 필요)
-                    # check_root_blocked는 무조건 root가 있어야 안전하다고 판단했으므로, 
-                    # Whitelist 모드에서는 로직 반전이 필요함.
-                    # 여기서는 상세 분석을 통해 VULNERABLE 값을 재조정해야 함.
-                    
-                    # 다시 판단:
-                    # 1. check_root_blocked에서 root 없어서 VULNERABLE=1 됨.
-                    # 2. 하지만 Whitelist에서 root 없으면 안전함 => VULNERABLE=0으로 정정.
-                    VULNERABLE=0
-                    EVIDENCE="$EVIDENCE userlist_deny=NO(Whitelist)이며 root 미포함으로 접속이 차단되어 있습니다."
-                fi
-            fi
-        else
-             # userlist_enable=NO -> ftpusers 사용
-             TARGET="/etc/ftpusers"
-             [ -f "/etc/vsftpd.ftpusers" ] && TARGET="/etc/vsftpd.ftpusers"
-             check_root_blocked "$TARGET"
-        fi
-    fi
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
+}
+
+# 주석/공백 제외하고 root 라인 존재 여부
+root_present_in_blacklist() {
+  local f="$1"
+  [ -f "$f" ] || return 2
+  grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$f" 2>/dev/null | grep -qE '^[[:space:]]*root[[:space:]]*$'
+}
+
+# vsftpd userlist 설정값 읽기(미설정 시 기본값 가정은 하지 않고 "unknown"으로 둠)
+get_vsftpd_conf_value() {
+  local conf="$1"
+  local key="$2"
+  # 마지막 유효 라인을 사용
+  grep -iE "^[[:space:]]*${key}[[:space:]]*=" "$conf" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n1 | sed -E 's/.*=[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+# -----------------------------
+# 1) vsftpd 점검
+# - userlist_enable=YES 인 경우:
+#   - userlist_deny=YES(기본 blacklist): userlist_file에 root가 있어야 차단(양호)
+#   - userlist_deny=NO(whitelist): root가 "목록에 없으면" 차단(양호), 있으면 허용(취약)
+# - userlist_enable!=YES 인 경우:
+#   - ftpusers(또는 vsftpd.ftpusers/vsftpd/ftpusers/ftpusers) blacklist에 root가 있어야 차단(양호)
+# -----------------------------
+VSFTPD_CONF=""
+if [ -f "/etc/vsftpd.conf" ]; then
+  VSFTPD_CONF="/etc/vsftpd.conf"
+elif [ -f "/etc/vsftpd/vsftpd.conf" ]; then
+  VSFTPD_CONF="/etc/vsftpd/vsftpd.conf"
 fi
 
-# [ProFTP]
-if command -v proftpd &>/dev/null; then
-    FTP_CHECKED=1
-    CONF="/etc/proftpd/proftpd.conf"
-    
-    # UseFtpUsers 확인
-    USE_FTPUSERS="on"
-    if grep -q "UseFtpUsers" "$CONF"; then
-        USE_FTPUSERS=$(grep "UseFtpUsers" "$CONF" | awk '{print $2}')
-    fi
-    
-    if echo "$USE_FTPUSERS" | grep -qi "off"; then
-        # RootLogin 확인
-        ROOT_LOGIN=$(grep "RootLogin" "$CONF" | awk '{print $2}')
-        if echo "$ROOT_LOGIN" | grep -qi "off"; then
-            EVIDENCE="$EVIDENCE ProFTP RootLogin off가 설정되어 있습니다."
+if command -v vsftpd >/dev/null 2>&1 || [ -n "$VSFTPD_CONF" ] || systemctl list-units --type=service 2>/dev/null | grep -q vsftpd; then
+  FTP_DETECTED=1
+
+  if [ -n "$VSFTPD_CONF" ] && [ -f "$VSFTPD_CONF" ]; then
+    add_target_file "$VSFTPD_CONF"
+
+    ULE="$(get_vsftpd_conf_value "$VSFTPD_CONF" "userlist_enable")"
+    ULD="$(get_vsftpd_conf_value "$VSFTPD_CONF" "userlist_deny")"
+    ULF="$(get_vsftpd_conf_value "$VSFTPD_CONF" "userlist_file")"
+
+    [ -z "$ULE" ] && ULE="(not_set)"
+    [ -z "$ULD" ] && ULD="(not_set)"
+    [ -z "$ULF" ] && ULF="(not_set)"
+
+    append_detail "[vsftpd] conf=$VSFTPD_CONF userlist_enable=$ULE userlist_deny=$ULD userlist_file=$ULF"
+
+    # userlist_enable=YES 인지 판단(대소문자 무시)
+    if echo "$ULE" | tr '[:lower:]' '[:upper:]' | grep -q '^YES$'; then
+      # userlist_file 결정(미설정이면 기본 후보)
+      USERLIST_FILE="$ULF"
+      if [ "$USERLIST_FILE" = "(not_set)" ] || [ -z "$USERLIST_FILE" ]; then
+        USERLIST_FILE="/etc/vsftpd.user_list"
+        [ ! -f "$USERLIST_FILE" ] && USERLIST_FILE="/etc/vsftpd/user_list"
+      fi
+      add_target_file "$USERLIST_FILE"
+
+      # deny 모드 결정(미설정이면 vsftpd 기본은 YES로 알려져 있으나, 여기서는 "not_set"을 보수적으로 처리)
+      ULD_UP="$(echo "$ULD" | tr '[:lower:]' '[:upper:]')"
+
+      if [ "$ULD_UP" = "NO" ]; then
+        # whitelist: root가 목록에 있으면 허용 -> 취약, 없으면 차단 -> 양호
+        if root_present_in_blacklist "$USERLIST_FILE"; then
+          VULNERABLE=1
+          append_detail "[vsftpd] userlist_deny=NO(whitelist) but root is PRESENT -> root login may be allowed"
         else
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE ProFTP UseFtpUsers off이며 RootLogin off가 설정되어 있지 않습니다."
+          append_detail "[vsftpd] userlist_deny=NO(whitelist) and root is NOT present -> root login blocked"
         fi
+      else
+        # blacklist(deny=YES 또는 not_set): root가 목록에 있어야 차단 -> 양호
+        if root_present_in_blacklist "$USERLIST_FILE"; then
+          append_detail "[vsftpd] userlist_deny!=NO(blacklist) and root is PRESENT -> root login blocked"
+        else
+          VULNERABLE=1
+          append_detail "[vsftpd] userlist_deny!=NO(blacklist) but root is NOT present -> root login may be allowed"
+        fi
+      fi
     else
-        # UseFtpUsers on (기본) -> ftpusers 사용
-        check_root_blocked "/etc/ftpusers"
+      # userlist_enable != YES => ftpusers 계열 사용(blacklist)
+      FTPUSERS_FILE="/etc/vsftpd.ftpusers"
+      [ ! -f "$FTPUSERS_FILE" ] && FTPUSERS_FILE="/etc/vsftpd/ftpusers"
+      [ ! -f "$FTPUSERS_FILE" ] && FTPUSERS_FILE="/etc/ftpusers"
+      add_target_file "$FTPUSERS_FILE"
+
+      if root_present_in_blacklist "$FTPUSERS_FILE"; then
+        append_detail "[vsftpd] ftpusers blacklist has root -> root login blocked"
+      else
+        VULNERABLE=1
+        append_detail "[vsftpd] ftpusers blacklist missing root(or file missing) -> root login may be allowed"
+      fi
     fi
+
+    if systemctl is-active --quiet vsftpd 2>/dev/null; then
+      append_detail "[vsftpd] service_active=Y"
+    else
+      append_detail "[vsftpd] service_active=N"
+    fi
+  else
+    # 바이너리/서비스 흔적은 있는데 설정 파일 확인 불가
+    VULNERABLE=1
+    append_detail "[vsftpd] detected but config_file=NOT_FOUND -> cannot verify root block policy"
+  fi
 fi
 
-# [일반 FTP (inetd/xinetd 등)]
-if [ $FTP_CHECKED -eq 0 ]; then
-    if [ -f "/etc/ftpusers" ]; then
-        check_root_blocked "/etc/ftpusers"
-    elif [ -f "/etc/ftpd/ftpusers" ]; then
-         check_root_blocked "/etc/ftpd/ftpusers"
+# -----------------------------
+# 2) proftpd 점검
+# - UseFtpUsers on(기본)  : /etc/ftpusers blacklist에서 root 차단(양호=있음)
+# - UseFtpUsers off       : RootLogin off가 있어야 차단(양호)
+# -----------------------------
+PROFTPD_CONF=""
+if [ -f "/etc/proftpd/proftpd.conf" ]; then
+  PROFTPD_CONF="/etc/proftpd/proftpd.conf"
+elif [ -f "/etc/proftpd.conf" ]; then
+  PROFTPD_CONF="/etc/proftpd.conf"
+fi
+
+if command -v proftpd >/dev/null 2>&1 || [ -n "$PROFTPD_CONF" ] || systemctl list-units --type=service 2>/dev/null | grep -q proftpd; then
+  FTP_DETECTED=1
+
+  if [ -n "$PROFTPD_CONF" ] && [ -f "$PROFTPD_CONF" ]; then
+    add_target_file "$PROFTPD_CONF"
+
+    USE_FTPUSERS="$(grep -Ei '^[[:space:]]*UseFtpUsers' "$PROFTPD_CONF" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n1 | awk '{print tolower($2)}')"
+    [ -z "$USE_FTPUSERS" ] && USE_FTPUSERS="on"
+    append_detail "[proftpd] conf=$PROFTPD_CONF UseFtpUsers=$USE_FTPUSERS"
+
+    if [ "$USE_FTPUSERS" = "off" ]; then
+      ROOT_LOGIN="$(grep -Ei '^[[:space:]]*RootLogin' "$PROFTPD_CONF" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n1 | awk '{print tolower($2)}')"
+      [ -z "$ROOT_LOGIN" ] && ROOT_LOGIN="(not_set)"
+      append_detail "[proftpd] RootLogin=$ROOT_LOGIN"
+
+      if echo "$ROOT_LOGIN" | grep -qi '^off$'; then
+        append_detail "[proftpd] RootLogin off -> root login blocked"
+      else
+        VULNERABLE=1
+        append_detail "[proftpd] UseFtpUsers off but RootLogin off NOT set -> root login may be allowed"
+      fi
     else
-        STATUS="PASS"
-        EVIDENCE="FTP 서비스가 설치되어 있지 않아 점검 대상이 없습니다."
+      # ftpusers blacklist
+      FU_FILE="/etc/ftpusers"
+      [ ! -f "$FU_FILE" ] && FU_FILE="/etc/ftpd/ftpusers"
+      add_target_file "$FU_FILE"
+
+      if root_present_in_blacklist "$FU_FILE"; then
+        append_detail "[proftpd] ftpusers blacklist has root -> root login blocked"
+      else
+        VULNERABLE=1
+        append_detail "[proftpd] ftpusers blacklist missing root(or file missing) -> root login may be allowed"
+      fi
     fi
+
+    if systemctl is-active --quiet proftpd 2>/dev/null; then
+      append_detail "[proftpd] service_active=Y"
+    else
+      append_detail "[proftpd] service_active=N"
+    fi
+  else
+    VULNERABLE=1
+    append_detail "[proftpd] detected but config_file=NOT_FOUND -> cannot verify root block policy"
+  fi
+fi
+
+# -----------------------------
+# 3) 일반 FTP(서비스 종류 확인이 어려운 경우) fallback
+# -----------------------------
+if [ "$FTP_DETECTED" -eq 0 ]; then
+  # FTP 자체가 설치/사용되지 않는 환경일 가능성이 높음
+  # 다만 ftpusers 파일이 있으면 root 차단 여부를 참고로 점검
+  if [ -f "/etc/ftpusers" ] || [ -f "/etc/ftpd/ftpusers" ]; then
+    FU_FILE="/etc/ftpusers"
+    [ ! -f "$FU_FILE" ] && FU_FILE="/etc/ftpd/ftpusers"
+    add_target_file "$FU_FILE"
+
+    if root_present_in_blacklist "$FU_FILE"; then
+      STATUS="PASS"
+      REASON_LINE="FTP 서비스가 확인되지 않으며, ftpusers 파일에 root 차단 설정이 존재하여 이 항목에 대한 보안 위협이 없습니다."
+      DETAIL_CONTENT="[fallback] ftp_service=not_detected but root_blocked=Y in $FU_FILE"
+    else
+      STATUS="FAIL"
+      VULNERABLE=1
+      REASON_LINE="FTP 서비스가 확인되지 않으나, ftpusers 파일에서 root 차단 설정을 확인할 수 없어 취약합니다. FTP를 사용하지 않는다면 서비스를 비활성화 상태로 유지하고, 사용한다면 root FTP 접속이 차단되도록 설정해야 합니다."
+      DETAIL_CONTENT="[fallback] ftp_service=not_detected but root_blocked=NOT_CONFIRMED in $FU_FILE"
+    fi
+  else
+    STATUS="PASS"
+    REASON_LINE="FTP 서비스가 설치되어 있지 않아 점검 대상이 없습니다."
+    DETAIL_CONTENT="none"
+  fi
 else
-    if [ $VULNERABLE -eq 1 ]; then
-        STATUS="FAIL"
-        EVIDENCE="root 계정으로 FTP 접속이 허용되어 있어, 중요 시스템 파일이 노출될 수 있는 위험이 있습니다. $EVIDENCE"
-    else
-        STATUS="PASS"
-        EVIDENCE="root 계정 FTP 접속이 차단되어 있습니다."
-    fi
+  if [ "$VULNERABLE" -eq 1 ]; then
+    STATUS="FAIL"
+    REASON_LINE="root 계정으로 FTP 접속이 허용될 수 있어 취약합니다. root 계정의 FTP 접속은 중요한 시스템 정보 및 파일 노출로 이어질 수 있으므로 ftpusers(user_list 포함) 또는 서비스 설정을 통해 root 접속을 차단해야 합니다."
+  else
+    STATUS="PASS"
+    REASON_LINE="root 계정의 FTP 접속이 차단되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/ftpusers, /etc/ftpd/ftpusers, /etc/vsftpd.user_list, /etc/vsftpd/user_list, /etc/vsftpd.ftpusers, /etc/vsftpd/ftpusers, /etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf, /etc/proftpd/proftpd.conf, /etc/proftpd.conf"
 
-IMPACT_LEVEL="HIGH"
-ACTION_IMPACT="Ftpusers 파일 설정을 적용하면 root 계정의 FTP 사용이 제한(차단)될 수 있으므로, 애플리케이션이나 운영 절차에서 root 계정으로 직접 접속하여 FTP를 사용하고 있는 경우 계정 인증/운영 방식에 문제가 발생할 수 있습니다. 특히 자동화 스크립트나 배치 작업이 root 기반으로 구성되어 있다면 영향이 있을 수 있으므로, 사전에 사용 여부를 점검한 뒤 적용해야 합니다."
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "/etc/ftpusers 또는 /etc/vsftpd/ftpusers 파일에 root 계정을 추가하여 FTP 접속을 차단해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

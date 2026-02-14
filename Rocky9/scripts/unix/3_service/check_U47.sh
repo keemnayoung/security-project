@@ -19,218 +19,232 @@
 
 # [진단] U-47 스팸 메일 릴레이 제한
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-47"
-CATEGORY="서비스 관리"
-TITLE="스팸 메일 릴레이 제한"
-IMPORTANCE="상"
-TARGET_FILE="/etc/postfix/main.cf"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+CHECK_COMMAND='sendmail -d0 -bt; grep -i "promiscuous_relay\|Relaying denied" /etc/mail/sendmail.cf; ls -l /etc/mail/access /etc/mail/access.db; grep -nE "^(mynetworks|smtpd_(relay|recipient)_restrictions)" /etc/postfix/main.cf; grep -nE "relay_from_hosts|acl_check_rcpt|accept[[:space:]]+hosts[[:space:]]*=.*\\+relay_from_hosts" /etc/exim/exim.conf /etc/exim4/exim4.conf /etc/exim4/update-exim4.conf.conf'
 
 VULNERABLE=0
-MAIL_SERVICE=""
-DETAILS=()
+FOUND_ANY=0
+DETAIL_LINES=""
 
-add_detail() {
-    local msg="$1"
-    [ -z "$msg" ] && return 0
-    # 대시보드가 문장 단위로 분리하므로, 상세 근거는 문장(마침표) 단위로 누적합니다.
-    case "$msg" in
-        *.) DETAILS+=("$msg") ;;
-        *)  DETAILS+=("${msg}.") ;;
-    esac
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
 }
 
-join_details() {
-    local out=""
-    local d=""
-    for d in "${DETAILS[@]}"; do
-        if [ -n "$out" ]; then
-            out="$out $d"
-        else
-            out="$d"
-        fi
-    done
-    echo "$out"
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
 }
 
-json_escape() {
-    echo "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
+# -----------------------------
+# 1) Sendmail 점검
+#   - (가이드) sendmail 버전에 따라 릴레이 제한 룰/옵션 확인
+#   - 단, 운영 환경마다 sendmail.cf 생성 방식(m4) 차이가 있어 핵심 시그널만 점검
+# -----------------------------
+if command -v sendmail >/dev/null 2>&1; then
+  FOUND_ANY=1
+  SM_CF="/etc/mail/sendmail.cf"
+  add_target_file "$SM_CF"
+  add_target_file "/etc/mail/access"
+  add_target_file "/etc/mail/access.db"
 
-# [Sendmail]
-# 가이드: sendmail.cf 확인
-if command -v sendmail &>/dev/null; then
-    MAIL_SERVICE="sendmail"
-    # sendmail.cf 확인
-    if [ -f "/etc/mail/sendmail.cf" ]; then
-        TARGET_FILE="/etc/mail/sendmail.cf"
-        FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-        
-        # Sendmail 버전 확인 (예: 8.15.2)
-        # 가이드: sendmail -d0 < /dev/null | grep Version
-        SENDMAIL_VER=$(sendmail -d0 < /dev/null 2>/dev/null | grep -i 'Version' | grep -oE "[0-9]+\\.[0-9]+(\\.[0-9]+)?" | head -1)
-        if [ -z "${SENDMAIL_VER:-}" ]; then
-            SENDMAIL_VER=$(sendmail -d0 < /dev/null 2>/dev/null | grep -oE "[0-9]+\\.[0-9]+(\\.[0-9]+)?" | head -1)
-        fi
+  # 버전 추출(참고용)
+  SM_VER_RAW="$(sendmail -d0 < /dev/null 2>/dev/null | grep -i 'Version' | head -n1)"
+  SM_VER="$(echo "$SM_VER_RAW" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+  [ -z "$SM_VER" ] && SM_VER="unknown"
 
-        MAJOR_VER=""
-        MINOR_VER=""
-        if [ -n "${SENDMAIL_VER:-}" ]; then
-            MAJOR_VER="${SENDMAIL_VER%%.*}"
-            _rest="${SENDMAIL_VER#*.}"
-            MINOR_VER="${_rest%%.*}"
-        fi
-
-        if [ -n "${SENDMAIL_VER:-}" ]; then
-            add_detail "Sendmail 버전은 ${SENDMAIL_VER}입니다"
-        else
-            add_detail "Sendmail 버전을 확인하지 못했습니다"
-        fi
-        
-        # 버전 비교: 8.9 이상인지 확인
-        if [ -n "$MAJOR_VER" ] && [ -n "$MINOR_VER" ]; then
-            if [ "$MAJOR_VER" -gt 8 ] || ([ "$MAJOR_VER" -eq 8 ] && [ "$MINOR_VER" -ge 9 ]); then
-                # 8.9 이상 버전
-                # 가이드: promiscuous_relay 확인, access 파일 확인
-                if grep -q "promiscuous_relay" "$TARGET_FILE"; then
-                     VULNERABLE=1
-                     add_detail "promiscuous_relay 설정(무조건 릴레이)이 발견되었습니다"
-                fi
-                
-                if [ ! -f "/etc/mail/access" ] && [ ! -f "/etc/mail/access.db" ]; then
-                     VULNERABLE=1
-                     add_detail "access 파일이 없어 릴레이 제어가 미흡합니다"
-                fi
-            else
-                # 8.9 미만 버전
-                # 가이드: sendmail.cf에 R$*$#error $@ 5.7.1 $: "550 Relaying denied" 확인
-                if ! grep -q "Relaying denied" "$TARGET_FILE" 2>/dev/null; then
-                    VULNERABLE=1
-                    add_detail "8.9 미만 버전에서 Relaying denied 룰이 없습니다"
-                fi
-            fi
-        else
-            # 버전 확인 실패 시 두 가지 모두 확인
-            if grep -q "promiscuous_relay" "$TARGET_FILE"; then
-                 VULNERABLE=1
-                 add_detail "promiscuous_relay 설정이 발견되었습니다"
-            fi
-            if [ ! -f "/etc/mail/access" ] && [ ! -f "/etc/mail/access.db" ]; then
-                if ! grep -q "Relaying denied" "$TARGET_FILE" 2>/dev/null; then
-                    VULNERABLE=1
-                    add_detail "access 파일 및 Relaying denied 룰이 없습니다"
-                fi
-            fi
-        fi
-    fi
-fi
-
-# [Postfix]
-if command -v postfix &>/dev/null; then
-    MAIL_SERVICE="postfix"
-    if [ -f "/etc/postfix/main.cf" ]; then
-        TARGET_FILE="/etc/postfix/main.cf"
-        FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-        
-        # 1) smtpd_recipient_restrictions 설정 확인
-        RESTRICTIONS=$(grep "^smtpd_recipient_restrictions" "$TARGET_FILE" 2>/dev/null)
-        if [ -n "$RESTRICTIONS" ]; then
-            # permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination 등이 있어야 함
-            # 만약 permit 만 있으면 취약할 수 있음 (상세 로직은 복잡하나 가이드에 따라 확인)
-            :
-        else
-            # 설정이 없는 경우 (기본값은 secure할 수 있으나 확인 필요)
-            add_detail "Postfix에서 smtpd_recipient_restrictions 설정을 확인해야 합니다"
-        fi
-        
-        # 2) mynetworks 설정 확인
-        # 모든 IP 허용(0.0.0.0/0) 등이 있으면 취약
-        MYNETWORKS=$(grep "^mynetworks" "$TARGET_FILE" 2>/dev/null)
-        if echo "$MYNETWORKS" | grep -q "0.0.0.0/0"; then
-            VULNERABLE=1
-            add_detail "Postfix mynetworks에 모든 IP(0.0.0.0/0)가 허용되어 있습니다"
-        fi
-    fi
-fi
-
-# [Exim]
-# 가이드: exim.conf 파일에서 relay_from_hosts 및 ACL 설정 확인
-if command -v exim &>/dev/null || command -v exim4 &>/dev/null; then
-    MAIL_SERVICE="exim"
-    CONF_FILES=("/etc/exim/exim.conf" "/etc/exim4/exim4.conf" "/etc/exim4/update-exim4.conf.conf")
-    
-    for conf in "${CONF_FILES[@]}"; do
-        if [ -f "$conf" ]; then
-            TARGET_FILE="$conf"
-            FILE_HASH=$(sha256sum "$conf" 2>/dev/null | awk '{print $1}')
-            
-            # 1) relay_from_hosts 설정 확인
-            # 가이드: relay_from_hosts = <허용할 네트워크 주소>
-            RELAY_HOSTS=$(grep -v "^#" "$conf" | grep "relay_from_hosts")
-            
-            if [ -n "$RELAY_HOSTS" ]; then
-                add_detail "Exim에서 relay_from_hosts 설정이 확인되었습니다(${RELAY_HOSTS})"
-                
-                # * 또는 0.0.0.0/0 허용 시 취약
-                if echo "$RELAY_HOSTS" | grep -qE "\*|0\.0\.0\.0/0"; then
-                    VULNERABLE=1
-                    add_detail "relay_from_hosts에 모든 호스트(*)가 허용되어 취약합니다"
-                fi
-            else
-                # relay_from_hosts 설정 없으면 기본값 확인 필요
-                add_detail "Exim에서 relay_from_hosts 설정이 없습니다"
-            fi
-            
-            # 2) ACL 설정 확인: accept hosts = +relay_from_hosts
-            # 가이드: acl_check_rcpt에서 accept hosts = +relay_from_hosts 확인
-            if grep -q "accept.*hosts.*=.*+relay_from_hosts" "$conf" 2>/dev/null; then
-                add_detail "accept hosts = +relay_from_hosts 설정이 있습니다"
-            fi
-            
-            break
-        fi
-    done
-fi
-
-if [ -z "$MAIL_SERVICE" ]; then
-    STATUS="PASS"
-    EVIDENCE="메일 서비스가 설치되어 있지 않아 점검 대상이 없습니다."
-elif [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    if [ "${#DETAILS[@]}" -gt 0 ]; then
-        EVIDENCE="스팸 릴레이 제한이 미흡하여 외부에서 메일 서버를 경유한 스팸 발송이 가능한 위험이 있으며, 확인된 사항은 다음과 같습니다. $(join_details)"
+  if [ ! -f "$SM_CF" ]; then
+    VULNERABLE=1
+    append_detail "[sendmail] command=FOUND version=$SM_VER sendmail.cf=NOT_FOUND -> relay restriction status cannot be verified"
+  else
+    # 위험 시그널 1) promiscuous_relay 존재 여부
+    if grep -q "promiscuous_relay" "$SM_CF" 2>/dev/null; then
+      VULNERABLE=1
+      append_detail "[sendmail] sendmail.cf contains 'promiscuous_relay' -> unconditional relay risk"
     else
-        EVIDENCE="스팸 릴레이 제한이 미흡하여 외부에서 메일 서버를 경유한 스팸 발송이 가능한 위험이 있습니다."
+      append_detail "[sendmail] promiscuous_relay=NOT_FOUND"
     fi
-else
-    STATUS="PASS"
-    EVIDENCE="스팸 릴레이가 적절히 제한되어 있거나 기본 설정이 적용되어 있습니다."
+
+    # 위험 시그널 2) access / access.db 존재 여부(8.9+ 계열에서 흔한 제어 방식)
+    if [ ! -f "/etc/mail/access" ] && [ ! -f "/etc/mail/access.db" ]; then
+      # access 파일이 없다고 무조건 릴레이가 열린 것은 아니지만,
+      # 가이드 기준으로 '제어 미흡 가능'을 취약 근거로 잡음
+      VULNERABLE=1
+      append_detail "[sendmail] access/access.db=NOT_FOUND -> relay control may be insufficient"
+    else
+      append_detail "[sendmail] access/access.db=FOUND"
+    fi
+
+    # 위험 시그널 3) (구버전/일부 구성) 'Relaying denied' 룰 존재 여부
+    # - 없다고 해서 100% 취약은 아니지만, 확인 신호로 활용
+    if grep -q "Relaying denied" "$SM_CF" 2>/dev/null; then
+      append_detail "[sendmail] 'Relaying denied' rule=FOUND"
+    else
+      append_detail "[sendmail] 'Relaying denied' rule=NOT_FOUND (verify relay rules if needed)"
+    fi
+  fi
 fi
 
+# -----------------------------
+# 2) Postfix 점검
+#   - 핵심: mynetworks가 전체 허용(0.0.0.0/0 등)인지
+#   - 권고: relay/recipient restrictions에 reject_unauth_destination 존재 여부
+# -----------------------------
+if command -v postfix >/dev/null 2>&1 || command -v postconf >/dev/null 2>&1; then
+  FOUND_ANY=1
+  PF_MAIN="/etc/postfix/main.cf"
+  add_target_file "$PF_MAIN"
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 메일 서비스 사용 시 릴레이 방지 설정 또는 릴레이 대상 접근 제어가 적용되므로 허용 범위(허용 대상/네트워크)를 운영 정책에 맞게 사전에 정의한 뒤 적용해야 합니다."
+  if [ ! -f "$PF_MAIN" ]; then
+    VULNERABLE=1
+    append_detail "[postfix] postfix command=FOUND main.cf=NOT_FOUND -> relay restriction status cannot be verified"
+  else
+    # 주석 제외 후 값 수집
+    MYNETWORKS_LINE="$(grep -nE '^[[:space:]]*mynetworks[[:space:]]*=' "$PF_MAIN" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
+    RELAY_RESTR_LINE="$(grep -nE '^[[:space:]]*smtpd_relay_restrictions[[:space:]]*=' "$PF_MAIN" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
+    RCPT_RESTR_LINE="$(grep -nE '^[[:space:]]*smtpd_recipient_restrictions[[:space:]]*=' "$PF_MAIN" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
 
-# 3. 마스터 템플릿 표준 출력
+    if [ -n "$MYNETWORKS_LINE" ]; then
+      if echo "$MYNETWORKS_LINE" | grep -qE '0\.0\.0\.0/0|::/0'; then
+        VULNERABLE=1
+        append_detail "[postfix] mynetworks allows all (0.0.0.0/0 or ::/0) -> open relay risk | $MYNETWORKS_LINE"
+      else
+        append_detail "[postfix] mynetworks=SET | $MYNETWORKS_LINE"
+      fi
+    else
+      # 설정이 없으면 기본값이 적용되지만, 운영 정책상 확인 필요
+      append_detail "[postfix] mynetworks=NOT_SET (default applies) -> verify allowed networks"
+    fi
+
+    # reject_unauth_destination 존재 여부 점검(대표적인 릴레이 방지 핵심)
+    FOUND_REJECT="N"
+    echo "$RELAY_RESTR_LINE $RCPT_RESTR_LINE" | grep -q "reject_unauth_destination" && FOUND_REJECT="Y"
+
+    if [ "$FOUND_REJECT" = "Y" ]; then
+      append_detail "[postfix] reject_unauth_destination=FOUND (relay protection signal)"
+    else
+      # 없는 경우 가이드 기준으로 미흡 가능 → 취약 처리
+      VULNERABLE=1
+      append_detail "[postfix] reject_unauth_destination=NOT_FOUND -> relay protection may be insufficient"
+      [ -n "$RELAY_RESTR_LINE" ] && append_detail "[postfix] smtpd_relay_restrictions | $RELAY_RESTR_LINE"
+      [ -n "$RCPT_RESTR_LINE" ] && append_detail "[postfix] smtpd_recipient_restrictions | $RCPT_RESTR_LINE"
+    fi
+  fi
+fi
+
+# -----------------------------
+# 3) Exim 점검
+#   - relay_from_hosts가 * / 0.0.0.0/0 이면 취약
+#   - ACL에서 accept hosts = +relay_from_hosts 형태 확인(구성 신호)
+# -----------------------------
+EXIM_CMD=""
+command -v exim >/dev/null 2>&1 && EXIM_CMD="exim"
+[ -z "$EXIM_CMD" ] && command -v exim4 >/dev/null 2>&1 && EXIM_CMD="exim4"
+
+if [ -n "$EXIM_CMD" ]; then
+  FOUND_ANY=1
+
+  CONF_FILES=(
+    "/etc/exim/exim.conf"
+    "/etc/exim4/exim4.conf"
+    "/etc/exim4/update-exim4.conf.conf"
+  )
+
+  FOUND_CONF="N"
+  for conf in "${CONF_FILES[@]}"; do
+    if [ -f "$conf" ]; then
+      FOUND_CONF="Y"
+      add_target_file "$conf"
+
+      RELAY_LINE="$(grep -v '^[[:space:]]*#' "$conf" 2>/dev/null | grep -E 'relay_from_hosts' | head -n1)"
+      if [ -n "$RELAY_LINE" ]; then
+        append_detail "[exim] relay_from_hosts=SET | $RELAY_LINE"
+        if echo "$RELAY_LINE" | grep -qE '\*|0\.0\.0\.0/0|::/0'; then
+          VULNERABLE=1
+          append_detail "[exim] relay_from_hosts allows all (* or 0.0.0.0/0 or ::/0) -> open relay risk"
+        fi
+      else
+        append_detail "[exim] relay_from_hosts=NOT_SET (verify default relay policy)"
+      fi
+
+      if grep -qE 'accept[[:space:]]+hosts[[:space:]]*=[[:space:]]*\+relay_from_hosts' "$conf" 2>/dev/null; then
+        append_detail "[exim] acl accept hosts = +relay_from_hosts=FOUND"
+      else
+        append_detail "[exim] acl accept hosts = +relay_from_hosts=NOT_FOUND (verify ACL policy if needed)"
+      fi
+
+      break
+    fi
+  done
+
+  if [ "$FOUND_CONF" = "N" ]; then
+    VULNERABLE=1
+    append_detail "[exim] command=FOUND but config_file=NOT_FOUND -> relay restriction status cannot be verified"
+  fi
+fi
+
+# -----------------------------
+# 4) 최종 판정/문구(U-15~U-16 톤)
+# -----------------------------
+if [ $FOUND_ANY -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="메일 서비스(sendmail/postfix/exim)가 설치되어 있지 않아 점검 대상이 없습니다."
+  DETAIL_CONTENT="none"
+else
+  if [ $VULNERABLE -eq 1 ]; then
+    STATUS="FAIL"
+    REASON_LINE="스팸 메일 릴레이 제한 설정이 기준에 부합하지 않거나 확인할 수 없어 취약합니다. 외부에서 메일 서버를 경유한 스팸 발송(오픈 릴레이)이 발생할 수 있으므로 릴레이 허용 대상(네트워크/호스트)을 운영 정책에 맞게 제한하고 관련 설정을 보완해야 합니다."
+  else
+    STATUS="PASS"
+    REASON_LINE="스팸 메일 릴레이가 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+fi
+
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/mail/sendmail.cf, /etc/mail/access, /etc/mail/access.db, /etc/postfix/main.cf, /etc/exim/exim.conf, /etc/exim4/exim4.conf, /etc/exim4/update-exim4.conf.conf"
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$(json_escape "$EVIDENCE")",
-    "guide": "Postfix는 mynetworks를 신뢰할 수 있는 IP 대역으로 제한하고 smtpd_relay_restrictions 설정을 강화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

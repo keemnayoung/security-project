@@ -19,92 +19,95 @@
 
 # [진단] U-36 r 계열 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-36"
-CATEGORY="서비스 관리"
-TITLE="r 계열 서비스 비활성화"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+TARGET_FILE="/etc/inetd.conf /etc/xinetd.d/rsh /etc/xinetd.d/rlogin /etc/xinetd.d/rexec /etc/xinetd.d/shell /etc/xinetd.d/login /etc/xinetd.d/exec systemd"
+CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" || echo "inetd_conf_not_found_or_no_r_services" ); ( for f in /etc/xinetd.d/rsh /etc/xinetd.d/rlogin /etc/xinetd.d/rexec /etc/xinetd.d/shell /etc/xinetd.d/login /etc/xinetd.d/exec; do [ -f "$f" ] && grep -nEv "^[[:space:]]*#" "$f" | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; done ) ; ( systemctl list-units --type=service 2>/dev/null | grep -E "(rlogin|rsh|rexec)" | awk "{print \$1}" )'
+
+DETAIL_CONTENT=""
+REASON_LINE=""
 
 VULNERABLE=0
+DETAIL_LINES=""
+
 R_SERVICES=("rsh" "rlogin" "rexec" "shell" "login" "exec")
-DETAILS=()
 
-add_detail() {
-    local msg="$1"
-    [ -z "$msg" ] && return 0
-    DETAILS+=("$msg")
-}
-
-# [inetd] /etc/inetd.conf 파일 내 불필요한 r 계열 서비스 활성화 여부 확인
-# 가이드: 주석 처리되지 않은 r 계열 서비스 확인
+# [inetd] /etc/inetd.conf 내 r 계열 서비스 활성화 여부(주석 제외)
 if [ -f "/etc/inetd.conf" ]; then
-    TARGET_FILE="/etc/inetd.conf"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    for svc in "${R_SERVICES[@]}"; do
-        if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*${svc}([[:space:]]|$)"; then
-            VULNERABLE=1
-            add_detail "/etc/inetd.conf에서 ${svc} 서비스가 활성화되어 있습니다"
-        fi
-    done
+    INETD_HITS=$(grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)")
+    if [ -n "$INETD_HITS" ]; then
+        VULNERABLE=1
+        DETAIL_LINES+="/etc/inetd.conf: r 계열 서비스 항목이 주석 없이 존재합니다(활성 가능)."$'\n'
+        DETAIL_LINES+="${INETD_HITS}"$'\n'
+    else
+        DETAIL_LINES+="/etc/inetd.conf: r 계열 서비스 활성 라인 미확인."$'\n'
+    fi
+else
+    DETAIL_LINES+="/etc/inetd.conf: 파일이 존재하지 않습니다."$'\n'
 fi
 
-# [xinetd] /etc/xinetd.d/<파일> 내 불필요한 r 계열 서비스 활성화 여부 확인
-# 가이드: disable = no인 경우 취약
+# [xinetd] /etc/xinetd.d/<svc> 내 disable=no 여부
 for svc in "${R_SERVICES[@]}"; do
-    if [ -f "/etc/xinetd.d/$svc" ]; then
-        TARGET_FILE="/etc/xinetd.d/$svc"
-        if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+    XFILE="/etc/xinetd.d/${svc}"
+    if [ -f "$XFILE" ]; then
+        X_HIT=$(grep -nEv "^[[:space:]]*#" "$XFILE" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" | head -n 1)
+        if [ -n "$X_HIT" ]; then
             VULNERABLE=1
-            add_detail "/etc/xinetd.d/${svc}에서 disable=no로 설정되어 있습니다"
+            DETAIL_LINES+="${XFILE}: disable=no 로 설정되어 서비스가 활성 상태입니다. (${X_HIT})"$'\n'
+        else
+            DETAIL_LINES+="${XFILE}: disable=no 설정 미확인(비활성 또는 설정 없음)."$'\n'
         fi
+    else
+        DETAIL_LINES+="${XFILE}: 파일이 존재하지 않습니다."$'\n'
     fi
 done
 
-# [systemd] 불필요한 r 계열 서비스 활성화 여부 확인
-# 가이드: # systemctl list-units --type=service | grep -E "rlogin|rsh|rexec"
-SYSTEMD_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "rlogin|rsh|rexec" | awk '{print $1}')
+# [systemd] rlogin/rsh/rexec 유닛 존재(활성/로딩) 여부
+SYSTEMD_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "(rlogin|rsh|rexec)" | awk '{print $1}' | head -n 20)
 if [ -n "$SYSTEMD_SERVICES" ]; then
     VULNERABLE=1
-    add_detail "systemd에서 r 계열 서비스가 활성화되어 있습니다(${SYSTEMD_SERVICES})"
+    DETAIL_LINES+="systemd: r 계열 서비스 유닛이 로드/활성 상태로 확인됩니다."$'\n'
+    DETAIL_LINES+="${SYSTEMD_SERVICES}"$'\n'
+else
+    DETAIL_LINES+="systemd: rlogin/rsh/rexec 서비스 유닛 로드/활성 내역 미확인."$'\n'
 fi
 
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
+# 최종 판정
+if [ "$VULNERABLE" -eq 1 ]; then
     STATUS="FAIL"
-    EVIDENCE="r 계열 서비스(rsh, rlogin, rexec)가 활성화되어 인증 없이 원격 접속이 가능한 위험이 있습니다."
+    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec 등)가 활성화되어 인증 없이 원격 접속 또는 신뢰 기반 접속이 가능해질 위험이 있으므로 취약합니다. 불필요한 r 계열 서비스는 비활성화해야 합니다."
 else
     STATUS="PASS"
-    EVIDENCE="r 계열 서비스가 비활성화되어 있습니다."
+    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec 등)가 활성화된 흔적이 확인되지 않아 인증 우회 기반 원격 접속 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, r-command 서비스가 백업 또는 클러스터링 등 특정 용도로 사용 중인 환경이라면 관련 작업이 중단될 수 있으므로 적용 전 서비스 사용 여부와 대체 수단을 반드시 확인해야 합니다."
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "xinetd에서 rsh, rlogin, rexec 서비스를 disable=yes로 설정하고, /etc/hosts.equiv 및 .rhosts 파일을 삭제해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

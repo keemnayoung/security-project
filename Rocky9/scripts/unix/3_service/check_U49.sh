@@ -19,146 +19,173 @@
 
 # [진단] U-49 DNS 보안 버전 패치
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-49"
-CATEGORY="서비스 관리"
-TITLE="DNS 보안 버전 패치"
-IMPORTANCE="상"
-TARGET_FILE="/usr/sbin/named"
-
-# ===== 버전 설정 (수정 가능) =====
-REQUIRED_VERSION="9.20.18"
-# ==================================
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+# ===== 기준 버전 (필요 시 수정) =====
+REQUIRED_VERSION="9.20.18"
+# ====================================
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE="/usr/sbin/named"
+CHECK_COMMAND='systemctl is-active named; systemctl list-units --type=service | grep -E "^(named|named-chroot)\.service"; named -v; command -v named; rpm -q bind bind-chroot; dnf -q info bind 2>/dev/null'
 
 VULNERABLE=0
-DNS_VERSION=""
+FOUND_ANY=0
+DETAIL_LINES=""
 
-# 버전 비교 함수
-version_compare() {
-    # $1: 현재 버전, $2: 요구 버전
-    # 반환: 0 (같음), 1 (현재 > 요구), 2 (현재 < 요구)
-    
-    local ver1=$1
-    local ver2=$2
-    
-    # 버전 숫자만 추출 (예: BIND 9.20.18 -> 9.20.18)
-    ver1=$(echo "$ver1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    ver2=$(echo "$ver2" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    
-    if [ -z "$ver1" ] || [ -z "$ver2" ]; then
-        return 3  # 버전 파싱 실패
-    fi
-    
-    # 버전 분해
-    local IFS='.'
-    local ver1_arr=($ver1)
-    local ver2_arr=($ver2)
-    
-    # Major 버전 비교
-    if [ ${ver1_arr[0]} -gt ${ver2_arr[0]} ]; then
-        return 1
-    elif [ ${ver1_arr[0]} -lt ${ver2_arr[0]} ]; then
-        return 2
-    fi
-    
-    # Minor 버전 비교
-    if [ ${ver1_arr[1]} -gt ${ver2_arr[1]} ]; then
-        return 1
-    elif [ ${ver1_arr[1]} -lt ${ver2_arr[1]} ]; then
-        return 2
-    fi
-    
-    # Patch 버전 비교
-    if [ ${ver1_arr[2]} -gt ${ver2_arr[2]} ]; then
-        return 1
-    elif [ ${ver1_arr[2]} -lt ${ver2_arr[2]} ]; then
-        return 2
-    fi
-    
-    return 0  # 같음
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
 }
 
-# [Step 1] DNS 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep named
-if systemctl list-units --type=service 2>/dev/null | grep -q "named"; then
-    DNS_ACTIVE=1
+# 버전 숫자(최소 x.y.z) 추출
+extract_ver() {
+  echo "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
+}
+
+# cur >= req 이면 0(양호), cur < req 이면 1(취약), 파싱 실패면 2
+ver_is_ge() {
+  local cur_raw="$1"
+  local req_raw="$2"
+  local cur req first
+  cur="$(extract_ver "$cur_raw")"
+  req="$(extract_ver "$req_raw")"
+
+  if [ -z "$cur" ] || [ -z "$req" ]; then
+    return 2
+  fi
+
+  first="$(printf "%s\n%s\n" "$cur" "$req" | sort -V | head -n1)"
+  if [ "$cur" = "$req" ]; then
+    return 0
+  elif [ "$first" = "$cur" ]; then
+    # cur < req
+    return 1
+  else
+    # cur > req
+    return 0
+  fi
+}
+
+# -----------------------------
+# 1) DNS 서비스(named) 활성화 여부 확인
+# -----------------------------
+DNS_ACTIVE="N"
+if systemctl is-active --quiet named 2>/dev/null; then
+  DNS_ACTIVE="Y"
+elif systemctl is-active --quiet named-chroot 2>/dev/null; then
+  DNS_ACTIVE="Y"
+fi
+
+# list-units에서도 확인(참고용)
+UNIT_LIST_HIT="N"
+systemctl list-units --type=service 2>/dev/null | grep -qE '^(named|named-chroot)\.service' && UNIT_LIST_HIT="Y"
+
+# -----------------------------
+# 2) named 버전/경로/패키지 정보 수집
+# -----------------------------
+DNS_VER_RAW=""
+NAMED_PATH=""
+BIND_RPM=""
+
+if command -v named >/dev/null 2>&1; then
+  FOUND_ANY=1
+  NAMED_PATH="$(command -v named 2>/dev/null)"
+  [ -n "$NAMED_PATH" ] && TARGET_FILE="$NAMED_PATH"
+
+  DNS_VER_RAW="$(named -v 2>/dev/null)"
+  [ -z "$DNS_VER_RAW" ] && DNS_VER_RAW="unknown"
+
+  BIND_RPM="$(rpm -q bind bind-chroot 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')"
+  [ -z "$BIND_RPM" ] && BIND_RPM="not_installed_or_unknown"
+
+  append_detail "[bind] named_path=$NAMED_PATH"
+  append_detail "[bind] named_version_raw=$DNS_VER_RAW"
+  append_detail "[bind] required_version=$REQUIRED_VERSION"
+  append_detail "[bind] rpm=$BIND_RPM"
 else
-    DNS_ACTIVE=0
+  # named 명령이 없으면 DNS(BIND) 자체가 없다고 판단(서비스도 보통 없음)
+  append_detail "[bind] named_command=NOT_FOUND"
 fi
 
-# [Step 2] BIND 버전 확인
-# 가이드: named -v
-if command -v named &>/dev/null; then
-    DNS_VERSION=$(named -v 2>/dev/null)
-    TARGET_FILE=$(command -v named)
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-fi
+# -----------------------------
+# 3) 판정 로직 (U-15~U-16 톤)
+# -----------------------------
+if [ "$DNS_ACTIVE" = "N" ] && [ $FOUND_ANY -eq 0 ]; then
+  # 서비스 비활성 + 바이너리도 없음 => 대상 없음에 가까움(양호 처리)
+  STATUS="PASS"
+  REASON_LINE="DNS 서비스(named)가 설치되어 있지 않거나 실행되지 않아 점검 대상이 없습니다."
+  DETAIL_CONTENT="none"
+else
+  # 서비스 상태/정보 상세 기록
+  append_detail "[service] named_active=$DNS_ACTIVE (unit_list_hit=$UNIT_LIST_HIT)"
 
-if [ $DNS_ACTIVE -eq 1 ]; then
-    # DNS 서비스가 활성화된 경우
-    if [ -n "$DNS_VERSION" ]; then
-        # 버전 비교
-        version_compare "$DNS_VERSION" "$REQUIRED_VERSION"
-        COMPARE_RESULT=$?
-        
-        if [ $COMPARE_RESULT -eq 2 ]; then
-            # 현재 버전이 요구 버전보다 낮음
-            STATUS="FAIL"
-            EVIDENCE="DNS 서비스($DNS_VERSION)가 실행 중이며, 요구 버전($REQUIRED_VERSION)보다 낮아 보안 패치가 필요합니다."
-            GUIDE="이 항목은 시스템 전체 DNS 서비스에 영향을 줄 수 있어 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 'dnf update bind' 명령으로 최신 보안 패치를 적용한 후 'systemctl restart named'로 서비스를 재시작하십시오. 패치 적용 전 반드시 영향도를 평가하고 변경관리 절차에 따라 단계적으로 적용하십시오."
-            ACTION_RESULT="MANUAL_REQUIRED"
-        elif [ $COMPARE_RESULT -eq 3 ]; then
-            # 버전 비교 실패
-            STATUS="FAIL"
-            EVIDENCE="DNS 서비스($DNS_VERSION)가 실행 중이나 버전 형식을 파싱할 수 없어 수동 점검이 필요합니다."
-            GUIDE="이 항목은 시스템 전체 DNS 서비스에 영향을 줄 수 있어 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 'dnf update bind' 명령으로 최신 보안 패치를 적용한 후 'systemctl restart named'로 서비스를 재시작하십시오. 패치 적용 전 반드시 영향도를 평가하고 변경관리 절차에 따라 단계적으로 적용하십시오."
-            ACTION_RESULT="MANUAL_REQUIRED"
-        else
-            # 현재 버전이 요구 버전 이상
-            STATUS="PASS"
-            EVIDENCE="DNS 서비스($DNS_VERSION)가 요구 버전($REQUIRED_VERSION) 이상으로 적절히 패치되어 있습니다."
-            GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-            ACTION_RESULT="SUCCESS"
-        fi
+  if [ "$DNS_ACTIVE" = "Y" ]; then
+    # 실행 중이면 버전 확인 필수
+    if [ $FOUND_ANY -eq 0 ] || [ -z "$DNS_VER_RAW" ] || [ "$DNS_VER_RAW" = "unknown" ]; then
+      STATUS="FAIL"
+      VULNERABLE=1
+      REASON_LINE="DNS 서비스가 실행 중이나 버전을 확인할 수 없어 취약합니다. 보안 패치 적용 여부를 확인하기 위해 BIND 버전을 점검하고 최신 보안 업데이트를 적용해야 합니다."
     else
-        # 버전 확인 불가
+      ver_is_ge "$DNS_VER_RAW" "$REQUIRED_VERSION"
+      rc=$?
+      if [ $rc -eq 1 ]; then
         STATUS="FAIL"
-        EVIDENCE="DNS 서비스가 실행 중이나 버전을 확인할 수 없어 수동 점검이 필요합니다."
-        GUIDE="이 항목은 시스템 전체 DNS 서비스에 영향을 줄 수 있어 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 'dnf update bind' 명령으로 최신 보안 패치를 적용한 후 'systemctl restart named'로 서비스를 재시작하십시오."
-        ACTION_RESULT="MANUAL_REQUIRED"
+        VULNERABLE=1
+        REASON_LINE="DNS 서비스 버전이 기준에 미달하여 취약합니다. 최신 보안 패치를 적용하고 서비스를 재시작하는 등 패치 관리 정책을 수립하여 주기적으로 적용해야 합니다."
+        append_detail "[result] version_check=LOW (current=$(extract_ver "$DNS_VER_RAW") < required=$REQUIRED_VERSION)"
+      elif [ $rc -eq 2 ]; then
+        STATUS="FAIL"
+        VULNERABLE=1
+        REASON_LINE="DNS 서비스가 실행 중이나 버전 형식을 정상적으로 확인할 수 없어 취약으로 판단합니다. 현재 버전을 확인한 뒤 최신 보안 업데이트 적용 여부를 점검해야 합니다."
+        append_detail "[result] version_check=UNKNOWN (parse_failed)"
+      else
+        STATUS="PASS"
+        REASON_LINE="DNS 서비스 버전이 기준 이상으로 확인되어 이 항목에 대한 보안 위협이 없습니다."
+        append_detail "[result] version_check=OK (current=$(extract_ver "$DNS_VER_RAW") >= required=$REQUIRED_VERSION)"
+      fi
     fi
-else
+  else
+    # 비활성 상태면 양호(단, 설치는 되어 있을 수 있음)
     STATUS="PASS"
-    EVIDENCE="DNS 서비스가 비활성화되어 있습니다."
-    GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
-    ACTION_RESULT="SUCCESS"
+    REASON_LINE="DNS 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-IMPACT_LEVEL="HIGH"
-ACTION_IMPACT="DNS 서비스 보안 패치 적용 시 시스템 및 서비스에 영향을 줄 수 있습니다. 특히 DNS 서비스는 패치 적용에 따른 서비스 영향 정도를 정확히 파악한 뒤 주기적인 패치 적용 정책을 수립하여 운영에 미칠 수 있는 영향을 충분히 고려하고 단계적으로 적용해야 합니다."
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -19,71 +19,84 @@
 
 # [진단] U-34 Finger 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-34"
-CATEGORY="서비스 관리"
-TITLE="Finger 서비스 비활성화"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+TARGET_FILE="/etc/inetd.conf /etc/xinetd.d/finger"
+CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | grep -nE "^[[:space:]]*finger([[:space:]]|$)" || echo "inetd_finger_not_found_or_commented" ); ( [ -f /etc/xinetd.d/finger ] && grep -nEv "^[[:space:]]*#" /etc/xinetd.d/finger | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" || echo "xinetd_finger_disable_no_not_found_or_file_missing" )'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
 
 FINGER_ACTIVE=0
+DETAIL_LINES=""
 
-# [LINUX - inetd] /etc/inetd.conf 파일 내 Finger 서비스 활성화 여부 확인
-# 가이드: Finger 서비스 항목이 주석 처리되지 않은 경우 취약
+# inetd 기반 점검
 if [ -f "/etc/inetd.conf" ]; then
-    TARGET_FILE="/etc/inetd.conf"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    # 선행 공백 후 주석(#)도 제외
-    if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*finger([[:space:]]|$)"; then
+    if grep -Ev "^[[:space:]]*#" "/etc/inetd.conf" 2>/dev/null | grep -qE "^[[:space:]]*finger([[:space:]]|$)"; then
         FINGER_ACTIVE=1
-        EVIDENCE="$EVIDENCE /etc/inetd.conf에 Finger 서비스가 활성화되어 있습니다."
+        DETAIL_LINES+="/etc/inetd.conf: finger 서비스 라인이 주석 처리되지 않고 활성화되어 있습니다."$'\n'
+    else
+        DETAIL_LINES+="/etc/inetd.conf: finger 서비스 활성 라인 미확인(없음 또는 주석 처리됨)."$'\n'
     fi
+else
+    DETAIL_LINES+="/etc/inetd.conf: 파일이 존재하지 않습니다."$'\n'
 fi
 
-# [LINUX - xinetd] /etc/xinetd.d/finger 파일 내 disable 옵션 확인
-# 가이드: finger의 disable 옵션이 no인 경우 취약
+# xinetd 기반 점검
 if [ -f "/etc/xinetd.d/finger" ]; then
-    TARGET_FILE="/etc/xinetd.d/finger"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    # 주석 라인 제외 + disable=no 인 경우 취약
-    if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+    if grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/finger" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
         FINGER_ACTIVE=1
-        EVIDENCE="$EVIDENCE /etc/xinetd.d/finger 설정에서 disable = no로 설정되어 있습니다."
+        DETAIL_LINES+="/etc/xinetd.d/finger: disable = no 로 설정되어 서비스가 활성화되어 있습니다."$'\n'
+    else
+        # disable=yes, 또는 disable 미설정/주석 등은 여기서 '취약 근거'로 확정하지 않고 현 상태를 출력
+        CUR_DISABLE=$(grep -Ev '^[[:space:]]*#' "/etc/xinetd.d/finger" 2>/dev/null | grep -iE '^[[:space:]]*disable[[:space:]]*=' | tail -n 1 | sed 's/[[:space:]]//g')
+        if [ -n "$CUR_DISABLE" ]; then
+            DETAIL_LINES+="/etc/xinetd.d/finger: ${CUR_DISABLE} (disable=no 미확인)."$'\n'
+        else
+            DETAIL_LINES+="/etc/xinetd.d/finger: disable 설정 라인 미확인(없음 또는 주석 처리됨)."$'\n'
+        fi
     fi
+else
+    DETAIL_LINES+="/etc/xinetd.d/finger: 파일이 존재하지 않습니다."$'\n'
 fi
 
-# 결과 판단
-if [ $FINGER_ACTIVE -eq 1 ]; then
+# 최종 판정
+if [ "$FINGER_ACTIVE" -eq 1 ]; then
     STATUS="FAIL"
-    EVIDENCE="Finger 서비스가 활성화되어 있어, 외부에서 시스템 사용자 정보를 조회할 수 있는 위험이 있습니다. $EVIDENCE"
+    REASON_LINE="Finger 서비스가 활성화되어 있어 외부에서 시스템 사용자 정보가 노출될 수 있으므로 취약합니다. finger 서비스를 비활성화(inetd에서는 finger 라인 주석 처리, xinetd에서는 disable=yes 설정)해야 합니다."
 else
     STATUS="PASS"
-    EVIDENCE="Finger 서비스가 비활성화되어 있습니다."
+    REASON_LINE="Finger 서비스가 inetd/xinetd 설정에서 활성화되어 있지 않아 외부에서 시스템 사용자 정보가 노출될 가능성이 없으므로 이 항목에 대한 보안 위협이 없습니다."
 fi
 
-IMPACT_LEVEL="LOW" 
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, finger 서비스를 운영·진단 목적 등으로 실제 사용 중인 경우 해당 기능이 더 이상 제공되지 않으므로 적용 전 사용 여부를 반드시 확인하고 필요 시 대체 절차를 마련해야 합니다."
+# detail(줄바꿈 유지, 소유자/권한은 한 줄 규칙 해당 없음)
+DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "xinetd에서 finger 서비스를 disable=yes로 설정하거나, inetd.conf에서 finger 라인을 주석처리 후 서비스를 재시작해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

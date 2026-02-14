@@ -19,61 +19,56 @@
 
 # [진단] U-43 NIS, NIS+ 점검
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-43"
-CATEGORY="서비스 관리"
-TITLE="NIS, NIS+ 점검"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
-DETAIL=""
+TARGET_FILE="N/A"
+CHECK_COMMAND='systemctl list-units --type=service 2>/dev/null | grep -E "ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated|yppasswdd|ypupdated" || echo "no_nis_related_services"'
 
-# [Step 1] NIS 관련 서비스 데몬 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep -E "ypserv|ypbind|ypxfrd|rpc.yppasswdd|rpc.ypupdated"
-NIS_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "ypserv|ypbind|ypxfrd|rpc.yppasswdd|rpc.ypupdated" | awk '{print $1}' | tr '\n' ' ')
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+
+# NIS/NIS+ 관련 서비스 감지
+# (Rocky Linux 계열에서는 보통 ypserv/ypbind 중심. 환경에 따라 rpc.yppasswdd 등 존재 가능)
+NIS_SERVICES=$(systemctl list-units --type=service 2>/dev/null \
+  | grep -E "ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated|yppasswdd|ypupdated" \
+  | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
 
 if [ -n "$NIS_SERVICES" ]; then
-    VULNERABLE=1
-    DETAIL="활성 서비스는 ${NIS_SERVICES}입니다."
-fi
-
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="NIS 서비스가 활성화되어 있어, 인증 정보가 네트워크로 노출될 수 있는 위험이 있습니다. ${DETAIL}"
+  STATUS="FAIL"
+  REASON_LINE="NIS/NIS+ 관련 서비스가 활성화되어 있으면 인증/계정 정보가 네트워크로 노출될 수 있어 취약합니다. 실제 사용 여부(레거시 의존성)를 확인한 뒤 불필요하면 중지/비활성화가 필요합니다."
+  DETAIL_CONTENT="active_services=${NIS_SERVICES}"
 else
-    STATUS="PASS"
-    EVIDENCE="NIS 관련 서비스가 비활성화되어 있습니다."
+  STATUS="PASS"
+  REASON_LINE="NIS/NIS+ 관련 서비스가 활성화된 정황이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="no_nis_service_active"
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, NIS를 불가피하게 사용 중인 환경에서는 운영 정책(사용 여부/대체 서비스 적용 여부)에 따라 영향이 달라질 수 있으므로 적용 범위를 사전에 점검한 뒤 설정을 반영해야 합니다."
-
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "NIS 서비스가 불필요한 경우 systemctl stop ypserv ypbind && systemctl disable ypserv ypbind로 비활성화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

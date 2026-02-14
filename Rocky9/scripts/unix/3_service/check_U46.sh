@@ -19,102 +19,171 @@
 
 # [진단] U-46 일반 사용자의 메일 서비스 실행 방지
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-46"
-CATEGORY="서비스 관리"
-TITLE="일반 사용자의 메일 서비스 실행 방지"
-IMPORTANCE="상"
-TARGET_FILE="/etc/mail/sendmail.cf"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+# 증적/대상 기본값
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+CHECK_COMMAND='(command -v sendmail && grep -i "PrivacyOptions" /etc/mail/sendmail.cf); (command -v postsuper && stat -c "%a %n" /usr/sbin/postsuper); ( [ -f /usr/sbin/exiqgrep ] && stat -c "%a %n" /usr/sbin/exiqgrep )'
 
 VULNERABLE=0
-MAIL_SERVICE=""
+FOUND_ANY=0
+DETAIL_LINES=""
 
-# [Sendmail]
-# 가이드: sendmail.cf PrivacyOptions에 restrictqrun 확인
-if command -v sendmail &>/dev/null; then
-    MAIL_SERVICE="sendmail"
-    CF_FILE="/etc/mail/sendmail.cf"
-    if [ -f "$CF_FILE" ]; then
-        TARGET_FILE="$CF_FILE"
-        FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-        # PrivacyOptions 행 찾기
-        PRIVACY=$(grep -i "PrivacyOptions" "$CF_FILE" | grep -v "^#")
-        if [ -n "$PRIVACY" ]; then
-            if ! echo "$PRIVACY" | grep -q "restrictqrun"; then
-               VULNERABLE=1
-               EVIDENCE="$EVIDENCE Sendmail PrivacyOptions에 restrictqrun이 설정되어 있지 않습니다."
-            fi
-        else
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE Sendmail PrivacyOptions 설정이 없습니다."
-        fi
+append_detail() {
+  local line="$1"
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
+}
+
+add_target_file() {
+  local f="$1"
+  if [ -z "$f" ]; then return; fi
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
+}
+
+# -----------------------------
+# 1) Sendmail: sendmail.cf PrivacyOptions에 restrictqrun 존재 여부
+# -----------------------------
+if command -v sendmail >/dev/null 2>&1; then
+  FOUND_ANY=1
+  CF_FILE="/etc/mail/sendmail.cf"
+  add_target_file "$CF_FILE"
+
+  if [ ! -f "$CF_FILE" ]; then
+    # 구성 파일이 없으면(설치/구성 미완) 판단 불가 → 취약 처리(운영 정책에 따라 조정 가능)
+    VULNERABLE=1
+    append_detail "[sendmail] sendmail command=FOUND, config_file=NOT_FOUND ($CF_FILE)"
+  else
+    # 주석 제외 PrivacyOptions 라인 수집
+    PRIVACY_LINES="$(grep -i "PrivacyOptions" "$CF_FILE" 2>/dev/null | grep -v '^[[:space:]]*#')"
+
+    if [ -z "$PRIVACY_LINES" ]; then
+      VULNERABLE=1
+      append_detail "[sendmail] config_file=FOUND, PrivacyOptions=NOT_SET (restrictqrun missing)"
+    else
+      # restrictqrun 포함 여부 확인
+      if echo "$PRIVACY_LINES" | grep -qi "restrictqrun"; then
+        append_detail "[sendmail] config_file=FOUND, PrivacyOptions=SET (restrictqrun=YES)"
+      else
+        VULNERABLE=1
+        append_detail "[sendmail] config_file=FOUND, PrivacyOptions=SET (restrictqrun=NO) line=$(echo "$PRIVACY_LINES" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+      fi
     fi
+  fi
 fi
 
-# [Postfix]
-# 가이드: ls -l /usr/sbin/postsuper (others 실행 권한 확인)
-if command -v postsuper &>/dev/null; then
-    MAIL_SERVICE="postfix"
-    POSTSUPER="/usr/sbin/postsuper"
-    if [ -f "$POSTSUPER" ]; then
-        PERMS=$(stat -c '%a' "$POSTSUPER" 2>/dev/null)
-        # others 권한(마지막 자리)이 0이 아니면, 즉 1(x) 이상이면 취약
-        # 8진수 모드에서 o-x가 안 되어 있으면 취약
-        if [ $((PERMS % 2)) -ne 0 ]; then
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE $POSTSUPER에 일반 사용자 실행 권한이 있습니다. (현재: $PERMS)"
-        fi
+# -----------------------------
+# 2) Postfix: /usr/sbin/postsuper 의 others 실행권한(o+x) 여부 확인
+# -----------------------------
+if command -v postsuper >/dev/null 2>&1; then
+  FOUND_ANY=1
+  POSTSUPER="/usr/sbin/postsuper"
+  add_target_file "$POSTSUPER"
+
+  if [ ! -f "$POSTSUPER" ]; then
+    # 바이너리가 없으면 점검 대상에서 제외(설치 흔적/경로 차이 가능)
+    append_detail "[postfix] postsuper command=FOUND, binary=NOT_FOUND ($POSTSUPER)"
+  else
+    PERMS="$(stat -c '%a' "$POSTSUPER" 2>/dev/null)"
+    if ! echo "$PERMS" | grep -Eq '^[0-7]{3,4}$'; then
+      VULNERABLE=1
+      append_detail "[postfix] binary=FOUND, perm=UNKNOWN ($PERMS) -> manual check recommended"
+    else
+      # o+x 여부만 보되(요구사항), 4자리(특수권한)도 허용
+      PERM_DEC=$((8#$PERMS))
+      if [ $((PERM_DEC & 001)) -ne 0 ]; then
+        VULNERABLE=1
+        append_detail "[postfix] binary=FOUND, perm=$PERMS (others_exec=YES) -> vulnerable"
+      else
+        append_detail "[postfix] binary=FOUND, perm=$PERMS (others_exec=NO) -> safe"
+      fi
     fi
+  fi
 fi
 
-# [Exim]
-# 가이드: ls -l /usr/sbin/exiqgrep (others 실행 권한 확인)
-# 실제로는 exim 관련 명령어
+# -----------------------------
+# 3) Exim: /usr/sbin/exiqgrep 의 others 실행권한(o+x) 여부 확인
+# -----------------------------
 EXIQGREP="/usr/sbin/exiqgrep"
 if [ -f "$EXIQGREP" ]; then
-    MAIL_BINARY="exim"
-    PERMS=$(stat -c '%a' "$EXIQGREP" 2>/dev/null)
-    if [ $((PERMS % 2)) -ne 0 ]; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $EXIQGREP에 일반 사용자 실행 권한이 있습니다($PERMS)."
+  FOUND_ANY=1
+  add_target_file "$EXIQGREP"
+
+  PERMS="$(stat -c '%a' "$EXIQGREP" 2>/dev/null)"
+  if ! echo "$PERMS" | grep -Eq '^[0-7]{3,4}$'; then
+    VULNERABLE=1
+    append_detail "[exim] exiqgrep=FOUND, perm=UNKNOWN ($PERMS) -> manual check recommended"
+  else
+    PERM_DEC=$((8#$PERMS))
+    if [ $((PERM_DEC & 001)) -ne 0 ]; then
+      VULNERABLE=1
+      append_detail "[exim] exiqgrep=FOUND, perm=$PERMS (others_exec=YES) -> vulnerable"
+    else
+      append_detail "[exim] exiqgrep=FOUND, perm=$PERMS (others_exec=NO) -> safe"
     fi
-fi
-
-if [ -z "$MAIL_SERVICE" ] && [ -z "$MAIL_BINARY" ]; then
-    STATUS="PASS"
-    EVIDENCE="메일 서비스가 설치되어 있지 않아 점검 대상이 없습니다."
-elif [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="일반 사용자가 메일 서비스를 실행할 수 있어, 비인가 메일 발송이 발생할 수 있는 위험이 있습니다. $EVIDENCE"
+  fi
 else
-    STATUS="PASS"
-    EVIDENCE="일반 사용자의 메일 서비스 실행이 방지되어 있습니다."
+  # exiqgrep이 없으면 exim 관련 점검 대상이 없다고만 남김(설치 여부와 별개로 경로 차이 가능)
+  append_detail "[exim] exiqgrep=NOT_FOUND ($EXIQGREP)"
 fi
 
+# -----------------------------
+# 4) 최종 판정/문구(U-15~U-16 톤)
+# -----------------------------
+if [ $FOUND_ANY -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="메일 서비스(sendmail/postfix/exim)가 설치되어 있지 않거나 점검 대상 파일이 없어 점검 대상이 없습니다."
+  DETAIL_CONTENT="none"
+else
+  if [ $VULNERABLE -eq 1 ]; then
+    STATUS="FAIL"
+    REASON_LINE="일반 사용자가 메일 서비스 관련 기능을 실행할 수 있거나, 실행 제한 설정(restrictqrun/others 실행권한)이 기준에 부합하지 않아 취약합니다. 비인가 메일 발송 또는 큐 제어가 발생할 수 있으므로 설정을 보완해야 합니다."
+  else
+    STATUS="PASS"
+    REASON_LINE="일반 사용자의 메일 서비스 실행이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  fi
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 메일 서비스 사용 시 q 옵션 제한이 적용되므로 관련 운영 작업은 관리자 권한 및 승인된 운영 절차에 따라 수행해야 합니다."
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+fi
 
-# 3. 마스터 템플릿 표준 출력
+# target_file 기본값 보정(비어있으면 대표 경로 표기)
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/mail/sendmail.cf, /usr/sbin/postsuper, /usr/sbin/exiqgrep"
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "sendmail 실행파일에서 SUID 비트를 chmod u-s /usr/sbin/sendmail을 통해 제거해야 합니다: ",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -19,107 +19,181 @@
 
 # [진단] U-53 FTP 서비스 정보 노출 제한
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-53"
-CATEGORY="서비스 관리"
-TITLE="FTP 서비스 정보 노출 제한"
-IMPORTANCE="하"
-TARGET_FILE="/etc/vsftpd.conf"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+CHECK_COMMAND='command -v vsftpd; command -v proftpd; systemctl is-active vsftpd proftpd; grep -nE "^(ftpd_banner|banner_file)" /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf 2>/dev/null; grep -nE "^[[:space:]]*ServerIdent" /etc/proftpd/proftpd.conf /etc/proftpd.conf 2>/dev/null'
 
 VULNERABLE=0
-FTP_SERVICE=""
+FOUND_ANY=0
+DETAIL_LINES=""
 
-# [vsFTP]
-if command -v vsftpd &>/dev/null; then
-    FTP_SERVICE="vsftpd"
-    CONF_FILES=("/etc/vsftpd.conf" "/etc/vsftpd/vsftpd.conf")
-    FOUND=0
-    for conf in "${CONF_FILES[@]}"; do
-        if [ -f "$conf" ]; then
-            FOUND=1
-            TARGET_FILE="$conf"
-            FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-            
-            # ftpd_banner 확인
-            if grep -v "^#" "$conf" | grep -q "ftpd_banner"; then
-                SETTING=$(grep -v "^#" "$conf" | grep "ftpd_banner")
-                EVIDENCE="$EVIDENCE vsftpd 배너가 설정되어 있습니다: $SETTING."
-            else
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE vsftpd 배너 설정(ftpd_banner)이 없습니다."
-            fi
-        fi
-    done
-    if [ $FOUND -eq 0 ]; then
-        # 서비스는 있는데 설정파일 못찾음
-        # 가이드: systemctl list-units --type=service | grep vsftpd
-        if systemctl list-units --type=service 2>/dev/null | grep -q vsftpd; then
-             VULNERABLE=1
-             EVIDENCE="$EVIDENCE vsftpd가 실행 중이나 설정 파일을 확인할 수 없습니다."
-        fi
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
+}
+
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
+}
+
+# -----------------------------
+# 1) vsftpd 점검: ftpd_banner 또는 banner_file 설정 여부 확인
+# -----------------------------
+if command -v vsftpd >/dev/null 2>&1; then
+  FOUND_ANY=1
+  VS_CONF_CAND=("/etc/vsftpd.conf" "/etc/vsftpd/vsftpd.conf")
+  VS_FOUND_CONF="N"
+  VS_BANNER_OK="N"
+
+  for conf in "${VS_CONF_CAND[@]}"; do
+    if [ -f "$conf" ]; then
+      VS_FOUND_CONF="Y"
+      add_target_file "$conf"
+
+      # 주석 제외 후 ftpd_banner / banner_file 확인
+      FT_LINE="$(grep -nE '^[[:space:]]*ftpd_banner[[:space:]]*=' "$conf" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
+      BF_LINE="$(grep -nE '^[[:space:]]*banner_file[[:space:]]*=' "$conf" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
+
+      if [ -n "$FT_LINE" ] || [ -n "$BF_LINE" ]; then
+        VS_BANNER_OK="Y"
+        [ -n "$FT_LINE" ] && append_detail "[vsftpd] $conf ftpd_banner=SET | $FT_LINE"
+        [ -n "$BF_LINE" ] && append_detail "[vsftpd] $conf banner_file=SET | $BF_LINE"
+      else
+        append_detail "[vsftpd] $conf ftpd_banner/banner_file=NOT_SET"
+      fi
     fi
+  done
+
+  if [ "$VS_FOUND_CONF" = "N" ]; then
+    # 바이너리는 있는데 설정 파일을 못 찾으면 확인 불가 -> 취약 처리(운영 정책상)
+    VULNERABLE=1
+    append_detail "[vsftpd] command=FOUND but config_file=NOT_FOUND -> banner exposure control cannot be verified"
+  else
+    if [ "$VS_BANNER_OK" = "N" ]; then
+      VULNERABLE=1
+      append_detail "[vsftpd] banner_setting=INSUFFICIENT (need ftpd_banner or banner_file)"
+    else
+      append_detail "[vsftpd] banner_setting=OK"
+    fi
+  fi
+
+  # 서비스 실행 여부(참고용)
+  if systemctl is-active --quiet vsftpd 2>/dev/null; then
+    append_detail "[vsftpd] service_active=Y"
+  else
+    append_detail "[vsftpd] service_active=N"
+  fi
 fi
 
-# [ProFTP]
-if command -v proftpd &>/dev/null; then
-    FTP_SERVICE="proftpd"
-    CONF_FILES=("/etc/proftpd/proftpd.conf" "/etc/proftpd.conf")
-    for conf in "${CONF_FILES[@]}"; do
-        if [ -f "$conf" ]; then
-            TARGET_FILE="$conf"
-            # ServerIdent 확인
-            if grep -v "^#" "$conf" | grep -q "ServerIdent"; then
-                SETTING=$(grep -v "^#" "$conf" | grep "ServerIdent")
-                # ServerIdent off 또는 on "문자열" 확인
-                if echo "$SETTING" | grep -qiE "off|on"; then
-                     EVIDENCE="$EVIDENCE ProFTPd ServerIdent가 설정되어 있습니다: $SETTING."
-                else
-                     # 문법적으로 이상할 수 있으나 설정은 있는 것으로 간주
-                     EVIDENCE="$EVIDENCE ProFTPd ServerIdent 설정이 존재합니다: $SETTING."
-                fi
-            else
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE ProFTPd ServerIdent 설정이 없어 기본 배너가 노출될 수 있습니다."
-            fi
-        fi
-    done
+# -----------------------------
+# 2) ProFTPD 점검: ServerIdent 설정 여부 확인(권고: off 또는 최소 정보)
+# -----------------------------
+if command -v proftpd >/dev/null 2>&1; then
+  FOUND_ANY=1
+  PF_CONF_CAND=("/etc/proftpd/proftpd.conf" "/etc/proftpd.conf")
+  PF_FOUND_CONF="N"
+  PF_IDENT_OK="N"
+
+  for conf in "${PF_CONF_CAND[@]}"; do
+    if [ -f "$conf" ]; then
+      PF_FOUND_CONF="Y"
+      add_target_file "$conf"
+
+      # 주석 제외 ServerIdent 라인
+      SI_LINE="$(grep -nE '^[[:space:]]*ServerIdent\b' "$conf" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n1)"
+      if [ -n "$SI_LINE" ]; then
+        PF_IDENT_OK="Y"
+        append_detail "[proftpd] $conf ServerIdent=SET | $SI_LINE"
+
+        # off면 강한 양호 신호(정보 노출 억제)
+        echo "$SI_LINE" | grep -qiE '\bServerIdent[[:space:]]+off\b' && append_detail "[proftpd] ServerIdent=OFF (recommended)"
+      else
+        append_detail "[proftpd] $conf ServerIdent=NOT_SET"
+      fi
+    fi
+  done
+
+  if [ "$PF_FOUND_CONF" = "N" ]; then
+    VULNERABLE=1
+    append_detail "[proftpd] command=FOUND but config_file=NOT_FOUND -> banner exposure control cannot be verified"
+  else
+    if [ "$PF_IDENT_OK" = "N" ]; then
+      VULNERABLE=1
+      append_detail "[proftpd] ServerIdent=INSUFFICIENT (not set)"
+    else
+      append_detail "[proftpd] ServerIdent=OK"
+    fi
+  fi
+
+  if systemctl is-active --quiet proftpd 2>/dev/null; then
+    append_detail "[proftpd] service_active=Y"
+  else
+    append_detail "[proftpd] service_active=N"
+  fi
 fi
 
-if [ -z "$FTP_SERVICE" ]; then
-    STATUS="PASS"
-    EVIDENCE="FTP 서비스가 설치되어 있지 않아 점검 대상이 없습니다."
-elif [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="FTP 배너 설정이 미흡하여, 서비스 버전 등 시스템 정보가 노출될 수 있는 위험이 있습니다. $EVIDENCE"
+# -----------------------------
+# 3) 최종 판정/문구(U-15~U-16 톤)
+# -----------------------------
+if [ $FOUND_ANY -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="FTP 서비스(vsftpd/proftpd)가 설치되어 있지 않아 점검 대상이 없습니다."
+  DETAIL_CONTENT="none"
 else
+  if [ $VULNERABLE -eq 1 ]; then
+    STATUS="FAIL"
+    REASON_LINE="FTP 배너(식별 정보) 설정이 미흡하여 서비스 정보(제품/버전 등)가 노출될 수 있어 취약합니다. vsftpd는 ftpd_banner 또는 banner_file을 설정하고, ProFTPD는 ServerIdent를 off 또는 최소 정보로 설정하는 등 정보 노출을 제한해야 합니다."
+  else
     STATUS="PASS"
-    EVIDENCE="FTP 배너가 적절히 설정되어 있습니다."
+    REASON_LINE="FTP 배너(식별 정보)가 제한되도록 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf, /etc/proftpd/proftpd.conf, /etc/proftpd.conf"
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 접속 배너에 서비스 이름/버전 정보가 노출되던 기존 설정이 변경되므로 배너 정책을 사전에 정한 뒤 FTP 설정 파일을 통해 배너를 일관되게 적용해야 합니다."
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "vsftpd.conf에 ftpd_banner=Authorized users only 설정, 또는 banner_file 지정으로 정보 노출을 방지해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

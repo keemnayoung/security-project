@@ -19,87 +19,88 @@
 
 # [진단] U-44 tftp, talk 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-44"
-CATEGORY="서비스 관리"
-TITLE="tftp, talk 서비스 비활성화"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+TARGET_FILE="N/A"
+CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | grep -nEi "^[[:space:]]*(tftp|talk|ntalk)([[:space:]]|$)" || true ); ( [ -d /etc/xinetd.d ] && for f in /etc/xinetd.d/tftp /etc/xinetd.d/talk /etc/xinetd.d/ntalk; do [ -f "$f" ] && grep -nEv "^[[:space:]]*#" "$f" | grep -nqiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" && echo "$f:disable=no"; done || true ); ( systemctl list-units --type=service --type=socket 2>/dev/null | grep -Ei "(tftp|talk|ntalk)" | awk "{print \$1}" | head -n 20 || true )'
+
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+DETAILS=()
+
+add_detail() {
+  local msg="$1"
+  [ -z "$msg" ] && return 0
+  DETAILS+=("$msg")
+}
 
 VULNERABLE=0
-SERVICES=("tftp" "talk" "ntalk")
 
-# [inetd] /etc/inetd.conf 파일 내 tftp, talk, ntalk 서비스 활성화 여부 확인
-# 가이드: cat /etc/inetd.conf
+# 1) inetd 점검
 if [ -f "/etc/inetd.conf" ]; then
-    TARGET_FILE="/etc/inetd.conf"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    for svc in "${SERVICES[@]}"; do
-        if grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*$svc"; then
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE /etc/inetd.conf에 $svc 서비스가 활성화되어 있습니다."
-        fi
-    done
-fi
-
-# [xinetd] /etc/xinetd.d/ 디렉터리 내 존재하는 tftp, talk, ntalk 파일에 대해 서비스 활성화 여부 확인
-# 가이드: disable = no 확인
-if [ -d "/etc/xinetd.d" ]; then
-    for svc in "${SERVICES[@]}"; do
-        if [ -f "/etc/xinetd.d/$svc" ]; then
-            if grep -qiE "disable\s*=\s*no" "/etc/xinetd.d/$svc" 2>/dev/null; then
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE /etc/xinetd.d/$svc에서 disable=no로 설정되어 있습니다."
-            fi
-        fi
-    done
-fi
-
-# [systemd] 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep -E "tftp|talk|ntalk"
-# 가이드에 따라 서비스명 정규식으로 확인
-SYSTEMD_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "tftp|talk|ntalk" | awk '{print $1}' | tr '\n' ' ')
-if [ -n "$SYSTEMD_SERVICES" ]; then
+  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nEi "^[[:space:]]*(tftp|talk|ntalk)([[:space:]]|$)" >/dev/null 2>&1; then
     VULNERABLE=1
-    EVIDENCE="$EVIDENCE systemd 서비스가 활성화되어 있습니다."
+    add_detail "/etc/inetd.conf에서 tftp/talk/ntalk 서비스 라인이 주석 처리되지 않고 존재합니다."
+  fi
 fi
 
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="tftp, talk 서비스가 활성화되어 있어, 불필요한 서비스를 통한 침해가 발생할 수 있는 위험이 있습니다. $EVIDENCE"
+# 2) xinetd 점검 (disable=no 이면 취약)
+if [ -d "/etc/xinetd.d" ]; then
+  for svc in tftp talk ntalk; do
+    f="/etc/xinetd.d/$svc"
+    if [ -f "$f" ]; then
+      if grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+        VULNERABLE=1
+        add_detail "$f 에서 disable=no 로 설정되어 있습니다."
+      fi
+    fi
+  done
+fi
+
+# 3) systemd 점검 (서비스/소켓)
+SYSTEMD_UNITS=$(systemctl list-units --type=service --type=socket 2>/dev/null | grep -Ei "(tftp|talk|ntalk)" | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
+if [ -n "$SYSTEMD_UNITS" ]; then
+  # 존재 자체가 항상 "활성"은 아니지만, list-units에 잡히면 대개 로드/활성 상태이므로 점검 근거로 사용
+  VULNERABLE=1
+  add_detail "systemd에서 관련 유닛이 활성/로드 상태로 확인됩니다: ${SYSTEMD_UNITS}"
+fi
+
+if [ "$VULNERABLE" -eq 1 ]; then
+  STATUS="FAIL"
+  REASON_LINE="tftp/talk/ntalk 서비스가 활성화되어 있으면 불필요한 서비스 노출로 인해 침해 가능성이 증가하므로 취약합니다. 실제 사용 여부를 확인한 뒤 불필요하면 중지/비활성화가 필요합니다."
+  DETAIL_CONTENT=$(printf "%s\n" "${DETAILS[@]}")
 else
-    STATUS="PASS"
-    EVIDENCE="tftp, talk, ntalk 서비스가 비활성화되어 있습니다."
+  STATUS="PASS"
+  REASON_LINE="tftp/talk/ntalk 서비스가 활성화된 정황이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="no_tftp_talk_ntalk_active"
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 환경에 따라 tftp가 초기 데이터 호출 등 특정 절차에 사용되는 경우가 있을 수 있으므로 실제 사용 여부를 확인한 뒤 불필요한 경우에 한해 비활성화해야 합니다."
-
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "xinetd에서 tftp, talk 서비스를 disable=yes로 설정하거나 systemctl stop tftp.socket talk으로 비활성화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

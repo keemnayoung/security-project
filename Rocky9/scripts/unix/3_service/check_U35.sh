@@ -19,38 +19,47 @@
 
 # [진단] U-35 공유 서비스에 대한 익명 접근 제한 설정
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-35"
-CATEGORY="서비스 관리"
-TITLE="공유 서비스에 대한 익명 접근 제한 설정"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
+TARGET_FILE="/etc/passwd /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf /etc/proftpd.conf /etc/proftpd/proftpd.conf /etc/exports /etc/samba/smb.conf"
+CHECK_COMMAND='( [ -f /etc/passwd ] && (grep -nE "^ftp:" /etc/passwd; grep -nE "^anonymous:" /etc/passwd) || echo "passwd_not_found" ); ( for f in /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf; do [ -f "$f" ] && grep -nEv "^[[:space:]]*#" "$f" | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES([[:space:]]|$)"; done ) ; ( for f in /etc/proftpd.conf /etc/proftpd/proftpd.conf; do [ -f "$f" ] && sed -n "/<Anonymous/,/<\\/Anonymous>/p" "$f" 2>/dev/null | grep -nEv "^[[:space:]]*#"; done ); ( [ -f /etc/exports ] && grep -nEv "^[[:space:]]*#" /etc/exports | grep -nE "(anonuid|anongid)" || echo "exports_not_found_or_no_anon" ); ( [ -f /etc/samba/smb.conf ] && grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf | grep -niE "guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes([[:space:]]|$)" || echo "smb_conf_not_found_or_no_guest_ok_yes" )'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
 SERVICE_EXISTS=0
+VULNERABLE=0
 
-# [기본 FTP] FTP 계정 확인
-# 가이드: # cat /etc/passwd | grep ftp
-#         # cat /etc/passwd | grep anonymous
-if grep -q "^ftp:" /etc/passwd 2>/dev/null; then
-    VULNERABLE=1
-    SERVICE_EXISTS=1
-    EVIDENCE="$EVIDENCE /etc/passwd에 ftp 계정이 존재합니다."
-fi
-if grep -q "^anonymous:" /etc/passwd 2>/dev/null; then
-    VULNERABLE=1
-    SERVICE_EXISTS=1
-    EVIDENCE="$EVIDENCE /etc/passwd에 anonymous 계정이 존재합니다."
+DETAIL_LINES=""
+
+# /etc/passwd 계정 기반(기본 FTP/anonymous 계정 존재 여부)
+if [ -f /etc/passwd ]; then
+    FTP_ACC=$(grep -nE "^ftp:" /etc/passwd 2>/dev/null | head -n 1)
+    ANON_ACC=$(grep -nE "^anonymous:" /etc/passwd 2>/dev/null | head -n 1)
+
+    if [ -n "$FTP_ACC" ]; then
+        SERVICE_EXISTS=1
+        VULNERABLE=1
+        DETAIL_LINES+="/etc/passwd: ftp 계정이 존재합니다. (${FTP_ACC})"$'\n'
+    else
+        DETAIL_LINES+="/etc/passwd: ftp 계정 미존재."$'\n'
+    fi
+
+    if [ -n "$ANON_ACC" ]; then
+        SERVICE_EXISTS=1
+        VULNERABLE=1
+        DETAIL_LINES+="/etc/passwd: anonymous 계정이 존재합니다. (${ANON_ACC})"$'\n'
+    else
+        DETAIL_LINES+="/etc/passwd: anonymous 계정 미존재."$'\n'
+    fi
+else
+    DETAIL_LINES+="/etc/passwd: 파일이 존재하지 않습니다."$'\n'
 fi
 
-# [vsFTP] Anonymous FTP 활성화 여부 확인
-# 가이드: # cat /etc/vsftpd.conf | grep anonymous_enable
-#         # cat /etc/vsftpd/vsftpd.conf | grep anonymous_enable
+# vsftpd 설정(anonymous_enable=YES 여부)
 VSFTPD_CONF=""
 if [ -f "/etc/vsftpd.conf" ]; then
     VSFTPD_CONF="/etc/vsftpd.conf"
@@ -60,18 +69,22 @@ fi
 
 if [ -n "$VSFTPD_CONF" ]; then
     SERVICE_EXISTS=1
-    TARGET_FILE="$VSFTPD_CONF"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    # anonymous_enable=YES 인 경우 취약
-    if grep -v "^#" "$VSFTPD_CONF" 2>/dev/null | grep -qiE "anonymous_enable\s*=\s*YES"; then
+    VS_ANON_LINE=$(grep -nEv "^[[:space:]]*#" "$VSFTPD_CONF" 2>/dev/null | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=" | tail -n 1)
+    if echo "$VS_ANON_LINE" | grep -qiE "=[[:space:]]*YES([[:space:]]|$)"; then
         VULNERABLE=1
-        EVIDENCE="$EVIDENCE $VSFTPD_CONF에서 anonymous_enable=YES로 설정되어 있습니다."
+        DETAIL_LINES+="${VSFTPD_CONF}: anonymous_enable=YES 로 설정되어 익명 FTP가 허용됩니다. (${VS_ANON_LINE})"$'\n'
+    else
+        if [ -n "$VS_ANON_LINE" ]; then
+            DETAIL_LINES+="${VSFTPD_CONF}: ${VS_ANON_LINE} (anonymous_enable=YES 미확인)."$'\n'
+        else
+            DETAIL_LINES+="${VSFTPD_CONF}: anonymous_enable 설정 라인 미확인(기본값/미설정 가능)."$'\n'
+        fi
     fi
+else
+    DETAIL_LINES+="vsftpd: 설정 파일 미존재(/etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf)."$'\n'
 fi
 
-# [ProFTP] Anonymous FTP 활성화 여부 확인
-# 가이드: # sed -n '/<Anonymous ~ftp>/,/<\/Anonymous>/p' /etc/proftpd.conf
-#         # sed -n '/<Anonymous ~ftp>/,/<\/Anonymous>/p' /etc/proftpd/proftpd.conf
+# proftpd 설정(Anonymous 블록 활성 여부)
 PROFTPD_CONF=""
 if [ -f "/etc/proftpd.conf" ]; then
     PROFTPD_CONF="/etc/proftpd.conf"
@@ -81,68 +94,91 @@ fi
 
 if [ -n "$PROFTPD_CONF" ]; then
     SERVICE_EXISTS=1
-    TARGET_FILE="$PROFTPD_CONF"
-    # Anonymous 블록이 주석 없이 존재하면 취약 (User, UserAlias 옵션 포함)
-    ANON_BLOCK=$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -v "^[[:space:]]*#")
+    # 주석 제외 후 Anonymous 블록 내용이 있으면 활성으로 판단
+    ANON_BLOCK=$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -Ev '^[[:space:]]*#' | sed '/^[[:space:]]*$/d')
     if [ -n "$ANON_BLOCK" ]; then
         VULNERABLE=1
-        EVIDENCE="$EVIDENCE $PROFTPD_CONF에 Anonymous 블록이 활성화되어 있습니다."
+        # 너무 길어지는 것 방지: 첫 10줄만 표시
+        ANON_SAMPLE=$(printf "%s\n" "$ANON_BLOCK" | head -n 10)
+        DETAIL_LINES+="${PROFTPD_CONF}: <Anonymous> 블록이 활성화되어 익명 접근이 허용될 수 있습니다."$'\n'
+        DETAIL_LINES+="${ANON_SAMPLE}"$'\n'
+    else
+        DETAIL_LINES+="${PROFTPD_CONF}: <Anonymous> 블록 활성 내용 미확인(없음 또는 주석 처리됨)."$'\n'
     fi
+else
+    DETAIL_LINES+="proftpd: 설정 파일 미존재(/etc/proftpd.conf, /etc/proftpd/proftpd.conf)."$'\n'
 fi
 
-# [NFS] 익명 접근 활성화 여부 확인
-# 가이드: # cat /etc/exports | grep -E "anonuid|anongid"
-# ※ anon 옵션이 설정된 경우 익명 접근이 활성화되어 있는 상태
+# NFS exports(anonuid/anongid 여부)
 if [ -f "/etc/exports" ]; then
     SERVICE_EXISTS=1
-    if grep -v "^#" /etc/exports 2>/dev/null | grep -qE "(anonuid|anongid)"; then
+    NFS_ANON=$(grep -nEv "^[[:space:]]*#" /etc/exports 2>/dev/null | grep -nE "(anonuid|anongid)" | head -n 5)
+    if [ -n "$NFS_ANON" ]; then
         VULNERABLE=1
-        EVIDENCE="$EVIDENCE /etc/exports에 anonuid/anongid가 설정되어 있습니다."
+        DETAIL_LINES+="/etc/exports: anonuid/anongid 설정이 있어 익명 매핑 기반 접근이 허용됩니다."$'\n'
+        DETAIL_LINES+="${NFS_ANON}"$'\n'
+    else
+        DETAIL_LINES+="/etc/exports: anonuid/anongid 설정 미확인."$'\n'
     fi
+else
+    DETAIL_LINES+="NFS: /etc/exports 파일이 존재하지 않습니다."$'\n'
 fi
 
-# [Samba] 익명 접근 허용 여부 확인
-# 가이드: # cat /etc/samba/smb.conf | grep "guest ok"
+# Samba guest ok = yes 여부
 if [ -f "/etc/samba/smb.conf" ]; then
     SERVICE_EXISTS=1
-    # guest ok = yes 인 경우 취약
-    if grep -v "^#" /etc/samba/smb.conf 2>/dev/null | grep -qiE "guest\s*ok\s*=\s*yes"; then
+    SMB_GUEST=$(grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -niE "guest[[:space:]]*ok[[:space:]]*=" | tail -n 1)
+    if echo "$SMB_GUEST" | grep -qiE "=[[:space:]]*yes([[:space:]]|$)"; then
         VULNERABLE=1
-        EVIDENCE="$EVIDENCE /etc/samba/smb.conf에서 guest ok = yes로 설정되어 있습니다."
+        DETAIL_LINES+="/etc/samba/smb.conf: guest ok = yes 로 설정되어 익명(게스트) 접근이 허용됩니다. (${SMB_GUEST})"$'\n'
+    else
+        if [ -n "$SMB_GUEST" ]; then
+            DETAIL_LINES+="/etc/samba/smb.conf: ${SMB_GUEST} (guest ok=yes 미확인)."$'\n'
+        else
+            DETAIL_LINES+="/etc/samba/smb.conf: guest ok 설정 라인 미확인."$'\n'
+        fi
     fi
+else
+    DETAIL_LINES+="Samba: /etc/samba/smb.conf 파일이 존재하지 않습니다."$'\n'
 fi
 
-# 결과 판단
-if [ $SERVICE_EXISTS -eq 0 ]; then
+# 최종 판정
+if [ "$SERVICE_EXISTS" -eq 0 ]; then
     STATUS="PASS"
-    EVIDENCE="공유 서비스(FTP/NFS/Samba)가 설치되어 있지 않아 점검 대상이 없습니다."
-elif [ $VULNERABLE -eq 1 ]; then
+    REASON_LINE="FTP/NFS/Samba 공유 서비스 관련 설정 파일이 확인되지 않아 익명 접근이 구성되어 있을 가능성이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
+elif [ "$VULNERABLE" -eq 1 ]; then
     STATUS="FAIL"
-    EVIDENCE="공유 서비스에서 익명 접근이 허용되어 있어, 비인가 사용자가 데이터에 접근할 수 있는 위험이 있습니다. $EVIDENCE"
+    REASON_LINE="공유 서비스에서 익명 접근이 허용되는 설정(ftp/anonymous 계정 존재, vsftpd anonymous_enable=YES, proftpd <Anonymous> 블록, NFS anonuid/anongid, Samba guest ok=yes 등)이 확인되어 비인가 사용자가 데이터에 접근할 위험이 있으므로 취약합니다. 익명 접근을 차단하도록 설정을 변경해야 합니다."
 else
     STATUS="PASS"
-    EVIDENCE="공유 서비스에 대해 익명 접근이 제한되어 있습니다."
+    REASON_LINE="공유 서비스 설정에서 익명 접근 허용 설정이 확인되지 않아 비인가 사용자가 익명으로 접근할 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
 fi
 
+# detail(줄바꿈 유지)
+DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
-IMPACT_LEVEL=""
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 익명 FTP·NFS anon·Samba guest 등 익명 접근 방식에 의존하던 공유 방식이 있었다면 익명 접속이 차단되므로 인증된 계정 기반 접근 및 권한 정책으로 전환하여 운영해야 합니다."
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "vsFTPd: anonymous_enable=NO 설정, Samba: guest ok=no 설정, NFS: /etc/exports에서 insecure 옵션을 제거한 후 서비스를 재시작해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

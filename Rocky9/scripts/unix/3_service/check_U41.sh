@@ -1,4 +1,4 @@
-  #!/bin/bash
+#!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
@@ -19,60 +19,52 @@
 
 # [진단] U-41 불필요한 automountd 제거
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-41"
-CATEGORY="서비스 관리"
-TITLE="불필요한 automountd 제거"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
-DETAIL=""
+TARGET_FILE="N/A"
+CHECK_COMMAND='systemctl list-units --type=service 2>/dev/null | grep -E "(automount|autofs)" || echo "no_autofs_related_services"'
 
-# [Step 1] automount 또는 autofs 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep -E "automount|autofs"
-AUTOFS_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "automount|autofs" | awk '{print $1}' | tr '\n' ' ')
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+# automount/autofs 서비스 활성화 여부 점검
+AUTOFS_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "automount|autofs" | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
+
 if [ -n "$AUTOFS_SERVICES" ]; then
-    VULNERABLE=1
-    DETAIL="활성 서비스는 ${AUTOFS_SERVICES}입니다."
-fi
-
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="불필요한 automountd(autofs) 서비스가 활성화되어 있어, 자동 마운트 기능을 통한 비인가 접근이 발생할 수 있는 위험이 있습니다. ${DETAIL}"
+  STATUS="FAIL"
+  REASON_LINE="automount/autofs 서비스가 활성화되어 있어 자동 마운트 기능을 통한 비인가 접근 경로가 생길 수 있으므로 취약합니다. 실제 사용 여부(NFS/Samba/이동식 매체 자동 마운트 등)를 확인한 뒤 불필요하면 비활성화해야 합니다."
+  DETAIL_CONTENT="active_services=${AUTOFS_SERVICES}"
 else
-    STATUS="PASS"
-    EVIDENCE="automount/autofs 서비스가 비활성화되어 있습니다."
+  STATUS="PASS"
+  REASON_LINE="automount/autofs 관련 서비스가 활성화되어 있지 않아 자동 마운트 기반 접근 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="no_active_services"
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-IMPACT_LEVEL="HIGH"
-ACTION_IMPACT="automountd 제거 조치 적용 시 NFS 및 삼바(Samba) 서비스에서 automountd를 사용 중인지 여부에 따라 서비스 접근 및 자동 마운트 동작에 문제가 발생할 수 있습니다. 특히 적용 이후에는 CD-ROM 자동 마운트가 이뤄지지 않을 수 있으므로(/etc/auto., /etc/auto_ 설정 확인 필요) 운영 절차에 미칠 수 있는 영향을 충분히 고려하여 적용해야 합니다."
-
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "automountd 서비스가 불필요한 경우 systemctl stop autofs && systemctl disable autofs로 비활성화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

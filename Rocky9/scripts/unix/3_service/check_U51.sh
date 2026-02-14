@@ -15,160 +15,189 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수
 ID="U-51"
-CATEGORY="서비스 관리"
-TITLE="DNS 서비스의 취약한 동적 업데이트 설정 금지"
-IMPORTANCE="중"
-TARGET_FILE="N/A"
-
 STATUS="PASS"
-EVIDENCE=""
-GUIDE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE=""
+
+CHECK_COMMAND='systemctl is-active named named-chroot; pgrep -x named; grep -nE "^[[:space:]]*include[[:space:]]+\"" /etc/named.conf /etc/bind/named.conf /etc/bind/named.conf.options 2>/dev/null; grep -nE "allow-update[[:space:]]*\\{" /etc/named.conf /etc/bind/named.conf /etc/bind/named.conf.options 2>/dev/null'
 
 VULNERABLE=0
+FOUND_ANY=0
+DETAIL_LINES=""
 
-append_evidence() {
-    local msg="$1"
-    [ -z "$msg" ] && return 0
-    if [ -n "$EVIDENCE" ]; then
-        EVIDENCE="$EVIDENCE; $msg"
-    else
-        EVIDENCE="$msg"
-    fi
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
 }
 
-set_target_file_once() {
-    local f="$1"
-    if [ -f "$f" ] && [ "$TARGET_FILE" = "N/A" ]; then
-        TARGET_FILE="$f"
-        FILE_HASH=$(sha256sum "$f" 2>/dev/null | awk '{print $1}')
-    fi
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
 }
 
-collect_named_conf_files() {
-    local -a seeds=("$@")
-    local -a queue=()
-    local -A seen=()
-    local -a out=()
-    local f inc inc_path dir
-
-    for f in "${seeds[@]}"; do
-        [ -f "$f" ] || continue
-        queue+=("$f")
-    done
-
-    while [ "${#queue[@]}" -gt 0 ]; do
-        f="${queue[0]}"
-        queue=("${queue[@]:1}")
-
-        [ -f "$f" ] || continue
-        if [ -n "${seen[$f]:-}" ]; then
-            continue
-        fi
-        seen["$f"]=1
-        out+=("$f")
-
-        dir="$(dirname "$f")"
-        while IFS= read -r inc; do
-            [ -z "$inc" ] && continue
-            if [[ "$inc" = /* ]]; then
-                inc_path="$inc"
-            else
-                inc_path="${dir}/${inc}"
-            fi
-            [ -f "$inc_path" ] && queue+=("$inc_path")
-        done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
-    done
-
-    printf '%s\n' "${out[@]}"
-}
-
+# -----------------------------
+# named 실행 여부 확인
+# -----------------------------
 is_named_running() {
-    systemctl list-units --type=service 2>/dev/null | grep -qE '\bnamed(\.service)?\b' && return 0
-    pgrep -x named >/dev/null 2>&1 && return 0
-    return 1
+  systemctl is-active --quiet named 2>/dev/null && return 0
+  systemctl is-active --quiet named-chroot 2>/dev/null && return 0
+  pgrep -x named >/dev/null 2>&1 && return 0
+  return 1
 }
 
+# include "..." 재귀 추적하여 설정 파일 목록 수집(중복 제거)
+collect_named_conf_files() {
+  local -a seeds=("$@")
+  local -a queue=()
+  local -a out=()
+  local -a seen_list=()
+  local f dir inc inc_path seen_file
+
+  for f in "${seeds[@]}"; do
+    [ -f "$f" ] && queue+=("$f")
+  done
+
+  while [ "${#queue[@]}" -gt 0 ]; do
+    f="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    [ -f "$f" ] || continue
+
+    # 중복 제거(배열로 단순 체크)
+    local already="N"
+    for seen_file in "${seen_list[@]}"; do
+      [ "$seen_file" = "$f" ] && already="Y" && break
+    done
+    [ "$already" = "Y" ] && continue
+
+    seen_list+=("$f")
+    out+=("$f")
+
+    dir="$(dirname "$f")"
+    while IFS= read -r inc; do
+      [ -z "$inc" ] && continue
+      if [[ "$inc" = /* ]]; then
+        inc_path="$inc"
+      else
+        inc_path="${dir}/${inc}"
+      fi
+      [ -f "$inc_path" ] && queue+=("$inc_path")
+    done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
+# allow-update 내용이 과도하게 열려있는지(대표 시그널)
 is_allow_update_wide_open() {
-    echo "$1" | grep -qE '(\bany\b|\*|0\.0\.0\.0(/0)?)'
+  # any, *, 0.0.0.0/0, 0.0.0.0 등 포함 시 wide open으로 판단
+  echo "$1" | grep -qE '(\bany\b|\*|0\.0\.0\.0(/0)?|\:\:/0)'
 }
 
-json_escape() {
-    echo "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
+# -----------------------------
+# 진단 시작
+# -----------------------------
 CONF_SEEDS=("/etc/named.conf" "/etc/bind/named.conf.options" "/etc/bind/named.conf")
 
 if ! is_named_running; then
-    STATUS="PASS"
-    EVIDENCE="DNS(named) 서비스가 비활성화되어 점검 대상이 없습니다."
-    GUIDE="DNS 미사용 환경은 named 서비스 비활성 상태를 유지해야 합니다."
+  STATUS="PASS"
+  REASON_LINE="DNS(named) 서비스가 비활성화되어 점검 대상이 없습니다."
+  DETAIL_CONTENT="none"
 else
-    mapfile -t CONF_FILES < <(collect_named_conf_files "${CONF_SEEDS[@]}")
-    if [ "${#CONF_FILES[@]}" -eq 0 ]; then
-        STATUS="FAIL"
-        VULNERABLE=1
-        EVIDENCE="DNS 설정 파일(/etc/named.conf 등)을 찾지 못했습니다."
-        GUIDE="named 설정 파일 위치를 확인한 뒤 allow-update 설정을 점검해야 합니다."
-    else
-        found_any_allow_update=0
-        wide_open_count=0
-        restricted_count=0
+  FOUND_ANY=1
 
-        for f in "${CONF_FILES[@]}"; do
-            set_target_file_once "$f"
-            # allow-update는 여러 개가 있을 수 있으므로 전부 확인한다(주석 제외).
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                found_any_allow_update=1
-                if is_allow_update_wide_open "$line"; then
-                    VULNERABLE=1
-                    wide_open_count=$((wide_open_count + 1))
-                    append_evidence "$f에서 allow-update 전체 허용 설정이 발견되었습니다."
-                else
-                    restricted_count=$((restricted_count + 1))
-                fi
-            done < <(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null | grep -E 'allow-update[[:space:]]*\{' || true)
-        done
+  mapfile -t CONF_FILES < <(collect_named_conf_files "${CONF_SEEDS[@]}")
 
-        if [ "$VULNERABLE" -eq 1 ]; then
-            STATUS="FAIL"
-            EVIDENCE="DNS 동적 업데이트 제한이 미흡합니다. $EVIDENCE"
-            GUIDE="동적 업데이트가 불필요하면 allow-update { none; }; 로 설정하고, 필요한 경우 허용 IP 또는 키만 지정해야 합니다. include 참조 파일도 함께 점검해야 합니다."
+  if [ "${#CONF_FILES[@]}" -eq 0 ]; then
+    STATUS="FAIL"
+    VULNERABLE=1
+    REASON_LINE="DNS 서비스가 실행 중이나 설정 파일(/etc/named.conf 등)을 찾지 못해 동적 업데이트(allow-update) 제한 여부를 확인할 수 없어 취약합니다. 설정 파일 위치를 확인하고 allow-update 정책을 점검해야 합니다."
+    DETAIL_CONTENT="conf_files=none"
+  else
+    append_detail "[info] named_running=Y"
+    append_detail "[info] conf_files=$(printf "%s " "${CONF_FILES[@]}" | sed 's/[[:space:]]$//')"
+
+    found_any_allow_update=0
+    wide_open_count=0
+    restricted_count=0
+
+    for f in "${CONF_FILES[@]}"; do
+      add_target_file "$f"
+
+      # allow-update는 여러 개가 있을 수 있으므로 전부 확인(주석 제외)
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        found_any_allow_update=1
+
+        if is_allow_update_wide_open "$line"; then
+          VULNERABLE=1
+          wide_open_count=$((wide_open_count + 1))
+          append_detail "[check] $f allow-update=WIDE_OPEN | $(echo "$line" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
         else
-            STATUS="PASS"
-            if [ "$found_any_allow_update" -eq 1 ]; then
-                EVIDENCE="DNS 동적 업데이트가 제한되어 있습니다."
-                GUIDE="동적 업데이트 필요 여부에 맞춰 allow-update를 none 또는 허용 IP/키로 제한 지정해야 합니다."
-            else
-                EVIDENCE="allow-update 설정이 없어 DNS 동적 업데이트가 차단되어 있습니다."
-                GUIDE="동적 업데이트가 필요하면 allow-update를 허용 IP/키로 제한 지정해야 합니다."
-            fi
+          restricted_count=$((restricted_count + 1))
+          append_detail "[check] $f allow-update=SET(restricted?) | $(echo "$line" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
         fi
+      done < <(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null | grep -E 'allow-update[[:space:]]*\{' || true)
+    done
+
+    if [ "$VULNERABLE" -eq 1 ]; then
+      STATUS="FAIL"
+      REASON_LINE="DNS 동적 업데이트(allow-update) 허용 대상이 과도하게 열려 있어 취약합니다. 비인가 사용자가 DNS 레코드를 변경할 수 있으므로 동적 업데이트가 불필요하면 allow-update를 none으로 차단하고, 필요한 경우에도 허용 IP 또는 키(TSIG)만으로 제한해야 합니다."
+    else
+      STATUS="PASS"
+      if [ "$found_any_allow_update" -eq 1 ]; then
+        REASON_LINE="DNS 동적 업데이트(allow-update)가 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
+      else
+        REASON_LINE="allow-update 설정이 없어 DNS 동적 업데이트가 차단되어 있어 이 항목에 대한 보안 위협이 없습니다."
+      fi
     fi
+
+    append_detail "[summary] allow_update_found=$found_any_allow_update restricted_count=$restricted_count wide_open_count=$wide_open_count"
+    DETAIL_CONTENT="$DETAIL_LINES"
+    [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+  fi
 fi
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="allow-update { none; }; 조치를 적용하면 DNS 동적 업데이트가 동작하지 않습니다. 동적 업데이트가 필요한 환경에서는 허용 대상을 제한 지정한 뒤 include 참조 파일을 함께 점검하고 named 재시작 절차를 반영해야 합니다."
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/named.conf, /etc/bind/named.conf.options, /etc/bind/named.conf (and included files)"
 
-EVIDENCE="$(json_escape "$EVIDENCE")"
-GUIDE="$(json_escape "$GUIDE")"
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

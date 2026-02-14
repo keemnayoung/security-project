@@ -19,158 +19,132 @@
 
 # [진단] U-37 crontab 설정파일 권한 설정 미흡
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-37"
-CATEGORY="서비스 관리"
-TITLE="crontab 설정파일 권한 설정 미흡"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
+TARGET_FILE="/usr/bin/crontab /etc/crontab /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /var/spool/cron /var/spool/cron/crontabs /usr/bin/at /var/spool/at /var/spool/cron/atjobs"
+CHECK_COMMAND='stat -c "%U %a %n" /usr/bin/crontab /usr/bin/at /etc/crontab 2>/dev/null; for d in /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /var/spool/cron /var/spool/cron/crontabs /var/spool/at /var/spool/cron/atjobs; do [ -e "$d" ] && find "$d" -maxdepth 1 -type f -print -exec stat -c "%U %a %n" {} \; 2>/dev/null; [ -d "$d" ] && stat -c "%U %a %n" "$d" 2>/dev/null; done'
 
-# 권한 비교 함수 (8진수 비교)
-check_perm_exceeds() {
-    local current=$1
-    local max=$2
-    [ "$current" -gt "$max" ] && return 0 || return 1
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+VULN_LIST=()
+
+# 권한 비교(정수 비교)
+perm_exceeds() {
+  local cur="$1"
+  local max="$2"
+  [ -n "$cur" ] && [ "$cur" -gt "$max" ]
 }
 
-# [Step 1] crontab 명령어 소유자 및 권한 확인
-# 가이드: ls -l /usr/bin/crontab (권한 750 이하, 소유자 root)
+add_vuln() {
+  local path="$1"
+  local owner="$2"
+  local perm="$3"
+  local why="$4"
+  VULN_LIST+=("${path} (owner=${owner}, perm=${perm}) - ${why}")
+}
+
+# 1) /usr/bin/crontab : owner root, perm <= 750
 CRONTAB_CMD="/usr/bin/crontab"
 if [ -f "$CRONTAB_CMD" ]; then
-    OWNER=$(stat -c '%U' "$CRONTAB_CMD" 2>/dev/null)
-    PERMS=$(stat -c '%a' "$CRONTAB_CMD" 2>/dev/null)
-    if [ "$OWNER" != "root" ]; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $CRONTAB_CMD의 소유자가 root가 아닙니다(현재: $OWNER)."
-    fi
-    if check_perm_exceeds "$PERMS" 750; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $CRONTAB_CMD의 권한이 과대합니다(현재: $PERMS)."
-    fi
+  O=$(stat -c '%U' "$CRONTAB_CMD" 2>/dev/null)
+  P=$(stat -c '%a' "$CRONTAB_CMD" 2>/dev/null)
+  [ "$O" != "root" ] && { STATUS="FAIL"; add_vuln "$CRONTAB_CMD" "$O" "$P" "소유자가 root가 아님"; }
+  perm_exceeds "$P" 750 && { STATUS="FAIL"; add_vuln "$CRONTAB_CMD" "$O" "$P" "권한이 750 초과"; }
 fi
 
-# [Step 1] cron 작업 목록 파일 소유자 및 권한 확인
-# 가이드: ls -l /var/spool/cron/<파일>, /var/spool/cron/crontabs/<파일> (권한 640 이하)
+# 2) crontab 스풀(사용자 crontab 파일) : owner root, perm <= 640
 CRON_SPOOL_DIRS=("/var/spool/cron" "/var/spool/cron/crontabs")
-for dir in "${CRON_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            if [ -f "$f" ]; then
-                OWNER=$(stat -c '%U' "$f" 2>/dev/null)
-                PERMS=$(stat -c '%a' "$f" 2>/dev/null)
-                if [ "$OWNER" != "root" ]; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE $f의 소유자가 root가 아닙니다(현재: $OWNER)."
-                fi
-                if check_perm_exceeds "$PERMS" 640; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE $f의 권한이 과대합니다(현재: $PERMS)."
-                fi
-            fi
-        done
-    fi
+for d in "${CRON_SPOOL_DIRS[@]}"; do
+  if [ -d "$d" ]; then
+    while IFS= read -r f; do
+      O=$(stat -c '%U' "$f" 2>/dev/null)
+      P=$(stat -c '%a' "$f" 2>/dev/null)
+      [ "$O" != "root" ] && { STATUS="FAIL"; add_vuln "$f" "$O" "$P" "소유자가 root가 아님"; }
+      perm_exceeds "$P" 640 && { STATUS="FAIL"; add_vuln "$f" "$O" "$P" "권한이 640 초과"; }
+    done < <(find "$d" -maxdepth 1 -type f 2>/dev/null)
+  fi
 done
 
-# [Step 1] /etc/<cron 관련 파일> 소유자 및 권한 확인
-# 가이드: ls -l /etc/<cron 관련 파일> (권한 640 이하)
-CRON_ETC_FILES=("/etc/crontab" "/etc/cron.d" "/etc/cron.daily" "/etc/cron.hourly" "/etc/cron.weekly" "/etc/cron.monthly")
-for f in "${CRON_ETC_FILES[@]}"; do
-    if [ -e "$f" ]; then
-        OWNER=$(stat -c '%U' "$f" 2>/dev/null)
-        PERMS=$(stat -c '%a' "$f" 2>/dev/null)
-        if [ "$OWNER" != "root" ]; then
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE $f의 소유자가 root가 아닙니다(현재: $OWNER)."
-        fi
-        if [ -d "$f" ]; then
-            # 디렉토리는 750 이하
-            if check_perm_exceeds "$PERMS" 750; then
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE $f의 권한이 과대합니다(현재: $PERMS)."
-            fi
-        else
-            # 파일은 640 이하
-            if check_perm_exceeds "$PERMS" 640; then
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE $f의 권한이 과대합니다(현재: $PERMS)."
-            fi
-        fi
+# 3) /etc/cron* : 파일은 640 이하, 디렉터리는 750 이하, owner root
+CRON_ETC_ITEMS=("/etc/crontab" "/etc/cron.d" "/etc/cron.daily" "/etc/cron.hourly" "/etc/cron.weekly" "/etc/cron.monthly")
+for it in "${CRON_ETC_ITEMS[@]}"; do
+  if [ -e "$it" ]; then
+    O=$(stat -c '%U' "$it" 2>/dev/null)
+    P=$(stat -c '%a' "$it" 2>/dev/null)
+    [ "$O" != "root" ] && { STATUS="FAIL"; add_vuln "$it" "$O" "$P" "소유자가 root가 아님"; }
+
+    if [ -d "$it" ]; then
+      perm_exceeds "$P" 750 && { STATUS="FAIL"; add_vuln "$it" "$O" "$P" "디렉터리 권한이 750 초과"; }
+      # 디렉터리 내 파일도 640 이하(최상위만)
+      while IFS= read -r f; do
+        O2=$(stat -c '%U' "$f" 2>/dev/null)
+        P2=$(stat -c '%a' "$f" 2>/dev/null)
+        [ "$O2" != "root" ] && { STATUS="FAIL"; add_vuln "$f" "$O2" "$P2" "소유자가 root가 아님"; }
+        perm_exceeds "$P2" 640 && { STATUS="FAIL"; add_vuln "$f" "$O2" "$P2" "권한이 640 초과"; }
+      done < <(find "$it" -maxdepth 1 -type f 2>/dev/null)
+    else
+      perm_exceeds "$P" 640 && { STATUS="FAIL"; add_vuln "$it" "$O" "$P" "파일 권한이 640 초과"; }
     fi
+  fi
 done
 
-# [Step 2] at 명령어 소유자 및 권한 확인
-# 가이드: ls -l /usr/bin/at (권한 750 이하, 소유자 root)
+# 4) /usr/bin/at : owner root, perm <= 750
 AT_CMD="/usr/bin/at"
 if [ -f "$AT_CMD" ]; then
-    OWNER=$(stat -c '%U' "$AT_CMD" 2>/dev/null)
-    PERMS=$(stat -c '%a' "$AT_CMD" 2>/dev/null)
-    if [ "$OWNER" != "root" ]; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $AT_CMD의 소유자가 root가 아닙니다(현재: $OWNER)."
-    fi
-    if check_perm_exceeds "$PERMS" 750; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $AT_CMD의 권한이 과대합니다(현재: $PERMS)."
-    fi
+  O=$(stat -c '%U' "$AT_CMD" 2>/dev/null)
+  P=$(stat -c '%a' "$AT_CMD" 2>/dev/null)
+  [ "$O" != "root" ] && { STATUS="FAIL"; add_vuln "$AT_CMD" "$O" "$P" "소유자가 root가 아님"; }
+  perm_exceeds "$P" 750 && { STATUS="FAIL"; add_vuln "$AT_CMD" "$O" "$P" "권한이 750 초과"; }
 fi
 
-# [Step 2] at 작업 목록 파일 소유자 및 권한 확인
-# 가이드: ls -l /var/spool/at/<파일>, /var/spool/cron/atjobs/<파일> (권한 640 이하)
+# 5) at 스풀 : owner root, perm <= 640
 AT_SPOOL_DIRS=("/var/spool/at" "/var/spool/cron/atjobs")
-for dir in "${AT_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            if [ -f "$f" ]; then
-                OWNER=$(stat -c '%U' "$f" 2>/dev/null)
-                PERMS=$(stat -c '%a' "$f" 2>/dev/null)
-                if [ "$OWNER" != "root" ]; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE $f의 소유자가 root가 아닙니다(현재: $OWNER)."
-                fi
-                if check_perm_exceeds "$PERMS" 640; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE $f의 권한이 과대합니다(현재: $PERMS)."
-                fi
-            fi
-        done
-    fi
+for d in "${AT_SPOOL_DIRS[@]}"; do
+  if [ -d "$d" ]; then
+    while IFS= read -r f; do
+      O=$(stat -c '%U' "$f" 2>/dev/null)
+      P=$(stat -c '%a' "$f" 2>/dev/null)
+      [ "$O" != "root" ] && { STATUS="FAIL"; add_vuln "$f" "$O" "$P" "소유자가 root가 아님"; }
+      perm_exceeds "$P" 640 && { STATUS="FAIL"; add_vuln "$f" "$O" "$P" "권한이 640 초과"; }
+    done < <(find "$d" -maxdepth 1 -type f 2>/dev/null)
+  fi
 done
 
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="cron/at 관련 파일의 권한이 과도하게 설정되어 있어, 비인가 사용자가 예약 작업을 조작할 수 있는 위험이 있습니다. $EVIDENCE"
+# 결과 정리
+if [ "$STATUS" = "PASS" ]; then
+  REASON_LINE="cron/at 관련 명령 및 설정/스풀 파일의 소유자(root)와 권한(명령 750 이하, 파일 640 이하, 디렉터리 750 이하)이 적절하게 설정되어 비인가 사용자가 예약 작업을 조작할 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="none"
 else
-    STATUS="PASS"
-    EVIDENCE="crontab/at 명령어 750 이하, 관련 파일 640 이하 적절히 설정되어 있습니다."
+  REASON_LINE="cron/at 관련 명령 또는 설정/스풀 파일의 소유자/권한이 과도하게 설정되어 비인가 사용자가 예약 작업을 조작할 위험이 있으므로 취약합니다. 아래 항목의 소유자(root) 및 권한을 기준(명령 750 이하, 파일 640 이하, 디렉터리 750 이하)에 맞게 재설정해야 합니다."
+  DETAIL_CONTENT=$(printf "%s\n" "${VULN_LIST[@]}")
 fi
 
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 조치 이후에는 crontab/at 관련 파일 접근 및 예약 작업 등록이 권한 정책에 따라 제한될 수 있으므로 기존에 일반 사용자가 예약 작업을 운영하던 환경이라면 운영 주체와 권한 체계를 재정의해야 합니다."
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "crontab 관련 파일 권한을 640 이하, 소유자를 root로 설정하고, cron.allow/deny 파일을 적절히 구성해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

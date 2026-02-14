@@ -19,87 +19,86 @@
 
 # [진단] U-42 불필요한 RPC 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-42"
-CATEGORY="서비스 관리"
-TITLE="불필요한 RPC 서비스 비활성화"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
+TARGET_FILE="N/A"
+CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -Ev "^[[:space:]]*#" /etc/inetd.conf | grep -nE "^[[:space:]]*rpc" ) ; ( [ -d /etc/xinetd.d ] && grep -RniE "^[[:space:]]*service[[:space:]]+.*rpc|disable[[:space:]]*=[[:space:]]*no" /etc/xinetd.d 2>/dev/null | head -n 50 ) ; systemctl list-units --type=service 2>/dev/null | grep -i rpc || echo "no_rpc_related_services"'
 
-# [inetd] /etc/inetd.conf 파일 내 불필요한 RPC 서비스 활성화 여부 확인
-# 가이드: cat /etc/inetd.conf
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+VULN_DETAILS=()
+
+# 1) inetd 기반 RPC 서비스 (주석 제외 후 rpc로 시작하는 서비스 라인)
 if [ -f "/etc/inetd.conf" ]; then
-    TARGET_FILE="/etc/inetd.conf"
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    # rpc로 시작하는 서비스 확인
-    if grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*rpc"; then
-        VULNERABLE=1
-        RPC_INETD=$(grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -E "^[[:space:]]*rpc" | awk '{print $1}' | tr '\n' ' ')
-        EVIDENCE="$EVIDENCE /etc/inetd.conf에 RPC 서비스가 활성화되어 있습니다."
-    fi
+  RPC_INETD=$(grep -Ev "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nE "^[[:space:]]*rpc" | head -n 50)
+  if [ -n "$RPC_INETD" ]; then
+    VULN_DETAILS+=("[inetd:/etc/inetd.conf] rpc 항목 활성화 의심:\n${RPC_INETD}")
+  fi
 fi
 
-# [xinetd] /etc/xinetd.d/ 디렉터리 내 존재하는 불필요한 RPC 서비스 활성화 여부 확인
-# 가이드: cat /etc/xinetd.d/<파일명>
+# 2) xinetd 기반 RPC 관련 서비스 (파일명에 rpc 포함 또는 service 라인에 rpc 포함 + disable=no)
 if [ -d "/etc/xinetd.d" ]; then
-    for conf in /etc/xinetd.d/*; do
-        if [ -f "$conf" ]; then
-            # rpc 관련 파일이거나 service rpc 포함하는 경우
-            if echo "$conf" | grep -qi "rpc" || grep -q "service.*rpc" "$conf" 2>/dev/null; then
-                if grep -qiE "disable\s*=\s*no" "$conf" 2>/dev/null; then
-                    VULNERABLE=1
-                    EVIDENCE="$EVIDENCE $(basename $conf)에서 disable=no로 설정되어 있습니다."
-                fi
-            fi
-        fi
-    done
+  while IFS= read -r conf; do
+    [ -f "$conf" ] || continue
+
+    # rpc 관련 파일/서비스인지 확인(주석 제외)
+    IS_RPC=0
+    echo "$conf" | grep -qi "rpc" && IS_RPC=1
+    if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc"; then
+      IS_RPC=1
+    fi
+
+    if [ "$IS_RPC" -eq 1 ]; then
+      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+        VULN_DETAILS+=("[xinetd:${conf}] disable=no 로 활성화됨")
+      fi
+    fi
+  done < <(find /etc/xinetd.d -maxdepth 1 -type f 2>/dev/null | sort)
 fi
 
-# [systemd] 불필요한 RPC 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep rpc
-RPC_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep rpc | awk '{print $1}' | tr '\n' ' ')
-if [ -n "$RPC_SERVICES" ]; then
-    VULNERABLE=1
-    EVIDENCE="$EVIDENCE systemd RPC 서비스가 활성화되어 있습니다."
+# 3) systemd 기반 RPC 관련 서비스 활성화 여부
+RPC_SYSTEMD=$(systemctl list-units --type=service 2>/dev/null | grep -i "rpc" | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
+if [ -n "$RPC_SYSTEMD" ]; then
+  VULN_DETAILS+=("[systemd] rpc 관련 서비스 감지: ${RPC_SYSTEMD}")
 fi
 
-# 결과 판단
-if [ $VULNERABLE -eq 1 ]; then
-    STATUS="FAIL"
-    EVIDENCE="불필요한 RPC 서비스가 활성화되어 있어, 원격 호출을 통한 비인가 접근이 발생할 수 있는 위험이 있습니다. $EVIDENCE"
+# 종합 판단
+if [ "${#VULN_DETAILS[@]}" -gt 0 ]; then
+  STATUS="FAIL"
+  REASON_LINE="불필요한 RPC 관련 서비스가 활성화되어 있어 원격 호출 기반 공격면이 증가하므로 취약합니다. (예: rpcbind 등) 사용 목적(NFS 등)과 의존성을 확인한 뒤 불필요하면 중지/비활성화가 필요합니다."
+  DETAIL_CONTENT=$(printf "%s\n\n" "${VULN_DETAILS[@]}")
 else
-    STATUS="PASS"
-    EVIDENCE="불필요한 RPC 서비스가 비활성화되어 있습니다."
+  STATUS="PASS"
+  REASON_LINE="inetd/xinetd/systemd에서 RPC 관련 서비스 활성화 징후가 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="no_rpc_service_active"
 fi
 
-# JSON 출력 전 특수문자 제거
-EVIDENCE=$(echo "$EVIDENCE" | tr '\n\r\t' '   ' | sed 's/"/\\"/g')
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 비활성화 대상 RPC 서비스가 특정 운영 기능에 사용 중인 경우가 있을 수 있으므로 적용 전 사용 여부를 확인한 뒤 불필요 서비스에 한해 중지·비활성화해야 합니다."
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# 3. 마스터 템플릿 표준 출력
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "RPC 서비스가 불필요한 경우 systemctl stop rpcbind && systemctl disable rpcbind로 비활성화해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

@@ -22,102 +22,222 @@
 
 # [진단] U-60 SNMP Community String 복잡성 설정
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-60"
-CATEGORY="서비스 관리"
-TITLE="SNMP Community String 복잡성 설정"
-IMPORTANCE="중"
-TARGET_FILE="/etc/snmp/snmpd.conf"
-
-# 2. 진단 로직 (무결성 해시 포함)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE="/etc/snmp/snmpd.conf"
+CHECK_COMMAND='systemctl is-active snmpd; systemctl is-enabled snmpd; pgrep -a -x snmpd; grep -nE "^(com2sec|rocommunity|rwcommunity)" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null'
 
 VULNERABLE=0
 SNMP_RUNNING=0
-ACTION_RESULT="SUCCESS"
-GUIDE="KISA 보안 가이드라인을 준수하고 있습니다."
+DETAIL_LINES=""
 
-# SNMP 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep snmpd
-if ! systemctl list-units --type=service 2>/dev/null | grep -q snmpd && ! pgrep -x snmpd >/dev/null; then
-    # SNMP 미사용 → 취약 (중지 및 비활성화 필요)
-    STATUS="FAIL"
-    EVIDENCE="SNMP 서비스가 구동되지 않고 있어, 설치되어 있으나 미사용 중이라면 보안 위험이 있습니다."
-    GUIDE="미사용 SNMP 서비스는 'systemctl stop snmpd && systemctl disable snmpd'로 완전히 비활성화해야 합니다."
-    ACTION_RESULT="AUTO"
-else
-    SNMP_RUNNING=1
-    CONF="/etc/snmp/snmpd.conf"
-    
-    if [ -f "$CONF" ]; then
-        FILE_HASH=$(sha256sum "$CONF" 2>/dev/null | awk '{print $1}')
-        
-        # [Redhat 계열] com2sec 설정 확인
-        # 가이드: com2sec notConfigUser default <Community String>
-        COM2SEC=$(grep -v "^#" "$CONF" | grep "com2sec")
-        
-        if [ -n "$COM2SEC" ]; then
-            # public/private 사용 여부 확인
-            if echo "$COM2SEC" | grep -qE "\\s(public|private)\\s*$"; then
-                VULNERABLE=1
-                EVIDENCE="com2sec 설정에 취약한 Community String(public/private) 사용: $COM2SEC"
-            else
-                EVIDENCE="com2sec 설정 존재 (기본값 아님)"
-            fi
-        fi
-        
-        # rocommunity/rwcommunity 확인 (호환성)
-        ROCOMMUNITY=$(grep -v "^#" "$CONF" | grep -E "^rocommunity|^rwcommunity")
-        
-        if [ -n "$ROCOMMUNITY" ]; then
-            if echo "$ROCOMMUNITY" | grep -qE "public|private"; then
-                VULNERABLE=1
-                EVIDENCE="$EVIDENCE rocommunity/rwcommunity에 취약한 Community String(public/private) 사용"
-            fi
-        fi
-        
-        # 설정이 아예 없는 경우
-        if [ -z "$COM2SEC" ] && [ -z "$ROCOMMUNITY" ]; then
-            EVIDENCE="Community String 설정을 찾을 수 없습니다 (확인 필요)."
-        fi
-    else
-        STATUS="PASS"
-        EVIDENCE="$CONF 파일이 존재하지 않습니다."
-    fi
-    
-    if [ $VULNERABLE -eq 1 ]; then
-        STATUS="FAIL"
-        EVIDENCE="SNMP Community String 복잡성이 미흡하여, 추측 가능한 기본값(public/private)으로 시스템 정보가 노출될 수 있는 위험이 있습니다."
-        GUIDE="이 항목은 SNMP 서비스 운영에 직접적인 영향을 주므로 자동 조치 기능을 제공하지 않습니다. 관리자가 직접 snmpd.conf 파일에서 'public', 'private' 대신 조직의 보안 정책에 부합하는 복잡한 Community String(영문자+숫자 10자 이상 또는 영문자+숫자+특수문자 8자 이상)으로 변경한 후 'systemctl restart snmpd'로 재시작하십시오."
-        ACTION_RESULT="MANUAL_REQUIRED"
-    elif [ $SNMP_RUNNING -eq 1 ]; then
-        STATUS="PASS"
-        EVIDENCE="SNMP Community String이 적절히 설정되어 있습니다."
-    fi
+append_detail() {
+  local line="$1"
+  [ -z "$line" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$line"
+  else
+    DETAIL_LINES="${DETAIL_LINES}\n$line"
+  fi
+}
+
+add_target_file() {
+  local f="$1"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then
+    TARGET_FILE="$f"
+  else
+    TARGET_FILE="${TARGET_FILE}, $f"
+  fi
+}
+
+mask_token() {
+  # 민감값(community)을 그대로 남기지 않기 위해 마스킹:
+  # - 길이 3 이하: "***"
+  # - 그 이상: 앞 2글자 + "***" + 뒤 2글자
+  local s="$1"
+  local n="${#s}"
+  if [ "$n" -le 3 ]; then
+    echo "***"
+  else
+    local head="${s:0:2}"
+    local tail="${s: -2}"
+    echo "${head}***${tail}"
+  fi
+}
+
+is_weak_default() {
+  # public/private (대소문자 무시)
+  echo "$1" | tr '[:upper:]' '[:lower:]' | grep -qE '^(public|private)$'
+}
+
+is_too_simple() {
+  # "복잡성"을 엄격히 측정하기는 어렵기 때문에,
+  # 최소 기준으로 아래 중 하나면 "단순"로 간주(보수적):
+  # - 길이 8 미만
+  # - 영문/숫자만으로 구성되며 길이 10 미만(예: password1 수준)
+  # (조직 정책에 따라 조정 가능)
+  local s="$1"
+  local n="${#s}"
+
+  if [ "$n" -lt 8 ]; then
+    return 0
+  fi
+
+  if echo "$s" | grep -qE '^[A-Za-z0-9]+$' && [ "$n" -lt 10 ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+# 1) SNMP 서비스 실행 여부 확인
+ACTIVE="N"
+ENABLED="N"
+PROC="N"
+
+if systemctl is-active --quiet snmpd 2>/dev/null; then
+  ACTIVE="Y"
+  SNMP_RUNNING=1
+fi
+if systemctl is-enabled --quiet snmpd 2>/dev/null; then
+  ENABLED="Y"
+fi
+if pgrep -x snmpd >/dev/null 2>&1; then
+  PROC="Y"
+  SNMP_RUNNING=1
 fi
 
+append_detail "[systemd] snmpd_active=$ACTIVE snmpd_enabled=$ENABLED"
+append_detail "[process] snmpd_running=$PROC"
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, 기존에 단순 Community String으로 연동된 모니터링/관리 시스템이 있다면 변경 후 인증 실패로 수집이 중단될 수 있으므로 적용 전 연동 대상의 Community String 설정을 함께 변경할 수 있는지 확인한 뒤 복잡성 정책을 반영해야 합니다."
+# 2) SNMP 미실행이면 점검 대상 없음(PASS)
+if [ "$SNMP_RUNNING" -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="SNMP 서비스가 비활성화되어 있어 점검 대상이 없습니다."
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 
-# 3. 마스터 템플릿 표준 출력
+  # 참고 target_file
+  TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf"
+else
+  # 3) 설정 파일에서 community 추출(v1/v2c 흔적)
+  CONF_FILES=("/etc/snmp/snmpd.conf" "/usr/share/snmp/snmpd.conf")
+  FOUND_CONF=0
+  FOUND_COMM=0
+  FOUND_WEAK=0
+  FOUND_SIMPLE=0
+
+  for conf in "${CONF_FILES[@]}"; do
+    if [ -f "$conf" ]; then
+      FOUND_CONF=1
+      add_target_file "$conf"
+
+      # 주석/공백 제외
+      LINES="$(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$conf" 2>/dev/null | grep -E '^(com2sec|rocommunity|rwcommunity)\b' || true)"
+      if [ -z "$LINES" ]; then
+        append_detail "[conf] $conf community_config=NOT_FOUND"
+        continue
+      fi
+
+      append_detail "[conf] $conf community_config=FOUND (lines=$(echo "$LINES" | wc -l | tr -d ' '))"
+
+      # com2sec: 보통 4번째 필드가 community (com2sec <secname> <source> <community>)
+      # rocommunity/rwcommunity: 보통 2번째 필드가 community
+      while IFS= read -r line; do
+        key="$(echo "$line" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+        comm=""
+        if [ "$key" = "com2sec" ]; then
+          comm="$(echo "$line" | awk '{print $4}')"
+        else
+          comm="$(echo "$line" | awk '{print $2}')"
+        fi
+
+        # comm이 비어있거나 옵션/호스트가 들어간 형태면 스킵(그래도 흔적은 남김)
+        if [ -z "$comm" ]; then
+          append_detail "[parse] $conf | $key community=NOT_PARSED | line=$(echo "$line" | tr '\t' ' ')"
+          continue
+        fi
+
+        FOUND_COMM=1
+
+        # 약한 기본값(public/private)
+        if is_weak_default "$comm"; then
+          FOUND_WEAK=1
+          append_detail "[check] $conf | $key community=WEAK_DEFAULT($(mask_token "$comm"))"
+          continue
+        fi
+
+        # 단순 문자열(보수적 규칙)
+        if is_too_simple "$comm"; then
+          FOUND_SIMPLE=1
+          append_detail "[check] $conf | $key community=SIMPLE($(mask_token "$comm"))) "
+        else
+          append_detail "[check] $conf | $key community=OK($(mask_token "$comm"))"
+        fi
+      done <<< "$LINES"
+    else
+      append_detail "[conf] $conf=NOT_FOUND"
+    fi
+  done
+
+  # 4) 최종 판정
+  if [ "$FOUND_CONF" -eq 0 ]; then
+    STATUS="FAIL"
+    VULNERABLE=1
+    REASON_LINE="SNMP 서비스가 실행 중이나 설정 파일을 확인할 수 없어 Community String 복잡성 정책을 검증할 수 없으므로 취약합니다. snmpd.conf 위치를 확인하고 기본값(public/private) 사용 여부 및 복잡성 기준을 점검해야 합니다."
+  else
+    if [ "$FOUND_COMM" -eq 0 ]; then
+      # v1/v2c community가 안 보이면(=v3만 쓰거나 별도 include 등) 단정 어렵지만,
+      # U-60은 community 복잡성 항목이므로 "확인 필요"로 FAIL(보수적) 처리
+      STATUS="FAIL"
+      VULNERABLE=1
+      REASON_LINE="SNMP 서비스가 실행 중이나 Community String 설정(com2sec/rocommunity/rwcommunity)을 확인할 수 없어 복잡성 정책 준수 여부를 판단할 수 없으므로 취약합니다. SNMPv1/v2c 사용 여부 및 설정 include 경로를 확인해야 합니다."
+    elif [ "$FOUND_WEAK" -eq 1 ]; then
+      STATUS="FAIL"
+      VULNERABLE=1
+      REASON_LINE="SNMP Community String에 추측 가능한 기본값(public/private)이 사용되어 시스템 정보가 노출될 수 있으므로 취약합니다. 기본값을 제거하고 조직 보안 정책에 부합하는 복잡한 문자열로 변경해야 합니다."
+    elif [ "$FOUND_SIMPLE" -eq 1 ]; then
+      STATUS="FAIL"
+      VULNERABLE=1
+      REASON_LINE="SNMP Community String 복잡성이 미흡하여 추측 공격에 노출될 수 있으므로 취약합니다. 영문/숫자/특수문자를 조합한 충분히 긴 문자열로 변경해야 합니다."
+    else
+      STATUS="PASS"
+      REASON_LINE="SNMP Community String이 기본값(public/private)이 아니며 복잡성 기준에 부합하여 이 항목에 대한 보안 위협이 없습니다."
+    fi
+  fi
+
+  DETAIL_CONTENT="$DETAIL_LINES"
+  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+fi
+
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

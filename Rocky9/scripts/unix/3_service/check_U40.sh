@@ -19,82 +19,103 @@
 
 # [진단] U-40 NFS 접근 통제
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-40"
-CATEGORY="서비스 관리"
-TITLE="NFS 접근 통제"
-IMPORTANCE="상"
-TARGET_FILE="/etc/exports"
-
-# 2. 진단 로직 (KISA 가이드 기준)
 STATUS="PASS"
-EVIDENCE=""
-FILE_HASH="NOT_FOUND"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-VULNERABLE=0
+TARGET_FILE="/etc/exports"
+CHECK_COMMAND='[ -f /etc/exports ] && (stat -c "%U %a %n" /etc/exports; grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports || echo "exports_empty") || echo "exports_not_found"'
 
-# [Step 1] 파일 소유자 및 권한 확인
-# 가이드: ls -l /etc/exports (소유자 root, 권한 644)
+DETAIL_CONTENT=""
+REASON_LINE=""
+
+# 점검 결과 누적
+VULN_FLAGS=()
+add_vuln() { [ -n "$1" ] && VULN_FLAGS+=("$1"); }
+
+# 1) /etc/exports 존재 여부
 if [ ! -f "$TARGET_FILE" ]; then
-    STATUS="PASS"
-    EVIDENCE="NFS exports 파일이 없습니다. (NFS 미사용 - 양호)"
+  STATUS="PASS"
+  REASON_LINE="NFS exports 파일(/etc/exports)이 존재하지 않아 NFS 공유 설정이 적용되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="exports_not_found"
 else
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    
-    OWNER=$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)
-    PERMS=$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)
-    
-    # 소유자 root 확인
-    if [ "$OWNER" != "root" ]; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $TARGET_FILE의 소유자가 root가 아닙니다. (현재: $OWNER)"
+  OWNER=$(stat -c '%U' "$TARGET_FILE" 2>/dev/null | tr -d '[:space:]')
+  PERM=$(stat -c '%a' "$TARGET_FILE" 2>/dev/null | tr -d '[:space:]')
+
+  # 2) 파일 소유자/권한 점검 (가이드: root, 644 이하)
+  if [ "$OWNER" != "root" ]; then
+    add_vuln "파일 소유자 부적절(owner=${OWNER})"
+  fi
+  if [ -n "$PERM" ] && [ "$PERM" -gt 644 ]; then
+    add_vuln "파일 권한 과대(perm=${PERM})"
+  fi
+
+  # 3) 접근 통제 설정 점검
+  # - 주석/공백 제외 후 라인 기준
+  # - everyone(*) 허용, no_root_squash 사용 여부를 핵심 위험으로 판단
+  EXPORT_LINES=$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$TARGET_FILE" 2>/dev/null || true)
+
+  if [ -z "$EXPORT_LINES" ]; then
+    # exports 파일은 있으나 설정이 비어있으면 "NFS 미사용"에 가까움
+    STATUS="PASS"
+    REASON_LINE="/etc/exports 파일은 존재하지만 유효한 export 설정이 없어 NFS 공유가 적용되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="exports_empty (owner=${OWNER}, perm=${PERM})"
+  else
+    # everyone(*) 공유 탐지: 호스트 필드에 단독 '*' 또는 '*(' 형태를 단순 탐지
+    if echo "$EXPORT_LINES" | grep -qE "([[:space:]]|^)\*([[:space:]]|$|\()"; then
+      add_vuln "모든 호스트(*)에 공유 허용"
     fi
-    
-    # 권한 644 초과 확인
-    if [ "$PERMS" -gt 644 ]; then
-        VULNERABLE=1
-        EVIDENCE="$EVIDENCE $TARGET_FILE의 권한이 과대합니다. (현재: $PERMS)"
+
+    # no_root_squash 탐지
+    if echo "$EXPORT_LINES" | grep -qiE "no_root_squash"; then
+      add_vuln "no_root_squash 옵션 사용"
     fi
-    
-    # [Step 2] 공유 디렉터리에 접근할 수 있는 사용자 및 권한 확인
-    # 가이드: cat /etc/exports
-    CONTENT=$(grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -v "^$")
-    if [ -n "$CONTENT" ]; then
-        # everyone(*) 공유 확인 - 접근 통제 미설정
-        if echo "$CONTENT" | grep -qE "\*\(|\s+\*$|\s+\*\s"; then
-            VULNERABLE=1
-            EVIDENCE="$EVIDENCE 모든 호스트(*)에 대해 공유가 허용되어 있습니다."
-        fi
-    fi
-    
-    # 결과 판단
-    if [ $VULNERABLE -eq 1 ]; then
-        STATUS="FAIL"
-        EVIDENCE="NFS 접근 통제가 미흡하여, 비인가 호스트에서 파일 시스템에 접근할 수 있는 위험이 있습니다. $EVIDENCE"
+
+    if [ "${#VULN_FLAGS[@]}" -gt 0 ]; then
+      STATUS="FAIL"
+      REASON_LINE="NFS 공유 설정(/etc/exports)에서 접근 통제가 미흡하거나 설정 파일 권한이 과대하여, 비인가 호스트 접근 또는 root 권한 상승 위험이 있으므로 취약합니다. 운영 중인 공유 범위를 점검하고 허용 호스트를 제한해야 합니다."
+      DETAIL_CONTENT=$(
+        printf "owner=%s perm=%s\n" "${OWNER:-unknown}" "${PERM:-unknown}"
+        printf "findings:\n"
+        printf "%s\n" "${VULN_FLAGS[@]}"
+        printf "exports(sample top5):\n"
+        echo "$EXPORT_LINES" | head -n 5
+      )
     else
-        STATUS="PASS"
-        EVIDENCE="NFS 접근 통제가 적절하게 설정되어 있습니다. (소유자: $OWNER, 권한: $PERMS)"
+      STATUS="PASS"
+      REASON_LINE="NFS exports 파일의 소유자/권한이 적절하며, everyone(*) 공유 또는 no_root_squash와 같은 위험 설정이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+      DETAIL_CONTENT=$(
+        printf "owner=%s perm=%s\n" "${OWNER:-unknown}" "${PERM:-unknown}"
+        printf "exports(sample top5):\n"
+        echo "$EXPORT_LINES" | head -n 5
+      )
     fi
+  fi
 fi
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, NFS를 불가피하게 사용 중인 경우 허용 대상(사용자/호스트) 및 권한이 제한되면서 기존 접속 주체 중 일부가 접근하지 못할 수 있으므로, 운영에 필요한 허용 범위를 사전에 정의하고 단계적으로 반영해야 합니다."
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "/etc/exports에서 everyone(*) 공유를 제거하고, no_root_squash를 root_squash로 변경한 후 exportfs -ra로 적용해야 합니다.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF
