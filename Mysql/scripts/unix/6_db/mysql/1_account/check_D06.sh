@@ -1,170 +1,142 @@
 #!/bin/bash
+# ============================================================================
+# @Project: 시스템 보안 자동화 프로젝트
+# @Version: 1.0.0
 # @Author: 한은결
-# D-06: DB 사용자 계정 개별 부여 운영
+# @Last Updated: 2026-02-11
+# ============================================================================
+# [점검 항목 상세]
+# @ID          : D-06
+# @Category    : 계정 관리
+# @Platform    : MySQL
+# @IMPORTANCE  : 중
+# @Title       : DB 사용자 계정을 개별적으로 부여하여 사용
+# @Description : DB 접근 시 사용자별로 서로 다른 계정을 사용하여 접근하는지 점검
+# @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
+# ============================================================================
+
 ID="D-06"
 CATEGORY="계정 관리"
 TITLE="DB 사용자 계정을 개별적으로 부여하여 사용"
 IMPORTANCE="중"
+TARGET_FILE="mysql.user"
 
 STATUS="FAIL"
-ACTION_RESULT="FAIL"
-ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
-MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
-TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
+TIMEOUT_BIN=""
+MYSQL_TIMEOUT=5
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
+
+# 오탐 완화:
+# - 단순 host_count>1 만으로 취약 판정하지 않음
+# - 명백한 공용 계정명, 과도한 다중 원격 호스트, 와일드카드+다중호스트 조합을 우선 탐지
 COMMON_USERS_CSV="${COMMON_USERS_CSV:-guest,test,demo,shared,common,public,user}"
 EXEMPT_USERS_CSV="${EXEMPT_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
-run_mysql() {
-  local sql="$1"
-  if [[ -n "$TIMEOUT_BIN" ]]; then
-    $TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$sql" 2>/dev/null
-  else
-    $MYSQL_CMD "$sql" 2>/dev/null
-  fi
-}
-
-in_csv() {
-  local needle="$1"
-  local csv="$2"
-  IFS=',' read -r -a arr <<< "$csv"
-  for item in "${arr[@]}"; do
-    [[ "$needle" == "$item" ]] && return 0
-  done
-  return 1
-}
-
-sql_escape() {
-  local s="$1"
-  s="${s//\'/\'\'}"
-  printf "%s" "$s"
-}
-
-AGG_SQL="
+QUERY="
 SELECT user,
        SUM(CASE WHEN host NOT IN ('localhost','127.0.0.1','::1') THEN 1 ELSE 0 END) AS non_local_host_count,
-       SUM(CASE WHEN host='%' THEN 1 ELSE 0 END) AS wildcard_count
+       SUM(CASE WHEN host='%' THEN 1 ELSE 0 END) AS wildcard_count,
+       GROUP_CONCAT(host ORDER BY host SEPARATOR ',') AS hosts
 FROM mysql.user
 WHERE IFNULL(account_locked,'N') != 'Y'
 GROUP BY user;
 "
 
-DETAIL_SQL1="SELECT user,host,COALESCE(account_locked,'N') FROM mysql.user;"
-DETAIL_SQL2="SELECT user,host,'N' FROM mysql.user;"
+in_csv() {
+    local needle="$1"
+    local csv="$2"
+    IFS=',' read -r -a arr <<< "$csv"
+    for item in "${arr[@]}"; do
+        [[ "$needle" == "$item" ]] && return 0
+    done
+    return 1
+}
 
-AGG_ROWS="$(run_mysql "$AGG_SQL")"
-RC1=$?
-if [[ $RC1 -ne 0 ]]; then
-  ACTION_LOG="조치 실패: 계정 집계 조회 실패"
-  EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 D-06 자동 조치를 수행할 수 없습니다."
+if [[ -n "$TIMEOUT_BIN" ]]; then
+    RESULT=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
 else
-  ANON_BAD=0
-  declare -A BAD_COMMON
-  declare -A BAD_SHARED
-
-  while IFS=$'\t' read -r user non_local wildcard; do
-    [[ -z "$user" && -z "$non_local" && -z "$wildcard" ]] && continue
-    in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-
-    if [[ -z "$user" ]]; then
-      ANON_BAD=1
-    elif in_csv "$user" "$COMMON_USERS_CSV"; then
-      BAD_COMMON["$user"]=1
-    elif { [[ "$wildcard" -gt 0 ]] && [[ "$non_local" -gt 1 ]]; } || [[ "$non_local" -ge 3 ]]; then
-      BAD_SHARED["$user"]=1
-    fi
-  done <<< "$AGG_ROWS"
-
-  if [[ $ANON_BAD -eq 0 && ${#BAD_COMMON[@]} -eq 0 && ${#BAD_SHARED[@]} -eq 0 ]]; then
-    STATUS="PASS"
-    ACTION_RESULT="NOT_REQUIRED"
-    ACTION_LOG="공용/과다 공유 사용 징후 계정이 없어 추가 조치가 필요하지 않습니다."
-    EVIDENCE="D-06 기준 추가 조치 불필요"
-  else
-    DETAIL_ROWS="$(run_mysql "$DETAIL_SQL1")"
-    RC2=$?
-    if [[ $RC2 -ne 0 ]]; then
-      DETAIL_ROWS="$(run_mysql "$DETAIL_SQL2")"
-      RC2=$?
-    fi
-
-    if [[ $RC2 -ne 0 ]]; then
-      ACTION_LOG="조치 실패: 계정 상세 조회 실패"
-      EVIDENCE="mysql.user 상세 조회에 실패하여 D-06 조치를 진행하지 못했습니다."
-    else
-      FAIL=0
-      DROP_CNT=0
-      LOCK_CNT=0
-
-      while IFS=$'\t' read -r user host locked; do
-        [[ -z "$host" ]] && continue
-        in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-
-        esc_user="$(sql_escape "$user")"
-        esc_host="$(sql_escape "$host")"
-
-        if { [[ -z "$user" ]] && [[ $ANON_BAD -eq 1 ]]; } || [[ -n "${BAD_COMMON[$user]:-}" ]]; then
-          run_mysql "DROP USER IF EXISTS '${esc_user}'@'${esc_host}';" >/dev/null || FAIL=1
-          DROP_CNT=$((DROP_CNT + 1))
-        elif [[ -n "${BAD_SHARED[$user]:-}" ]]; then
-          case "$host" in
-            localhost|127.0.0.1|::1) ;;
-            *)
-              run_mysql "ALTER USER '${esc_user}'@'${esc_host}' ACCOUNT LOCK;" >/dev/null || FAIL=1
-              LOCK_CNT=$((LOCK_CNT + 1))
-              ;;
-          esac
-        fi
-      done <<< "$DETAIL_ROWS"
-
-      run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
-
-      VERIFY_ROWS="$(run_mysql "$AGG_SQL")"
-      RCV=$?
-      REMAIN=0
-      if [[ $RCV -eq 0 ]]; then
-        while IFS=$'\t' read -r user non_local wildcard; do
-          [[ -z "$user" && -z "$non_local" && -z "$wildcard" ]] && continue
-          in_csv "$user" "$EXEMPT_USERS_CSV" && continue
-          if [[ -z "$user" ]] || in_csv "$user" "$COMMON_USERS_CSV"; then
-            REMAIN=1
-            break
-          elif { [[ "$wildcard" -gt 0 ]] && [[ "$non_local" -gt 1 ]]; } || [[ "$non_local" -ge 3 ]]; then
-            REMAIN=1
-            break
-          fi
-        done <<< "$VERIFY_ROWS"
-      else
-        REMAIN=1
-      fi
-
-      if [[ $FAIL -eq 0 && $REMAIN -eq 0 ]]; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        ACTION_LOG="공용 계정 ${DROP_CNT}건 삭제, 공유 의심 원격 계정 ${LOCK_CNT}건 잠금 조치를 완료했습니다."
-        EVIDENCE="D-06 조치 후 공용/과다 공유 사용 징후가 확인되지 않습니다. 공용 계정 삭제 시 사용자별 개인 계정을 생성하여 최소권한으로 운영하세요. 예) CREATE USER 'user1'@'localhost' IDENTIFIED BY '강력한비밀번호'; GRANT SELECT,INSERT,UPDATE,DELETE ON <DB>.* TO 'user1'@'localhost'; FLUSH PRIVILEGES;"
-      else
-        ACTION_LOG="조치 일부 실패: 공용 계정 또는 공유 사용 징후 계정이 일부 남아 있을 수 있습니다."
-        EVIDENCE="D-06 자동 조치를 완료하지 못했습니다. 공용 계정 삭제 시 사용자별 개인 계정을 생성하여 최소권한으로 운영하세요. 예) CREATE USER 'user1'@'localhost' IDENTIFIED BY '강력한비밀번호'; GRANT SELECT,INSERT,UPDATE,DELETE ON <DB>.* TO 'user1'@'localhost'; FLUSH PRIVILEGES;"
-      fi
-    fi
-  fi
+    RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
 fi
 
-cat <<JSON
+if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
+    STATUS="FAIL"
+    EVIDENCE="DB 사용자 계정 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-06 점검에 실패했습니다."
+elif [[ "$RESULT" == "ERROR" ]]; then
+    STATUS="FAIL"
+    EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 계정 개별 사용 여부를 확인할 수 없습니다."
+else
+    VULN_COUNT=0
+    SAMPLE="N/A"
+    REASON=""
+
+    while IFS=$'\t' read -r user non_local wildcard hosts; do
+        [[ -z "$user" ]] && continue
+
+        if in_csv "$user" "$EXEMPT_USERS_CSV"; then
+            continue
+        fi
+
+        flag="N"
+        reason=""
+
+        if in_csv "$user" "$COMMON_USERS_CSV"; then
+            flag="Y"
+            reason="공용/테스트 성격의 계정명"
+        elif [[ "$wildcard" -gt 0 && "$non_local" -gt 1 ]]; then
+            flag="Y"
+            reason="와일드카드(host=%) + 다중 원격 호스트"
+        elif [[ "$non_local" -ge 3 ]]; then
+            flag="Y"
+            reason="다수 원격 호스트에서 동일 계정 사용"
+        fi
+
+        if [[ "$flag" == "Y" ]]; then
+            VULN_COUNT=$((VULN_COUNT + 1))
+            if [[ "$SAMPLE" == "N/A" ]]; then
+                SAMPLE="${user} (hosts=${hosts})"
+                REASON="$reason"
+            fi
+        fi
+    done <<< "$RESULT"
+
+    if [[ "$VULN_COUNT" -eq 0 ]]; then
+        STATUS="PASS"
+        EVIDENCE="공용 계정 사용 징후(명백한 공용 계정명/과도한 다중 원격 호스트)가 확인되지 않아 D-06 기준을 충족합니다."
+    else
+        STATUS="FAIL"
+        EVIDENCE="공용 계정 사용 가능성이 높은 계정이 확인되었습니다. ${VULN_COUNT}개, 사유: ${REASON}, 예: ${SAMPLE}"
+    fi
+fi
+
+# 파일 해시
+if [ -f "$TARGET_FILE" ]; then
+    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
+    [[ -z "$FILE_HASH" ]] && FILE_HASH="HASH_ERROR"
+else
+    FILE_HASH="NOT_FOUND"
+fi
+
+IMPACT_LEVEL="LOW"
+ACTION_IMPACT="이 조치를 적용하면 공용 계정이 삭제되고, 사용자별·응용 프로그램별 계정으로 대체됩니다. 일반적인 시스템 운영에는 영향이 없으며, 각 계정에 적절한 권한이 부여되어 있어 정상적인 데이터베이스 접근과 작업 수행이 가능합니다. 다만, 모든 권한을 부여한 계정은 보안 위험이 증가할 수 있으므로 최소 권한 원칙을 준수하여 설정해야 합니다."
+
+cat << EOF_JSON
 {
-  "check_id":"$ID",
-  "category":"$CATEGORY",
-  "title":"$TITLE",
-  "importance":"$IMPORTANCE",
-  "status":"$STATUS",
-  "evidence":"$EVIDENCE",
-  "guide":"공용 계정을 삭제 또는 잠금 조치하였으며, 사용자별 개인 계정을 생성하여 최소 권한 원칙에 따라 분리 운영하시기 바랍니다."
-  "action_result":"$ACTION_RESULT",
-  "action_log":"$ACTION_LOG",
-  "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
-  "check_date":"$(date '+%Y-%m-%d %H:%M:%S')"
+    "check_id": "$ID",
+    "category": "$CATEGORY",
+    "title": "$TITLE",
+    "importance": "$IMPORTANCE",
+    "status": "$STATUS",
+    "evidence": "$EVIDENCE",
+    "guide": "공용/테스트 성격의 계정명(COMMON_USERS_CSV) 또는 다수의 원격 host에서 공유되는 계정은 삭제하거나 잠그십시오. 사용자별·응용프로그램별 계정으로 분리하고, 원격 접속은 필요한 host로만 제한하며 host='%' 사용을 최소화하십시오.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
+    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
-JSON
+EOF_JSON
