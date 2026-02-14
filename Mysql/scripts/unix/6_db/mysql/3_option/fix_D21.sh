@@ -12,7 +12,10 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 MYSQL_TIMEOUT=8
-MYSQL_CMD="mysql -u root -pqwer1234!AA --protocol=TCP -N -s -B -e"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
@@ -41,6 +44,7 @@ sql_escape() {
   printf "%s" "$s"
 }
 
+# check_D21.sh와 동일한 기준(mysql.user.Grant_priv='Y')으로 대상 계정을 식별합니다.
 QUERY="SELECT User,Host FROM mysql.user WHERE Grant_priv='Y';"
 ROWS="$(run_mysql "$QUERY")"
 RC=$?
@@ -75,15 +79,45 @@ else
     FAIL=0
     APPLIED=0
 
+    # SHOW GRANTS 결과에서 WITH GRANT OPTION이 붙은 scope별로 GRANT OPTION만 회수합니다.
+    # 예) GRANT PROCESS ON *.* TO ... WITH GRANT OPTION  -> REVOKE GRANT OPTION ON *.* FROM ...
+    revoke_grant_option_scoped() {
+      local user="$1"
+      local host="$2"
+      local esc_user esc_host grants line scope
+
+      esc_user="$(sql_escape "$user")"
+      esc_host="$(sql_escape "$host")"
+
+      grants="$(run_mysql "SHOW GRANTS FOR '${esc_user}'@'${esc_host}';")"
+      [[ -z "$grants" ]] && return 1
+
+      while IFS=$'\n' read -r line; do
+        [[ -z "$line" ]] && continue
+        [[ "$line" != *"WITH GRANT OPTION"* ]] && continue
+
+        scope="$(printf "%s" "$line" | sed -E 's/.*[[:space:]]ON[[:space:]]+([^[:space:]]+)[[:space:]]+TO[[:space:]].*/\\1/')"
+        [[ -z "$scope" || "$scope" == "$line" ]] && continue
+
+        run_mysql "REVOKE GRANT OPTION ON ${scope} FROM '${esc_user}'@'${esc_host}';" >/dev/null || return 1
+      done <<< "$grants"
+
+      return 0
+    }
+
     while IFS=$'\t' read -r user host; do
       [[ -z "$host" ]] && continue
       esc_user="$(sql_escape "$user")"
       esc_host="$(sql_escape "$host")"
 
-      run_mysql "REVOKE GRANT OPTION ON *.* FROM '${esc_user}'@'${esc_host}';" >/dev/null
-      if [[ $? -ne 0 ]]; then
-        run_mysql "UPDATE mysql.user SET Grant_priv='N' WHERE User='${esc_user}' AND Host='${esc_host}';" >/dev/null || FAIL=1
+      # 1) scope별 REVOKE 시도(가능한 경우)
+      if ! revoke_grant_option_scoped "$user" "$host"; then
+        # 2) 전역(*.*) REVOKE 시도(구버전/권한 구성에 따라 scope 파싱이 실패할 수 있음)
+        run_mysql "REVOKE GRANT OPTION ON *.* FROM '${esc_user}'@'${esc_host}';" >/dev/null || true
       fi
+
+      # 3) 여전히 Grant_priv가 남아있으면 최후 수단으로 mysql.user 플래그를 내립니다(교육/테스트 환경용)
+      run_mysql "UPDATE mysql.user SET Grant_priv='N' WHERE User='${esc_user}' AND Host='${esc_host}';" >/dev/null || FAIL=1
       APPLIED=$((APPLIED + 1))
     done <<< "$TARGETS"
 
@@ -127,7 +161,7 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"비인가 계정의 GRANT OPTION 회수 및 역할 기반 권한 위임",
+  "guide":"비인가 계정의 GRANT OPTION을 회수합니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
