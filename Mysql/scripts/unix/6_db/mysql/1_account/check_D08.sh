@@ -26,13 +26,16 @@ EVIDENCE="N/A"
 
 TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
-MYSQL_CMD="mysql --protocol=TCP -uroot -N -s -B -e"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+export MYSQL_PWD="${MYSQL_PASSWORD}"
+MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
 # 사용자 계정의 인증 플러그인 확인
 QUERY="
 SELECT user, host, plugin
 FROM mysql.user
-WHERE user NOT IN ('mysql.sys','mysql.session','mysql.infoschema');
+;
 "
 
 if [[ -n "$TIMEOUT_BIN" ]]; then
@@ -81,7 +84,7 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "계정의 인증 플러그인을 SHA-256 기반(caching_sha2_password)으로 변경하세요. 예) ALTER USER '계정'@'호스트' IDENTIFIED WITH caching_sha2_password BY '비밀번호';",
+    "guide": "계정의 인증 플러그인을 SHA-256 기반(caching_sha2_password)으로 변경하십시오.",
     "target_file": "$TARGET_FILE",
     "file_hash": "$FILE_HASH",
     "impact_level": "$IMPACT_LEVEL",
