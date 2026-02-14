@@ -3,82 +3,71 @@
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 이가영
-# @Last Updated: 2026-02-06
+# @Last Updated: 2026-02-14
 # ============================================================================
-# [보완 항목 상세]
+# [점검 항목 상세]
 # @Check_ID : U-34
-# @Category : Service
+# @Category : 서비스 관리
 # @Platform : Rocky Linux
 # @Importance : 상
 # @Title : Finger 서비스 비활성화
 # @Description : Finger 서비스 비활성화 여부 점검
+# @Criteria_Good : Finger 서비스가 비활성화된 경우
+# @Criteria_Bad : Finger 서비스가 활성화된 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-34 Finger 서비스 비활성화
+# [진단] U-34 Finger 서비스 비활성화
 
 # 1. 항목 정보 정의
 ID="U-34"
 CATEGORY="서비스 관리"
 TITLE="Finger 서비스 비활성화"
 IMPORTANCE="상"
-TARGET_FILE="/etc/xinetd.d/finger"
+TARGET_FILE="N/A"
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+# 2. 진단 로직 (KISA 가이드 기준)
+STATUS="PASS"
+EVIDENCE=""
+FILE_HASH="NOT_FOUND"
 
-# [inetd] /etc/inetd.conf에서 finger 주석 처리
-# 가이드: finger 서비스 항목 주석 처리 후 inetd 서비스 재시작
+FINGER_ACTIVE=0
+
+# [LINUX - inetd] /etc/inetd.conf 파일 내 Finger 서비스 활성화 여부 확인
+# 가이드: Finger 서비스 항목이 주석 처리되지 않은 경우 취약
 if [ -f "/etc/inetd.conf" ]; then
-    if grep -v "^#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*finger"; then
-        cp /etc/inetd.conf /etc/inetd.conf.bak_$(date +%Y%m%d_%H%M%S)
-        sed -i 's/^\([[:space:]]*finger\)/#\1/g' /etc/inetd.conf
-        if command -v systemctl &>/dev/null; then
-            systemctl restart inetd 2>/dev/null
-        else
-            killall -HUP inetd 2>/dev/null
-        fi
+    TARGET_FILE="/etc/inetd.conf"
+    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
+    # 선행 공백 후 주석(#)도 제외
+    if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qE "^[[:space:]]*finger([[:space:]]|$)"; then
+        FINGER_ACTIVE=1
+        EVIDENCE="$EVIDENCE /etc/inetd.conf에 Finger 서비스가 활성화되어 있습니다."
     fi
 fi
 
-# [xinetd] /etc/xinetd.d/finger의 disable 옵션을 yes로 수정
-# 가이드: disable = yes로 수정 후 xinetd 서비스 재시작
+# [LINUX - xinetd] /etc/xinetd.d/finger 파일 내 disable 옵션 확인
+# 가이드: finger의 disable 옵션이 no인 경우 취약
 if [ -f "/etc/xinetd.d/finger" ]; then
-    # disable = no (대소문자 무시, 공백 무시) 확인
-    if grep -qiE "disable\s*=\s*no" /etc/xinetd.d/finger 2>/dev/null; then
-        cp /etc/xinetd.d/finger /etc/xinetd.d/finger.bak_$(date +%Y%m%d_%H%M%S)
-        # disable = yes로 변경 (대문자 No 등도 처리하기 위해 문자 클래스 또는 I 플래그 사용)
-        # sed의 I 플래그는 GNU sed 확장이므로 일반적으로 지원됨
-        sed -i 's/disable\s*=\s*[Nn][Oo]/disable = yes/g' /etc/xinetd.d/finger
-        systemctl restart xinetd 2>/dev/null
+    TARGET_FILE="/etc/xinetd.d/finger"
+    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
+    # 주석 라인 제외 + disable=no 인 경우 취약
+    if grep -Ev "^[[:space:]]*#" "$TARGET_FILE" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+        FINGER_ACTIVE=1
+        EVIDENCE="$EVIDENCE /etc/xinetd.d/finger 설정에서 disable = no로 설정되어 있습니다."
     fi
 fi
 
-# [검증] 조치 후 실제 적용 상태 확인
-FINGER_STILL=0
-if [ -f "/etc/inetd.conf" ]; then
-    if grep -v "^#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*finger"; then
-        FINGER_STILL=1
-    fi
-fi
-if [ -f "/etc/xinetd.d/finger" ]; then
-    if grep -qiE "disable\s*=\s*no" /etc/xinetd.d/finger 2>/dev/null; then
-        FINGER_STILL=1
-    fi
-fi
-
-if [ $FINGER_STILL -eq 0 ]; then
-    ACTION_RESULT="SUCCESS"
-    STATUS="PASS"
-    ACTION_LOG="Finger 서비스의 설정 파일을 수정하여 서비스를 비활성화했습니다."
-    EVIDENCE="Finger 서비스가 비활성화되어 있습니다."
-else
-    ACTION_RESULT="FAIL"
+# 결과 판단
+if [ $FINGER_ACTIVE -eq 1 ]; then
     STATUS="FAIL"
-    ACTION_LOG="Finger 서비스 비활성화를 시도했으나 일부 설정이 여전히 활성화 상태입니다. 수동 확인이 필요합니다."
-    EVIDENCE="Finger 서비스가 여전히 활성화되어 있어 취약합니다."
+    EVIDENCE="Finger 서비스가 활성화되어 있어, 외부에서 시스템 사용자 정보를 조회할 수 있는 위험이 있습니다. $EVIDENCE"
+else
+    STATUS="PASS"
+    EVIDENCE="Finger 서비스가 비활성화되어 있습니다."
 fi
+
+IMPACT_LEVEL="LOW" 
+ACTION_IMPACT="이 조치를 적용하더라도 일반적인 시스템 운영에는 영향이 없으나, finger 서비스를 운영·진단 목적 등으로 실제 사용 중인 경우 해당 기능이 더 이상 제공되지 않으므로 적용 전 사용 여부를 반드시 확인하고 필요 시 대체 절차를 마련해야 합니다."
 
 # 3. 마스터 템플릿 표준 출력
 echo ""
@@ -90,10 +79,11 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
+    "guide": "xinetd에서 finger 서비스를 disable=yes로 설정하거나, inetd.conf에서 finger 라인을 주석처리 후 서비스를 재시작해야 합니다.",
+    "target_file": "$TARGET_FILE",
+    "file_hash": "$FILE_HASH",
+    "impact_level": "$IMPACT_LEVEL",
+    "action_impact": "$ACTION_IMPACT",
     "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
