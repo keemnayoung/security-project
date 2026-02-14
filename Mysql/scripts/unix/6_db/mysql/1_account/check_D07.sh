@@ -16,12 +16,11 @@
 # ============================================================================
 
 ID="D-07"
-CATEGORY="계정 관리"
-TITLE="root 권한으로 서비스 구동 제한"
-IMPORTANCE="중"
+STATUS="FAIL"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="/etc/my.cnf"
 
-STATUS="FAIL"
 EVIDENCE="N/A"
 
 # 실제 mysqld 바이너리(/proc/<pid>/exe)가 확인되는 프로세스만 수집
@@ -38,9 +37,13 @@ get_real_mysqld_proc_info() {
 # mysqld 프로세스 실행 사용자 확인
 PROC_INFO="$(get_real_mysqld_proc_info)"
 
+REASON_LINE=""
+DETAIL_CONTENT=""
+
 if [[ -z "$PROC_INFO" ]]; then
     STATUS="FAIL"
-    EVIDENCE="MySQL 서비스(mysqld) 프로세스를 확인할 수 없어, 서비스 구동 계정을 점검할 수 없습니다."
+    REASON_LINE="MySQL 서비스(mysqld) 프로세스를 확인할 수 없어, 서비스 구동 계정을 점검할 수 없습니다."
+    DETAIL_CONTENT="proc_info=EMPTY"
 else
     # root 계정으로 실행 중인 mysqld 존재 여부 확인
     ROOT_PROC=$(echo "$PROC_INFO" | awk -F'\t' '$2=="root"')
@@ -48,36 +51,35 @@ else
     if [[ -z "$ROOT_PROC" ]]; then
         STATUS="PASS"
         RUN_USER=$(echo "$PROC_INFO" | awk -F'\t' 'NR==1{print $2}')
-        EVIDENCE="MySQL 서비스가 root 권한이 아닌 '${RUN_USER}' 계정으로 실행되고 있어, 서비스 권한 남용으로 인한 시스템 손상 위험이 낮습니다."
+        REASON_LINE="MySQL 서비스가 root 권한이 아닌 '${RUN_USER}' 계정으로 실행되고 있어, 서비스 권한 남용으로 인한 시스템 손상 위험이 낮습니다."
+        DETAIL_CONTENT="run_user=${RUN_USER}; proc_count=$(echo "$PROC_INFO" | awk 'END{print NR+0}')"
     else
         STATUS="FAIL"
-        EVIDENCE="MySQL 서비스가 root 권한으로 실행되고 있어, 서비스 취약점 악용 시 시스템 전체가 손상될 수 있는 위험이 있습니다."
+        REASON_LINE="MySQL 서비스가 root 권한으로 실행되고 있어, 서비스 취약점 악용 시 시스템 전체가 손상될 수 있는 위험이 있습니다."
+        DETAIL_CONTENT="root_proc=$(echo "$ROOT_PROC" | awk -F'\t' '{print $1":"$3}' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     fi
 fi
 
-# 파일 해시
-if [ -f "$TARGET_FILE" ]; then
-    FILE_HASH=$(sha256sum "$TARGET_FILE" 2>/dev/null | awk '{print $1}')
-    [[ -z "$FILE_HASH" ]] && FILE_HASH="HASH_ERROR"
-else
-    FILE_HASH="NOT_FOUND"
-fi
+CHECK_COMMAND="ps -eo pid=,user=,comm= | awk '\$3==\"mysqld\" || \$3==\"mariadbd\"{print \$1, \$2, \$3}' + readlink -f /proc/<pid>/exe"
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-ACTION_IMPACT="이 조치를 적용하면 MySQL 서버가 지정된 일반 사용자 계정으로 실행되도록 설정이 변경됩니다. 일반적인 시스템 운영에는 영향이 없으며, 서버 시작 및 데이터베이스 접근에도 문제를 일으키지 않습니다. 다만, 서버 구동 사용자 계정 변경 후 파일 권한이나 소유권이 올바르게 설정되어 있는지 확인해야 합니다."
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
 
+echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "MySQL 서비스(mysqld)는 root가 아닌 전용 계정(예: mysql)으로 실행되도록 설정하십시오. systemd 단위 파일(User=) 및 설정 파일(/etc/my.cnf 등)의 실행 사용자([mysqld] user=)를 점검하고, root로 실행 중이면 전용 계정으로 변경 후 재시작하여 확인하십시오.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

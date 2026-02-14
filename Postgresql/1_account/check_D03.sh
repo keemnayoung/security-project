@@ -1,3 +1,4 @@
+#!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
@@ -14,123 +15,99 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-#!/bin/bash
 
+COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
+# shellcheck disable=SC1090
+. "$COMMON_FILE"
+load_pg_env
+
+# D-03: 비밀번호 사용기간/복잡도 정책
 ID="D-03"
-CATEGORY="계정관리"
-TITLE="비밀번호 사용기간 및 복잡도를 기관의 정책에 맞도록 설정"
-IMPORTANCE="상"
-DATE=$(date '+%Y-%m-%d %H:%M:%S')
-
 STATUS="FAIL"
-ACTION_RESULT="MANUAL_REQUIRED"
-ACTION_LOG="인증 방식 기반 수동 점검 필요"
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="비밀번호 정책 적용 위치(DB/OS/중앙인증)를 확인하여 기관 정책에 맞게 설정해야 합니다."
+EVIDENCE="N/A"
+GUIDE_MSG="N/A"
 
-#########################################
-# 1. 실제 pg_hba.conf 경로 조회
-#########################################
+run_psql() {
+  local sql="$1"
+  if PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -q -c "$sql" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$PG_SUPERUSER" psql -d "$POSTGRES_DB" -t -A -q -c "$sql" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
 
-HBA_FILE=$(sudo -u postgres psql -t -A -c "SHOW hba_file;" 2>/dev/null)
+escape_json_str() {
+  # JSON 문자열 안전 처리: \, ", 줄바꿈
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-if [ -z "$HBA_FILE" ]; then
-    STATUS="FAIL"
-    EVIDENCE="pg_hba.conf 경로 확인 실패"
-    GUIDE_MSG="PostgreSQL 접속 권한을 확인하십시오."
+HBA_FILE="$(run_psql "SHOW hba_file;")"
+HBA_FILE="$(echo "$HBA_FILE" | head -n 1 | xargs)"
+
+if [ -z "$HBA_FILE" ] || [ ! -f "$HBA_FILE" ]; then
+  STATUS="FAIL"
+  EVIDENCE="pg_hba.conf 경로 확인 실패"
+  GUIDE_MSG="SHOW hba_file 결과 및 파일 접근 권한을 확인하십시오."
 else
+  AUTH_METHODS="$(grep -Ev '^\s*#|^\s*$' "$HBA_FILE" 2>/dev/null | awk '{print $NF}' | sort -u | tr '\n' ',' | sed 's/,$//')"
 
-    #########################################
-    # 2. 인증 방식 추출
-    #########################################
+  if echo "$AUTH_METHODS" | grep -Eq 'pam|ldap|gss|sspi'; then
+    STATUS="PASS"
+    EVIDENCE="외부 인증 사용 중: ${AUTH_METHODS}"
+    GUIDE_MSG="기관 정책에 맞는 OS/중앙 인증 비밀번호 정책이 적용되어 있는지 정기 점검하십시오."
+  elif echo "$AUTH_METHODS" | grep -Eq 'password|md5|scram-sha-256'; then
+    NO_EXPIRY_COUNT="$(run_psql "
+SELECT count(*)
+FROM pg_roles
+WHERE rolcanlogin = true
+  AND rolname NOT LIKE 'pg_%'
+  AND rolvaliduntil IS NULL;
+")"
+    NO_EXPIRY_COUNT="$(echo "$NO_EXPIRY_COUNT" | xargs)"
 
-    AUTH_METHODS=$(grep -Ev '^\s*#|^\s*$' "$HBA_FILE" 2>/dev/null | awk '{print $NF}' | sort -u | tr '\n' ',' | sed 's/,$//')
-
-    #########################################
-    # 3. 인증 방식별 가이드 구성
-    #########################################
-
-    if echo "$AUTH_METHODS" | grep -Eq 'password|md5|scram-sha-256'; then
-        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
-
-DB 내부 인증 사용 중입니다.
-
-확인 항목:
-1) 암호 저장 방식 확인:
-   SHOW password_encryption;
-
-2) 계정 만료일 확인:
-   SELECT rolname, rolvaliduntil FROM pg_roles WHERE rolcanlogin=true;
-
-PostgreSQL은 기본적으로 비밀번호 복잡도/사용기간 정책을 제공하지 않으므로,
-기관 정책에 따른 별도 정책 적용 여부를 확인해야 합니다."
-    
-    elif echo "$AUTH_METHODS" | grep -Eq 'pam'; then
-        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
-
-PAM 인증 사용 중입니다.
-
-확인 항목:
-1) /etc/security/pwquality.conf (복잡도)
-2) /etc/login.defs (PASS_MAX_DAYS 등 사용기간)
-3) chage -l 계정명
-
-OS 비밀번호 정책이 기관 정책에 부합하는지 확인하십시오."
-    
-    elif echo "$AUTH_METHODS" | grep -Eq 'ldap|gss|sspi'; then
-        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
-
-중앙 인증(LDAP/AD) 연계 사용 중입니다.
-
-확인 항목:
-1) AD Domain Password Policy
-2) 중앙 인증 서버의 비밀번호 복잡도 정책
-3) 계정 만료 정책
-
-중앙 인증 시스템에서 정책 적용 여부를 확인해야 합니다."
-    
+    if [ -n "$NO_EXPIRY_COUNT" ] && [ "$NO_EXPIRY_COUNT" -eq 0 ] 2>/dev/null; then
+      STATUS="PASS"
+      EVIDENCE="DB 내부 인증(${AUTH_METHODS}) + 로그인 계정 만료정책 적용"
+      GUIDE_MSG="복잡도 정책은 PAM/LDAP 연계 또는 운영 정책으로 별도 관리하십시오."
     else
-        GUIDE_MSG="현재 인증 방식: ${AUTH_METHODS}
-
-인증 방식이 혼합되어 있거나 식별이 명확하지 않습니다.
-
-각 인증 방식별로 정책 적용 위치(DB/OS/중앙 인증)를 구분하여
-기관 정책에 맞게 수동 점검하십시오."
+      STATUS="FAIL"
+      EVIDENCE="DB 내부 인증(${AUTH_METHODS}) + 만료 미설정 계정 존재 가능"
+      GUIDE_MSG="ALTER ROLE <계정명> VALID UNTIL '<YYYY-MM-DD>'; 및 인증체계(PAM/LDAP) 연계를 통해 기관 정책을 충족하십시오."
     fi
-
-    EVIDENCE="실제 pg_hba.conf 경로: ${HBA_FILE}. 적용 인증 방식: ${AUTH_METHODS}"
+  else
+    STATUS="FAIL"
+    EVIDENCE="인증 방식 판별 불가: ${AUTH_METHODS}"
+    GUIDE_MSG="pg_hba.conf 인증 방식과 정책 적용 위치(DB/OS/중앙인증)를 수동 점검하십시오."
+  fi
 fi
 
-#########################################
-# 4. JSON escape
-#########################################
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="(psql 접속) SHOW hba_file; 후 pg_hba.conf의 인증 방식($AUTH_METHODS) 및 pg_roles(rolvaliduntil) 만료 미설정 계정 수 확인"
+TARGET_FILE="$HBA_FILE"
 
-EVIDENCE_ESCAPED=$(echo "$EVIDENCE" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
-GUIDE_ESCAPED=$(echo "$GUIDE_MSG" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
-ACTION_LOG_ESCAPED=$(echo "$ACTION_LOG" | sed 's/"/\\"/g')
+REASON_LINE="$EVIDENCE"
+DETAIL_CONTENT="$GUIDE_MSG"
 
-#########################################
-# 5. JSON 출력
-#########################################
-
-cat <<EOF
+RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE_ESCAPED",
-  "guide": "$GUIDE_ESCAPED",
-  "target_file": "$HBA_FILE",
-  "action_impact": "$ACTION_IMPACT",
-  "impact_level": "$IMPACT_LEVEL",
-  "action_result": "$ACTION_RESULT",
-  "action_log": "$ACTION_LOG_ESCAPED",
-  "check_date": "$DATE"
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
 }
 EOF
+)
 
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
 
-
-
+echo ""
+cat <<EOF
+{
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
+}
+EOF

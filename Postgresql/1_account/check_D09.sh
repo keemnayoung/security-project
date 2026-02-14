@@ -1,3 +1,4 @@
+#!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 윤영아
@@ -13,31 +14,46 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-#!/bin/bash
+
+# 로직 유지 + 출력 형식(scan_history) 통일
+
 ID="D-09"
-CATEGORY="계정관리"
-TITLE="로그인 실패 횟수 제한"
-IMPORTANCE="중"
-DATE=(date '+%Y-%m-%d %H:%M:%S')
-TARGET_FILE="password"
-ACTION_IMPACT="PAM 또는 fail2ban을 통한 로그인 실패 제한 정책은 반복적인 인증 실패 시에만 적용되므로,일반적인 서비스 이용 및 정상 사용자 인증에는 영향이 없으며,오탐 방지를 위해 정책 값에 대한 사전 검토가 필요할 수 있습니다."
-IMPACT_LEVEL="LOW"
 STATUS="FAIL"
 EVIDENCE="PostgreSQL은 로그인 실패 횟수 기반 계정 잠금 기능을 DBMS 자체적으로 제공하지 않습니다."
 
-cat <<EOF
+TARGET_FILE="password"
+CHECK_COMMAND="PostgreSQL 자체 기능 부재(로그인 실패 횟수 기반 잠금 미제공) 확인"
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+
+# 기존 문장(로직) 유지
+REASON_LINE="D-09 취약: ${EVIDENCE}"
+DETAIL_CONTENT="운영체제 수준의 인증 통제(PAM) 또는 접근 제어 도구(fail2ban 등)를 활용하여 일정 횟수 이상의 로그인 실패 시 계정 또는 접속을 제한하도록 구성해야 합니다."
+
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\"/\\\\"/g; s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "check_id":"$ID",
-  "category":"$CATEGORY",
-  "title":"$TITLE",
-  "importance":"$IMPORTANCE",
-  "status":"$STATUS",
-  "evidence":"$EVIDENCE",
-  "guide":"운영체제 수준의 인증 통제(PAM) 또는 접근 제어 도구(fail2ban 등)를 활용하여 일정 횟수 이상의 로그인 실패 시 계정 또는 접속을 제한하도록 구성해야 합니다.",
-  "target_file":"$TARGET_FILE",
-  "action_impact":"$ACTION_IMPACT",
-  "impact_level":"$IMPACT_LEVEL",
-  "check_date": "$DATE"
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
 }
 EOF
+)
 
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+
+echo ""
+cat <<EOF
+{
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
+}
+EOF

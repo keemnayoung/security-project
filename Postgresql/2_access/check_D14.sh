@@ -1,3 +1,4 @@
+#!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 윤영아
@@ -13,60 +14,113 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-#!/bin/bash
+
+COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
+# shellcheck disable=SC1090
+. "$COMMON_FILE"
+load_pg_env
+
 ID="D-14"
-CATEGORY="접근관리"
-TITLE="데이터베이스의 주요 설정 파일, 비밀번호 파일 등과 같은 주요 파일들의 접근 권한이 적절하게 설정"
-IMPORTANCE="중"
-DATE=(date '+%Y-%m-%d %H:%M:%S')
-TARGET_FILE="/var/lib/pgsql/data (postgresql.conf, pg_hba.conf, pg_ident.conf)"
-ACTION_IMPACT="일반 사용자 계정의 DB 주요 설정 파일 수정이 제한되며, 일반적인 서비스 운영에는 영향이 없습니다."
-IMPACT_LEVEL="LOW"
+STATUS="PASS"
+EVIDENCE_LIST=""
+GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 
-PGDATA="/var/lib/pgsql/data"
-BAD=0
-if [ -d "$PGDATA" ]; then
-  dir_perm=$(stat -c %a "$PGDATA")
-  dir_owner=$(stat -c %U "$PGDATA")
+DATA_DIR=$(run_psql "SHOW data_directory;" | xargs)
+[ -z "$DATA_DIR" ] && DATA_DIR="$PGDATA"
+HBA_FILE=$(run_psql "SHOW hba_file;" | xargs)
+CONF_FILE=$(run_psql "SHOW config_file;" | xargs)
+IDENT_FILE="$DATA_DIR/pg_ident.conf"
+LOG_DIR=$(run_psql "SHOW log_directory;" | xargs)
 
-  if [[ "$dir_perm" -gt 750 || "$dir_owner" != "postgres" ]]; then
-    BAD=1
-  fi
-else
-  BAD=1
+if [ -n "$LOG_DIR" ] && [ "${LOG_DIR#/}" = "$LOG_DIR" ]; then
+  LOG_DIR="$DATA_DIR/$LOG_DIR"
 fi
 
-for f in postgresql.conf pg_hba.conf pg_ident.conf; do
-  file="$PGDATA/$f"
-  if [ -f "$file" ]; then
-    perm=$(stat -c %a "$file")
-    owner=$(stat -c %U "$file")
-    if [[ "$perm" -gt 640 || "$owner" != "postgres" ]]; then
-      BAD=1
-    fi
-  fi
-done
+POSTGRES_HOME=$(getent passwd "$PG_SUPERUSER" | cut -d: -f6)
+HISTORY_FILE="${POSTGRES_HOME}/.psql_history"
 
-if [ "$BAD" -eq 0 ]; then
-  STATUS="PASS"
-  EVIDENCE="DB 주요 설정 파일 및 디렉터리 권한이 적절히 제한됨"
+check_item() {
+  local file="$1"
+  local max_mode="$2"
+  local type="$3"
+
+  if [ ! -e "$file" ]; then
+    return
+  fi
+
+  local mode owner
+  mode=$(stat -c '%a' "$file" 2>/dev/null)
+  owner=$(stat -c '%U' "$file" 2>/dev/null)
+
+  if [ -z "$mode" ] || [ -z "$owner" ]; then
+    STATUS="FAIL"
+    EVIDENCE_LIST="${EVIDENCE_LIST}${file}(조회실패),"
+    return
+  fi
+
+  if [ "$owner" != "$PG_SUPERUSER" ] && [ "$owner" != "postgres" ]; then
+    STATUS="FAIL"
+    EVIDENCE_LIST="${EVIDENCE_LIST}${file}(소유자:${owner}),"
+  fi
+
+  if [ "$mode" -gt "$max_mode" ] 2>/dev/null; then
+    STATUS="FAIL"
+    EVIDENCE_LIST="${EVIDENCE_LIST}${file}(권한:${mode}>${max_mode}),"
+  fi
+
+  if [ "$type" = "logdir" ] && [ -d "$file" ]; then
+    while IFS= read -r lf; do
+      lmode=$(stat -c '%a' "$lf" 2>/dev/null)
+      if [ -n "$lmode" ] && [ "$lmode" -gt 640 ] 2>/dev/null; then
+        STATUS="FAIL"
+        EVIDENCE_LIST="${EVIDENCE_LIST}${lf}(로그권한:${lmode}),"
+      fi
+    done < <(find "$file" -maxdepth 1 -type f 2>/dev/null)
+  fi
+}
+
+check_item "$DATA_DIR" 750 "dir"
+check_item "$CONF_FILE" 640 "file"
+check_item "$HBA_FILE" 640 "file"
+check_item "$IDENT_FILE" 640 "file"
+check_item "$HISTORY_FILE" 600 "file"
+check_item "$LOG_DIR" 750 "logdir"
+
+if [ "$STATUS" = "PASS" ]; then
+  EVIDENCE="주요 파일 권한 양호(data=$DATA_DIR, conf=$CONF_FILE, hba=$HBA_FILE)"
 else
-  STATUS="FAIL"
-  EVIDENCE="DB 주요 설정 파일 또는 디렉터리의 권한 설정이 부적절함"
+  EVIDENCE="취약 권한 항목: ${EVIDENCE_LIST%,}"
+  GUIDE_MSG="postgresql.conf/pg_hba.conf/pg_ident.conf/log 파일은 640 이하, .psql_history는 600 이하로 설정하십시오."
 fi
 
+# ===== 표준 출력(scan_history) =====
+CHECK_COMMAND="stat 기반 주요 파일/디렉터리 권한·소유자 점검(data_directory/config_file/hba_file/log_directory/.psql_history)"
+REASON_LINE="D-14 ${STATUS}: ${EVIDENCE}"
+DETAIL_CONTENT="${GUIDE_MSG}"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+TARGET_FILE="${DATA_DIR},${CONF_FILE},${HBA_FILE},${IDENT_FILE},${HISTORY_FILE},${LOG_DIR}"
+
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\"/\\\\"/g; s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
+{
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+
+echo ""
 cat <<EOF
-{ 
-"check_id":"$ID",
-"category":"$CATEGORY",
-"title":"$TITLE",
-"importance":"$IMPORTANCE",
-"status":"$STATUS",
-"evidence":"$EVIDENCE",
-"guide":"PostgreSQL 데이터 디렉터리 및 주요 설정 파일(postgresql.conf, pg_hba.conf, pg_ident.conf)의 소유자를 postgres 계정으로 설정하고, 일반 사용자 계정의 쓰기 권한을 제거하십시오. 디렉터리는 750 이하, 파일은 640 이하 권한으로 설정하는 것이 권장됩니다.",
-"target_file":"$TARGET_FILE",
-"action_impact":"$ACTION_IMPACT",
-"impact_level":"$IMPACT_LEVEL",
-"check_date": "$DATE" 
+{
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

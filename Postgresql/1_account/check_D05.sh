@@ -1,3 +1,4 @@
+#!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 윤영아
@@ -13,31 +14,40 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-#!/bin/bash
+
 ID="D-05"
-CATEGORY="계정관리"
-TITLE="비밀번호 재사용 제한 설정"
-IMPORTANCE="중"
-DATE=(date '+%Y-%m-%d %H:%M:%S')
 STATUS="FAIL"
 EVIDENCE="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 운영 절차 또는 외부 인증 정책에 따른 관리 여부를 수동으로 확인할 필요가 있다."
 
-TARGET_FILE="password"
-ACTION_IMPACT="PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 해당없습니다."
-IMPACT_LEVEL="LOW"
+# scan_history 표준 필드 구성
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="N/A (PostgreSQL 자체 기능 미제공: password reuse restriction)"
+TARGET_FILE="N/A"
 
+REASON_LINE="$EVIDENCE"
+DETAIL_CONTENT="운영 절차(비밀번호 이력 관리) 또는 외부 인증(PAM/LDAP/AD 등) 정책에서 비밀번호 재사용 제한이 적용되는지 확인해야 합니다."
+
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
+{
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+
+echo ""
 cat <<EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "guide": "PostgreSQL은 비밀번호 재사용 제한 기능을 제공하지 않아 해당없습니다.",
-  "target_file": "$TARGET_FILE",
-  "action_impact": "$ACTION_IMPACT",
-  "impact_level": "$IMPACT_LEVEL",
-  "check_date": "$DATE"
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

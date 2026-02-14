@@ -27,7 +27,7 @@ ACTION_LOG="N/A"
 EVIDENCE="N/A"
 
 # 무한 로딩 방지
-TIMEOUT_BIN=""
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 CMD_TIMEOUT_SEC=8
 MYSQL_TIMEOUT_SEC=5
 MYSQL_USER="${MYSQL_USER:-root}"
@@ -245,20 +245,40 @@ else
     fi
 fi
 
-# JSON 표준 출력 (고정 구조)
+
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+if [[ "$STATUS" == "PASS" && "$ACTION_RESULT" == "SUCCESS" ]]; then
+  IS_SUCCESS=1
+fi
+
+CHECK_COMMAND="SELECT VERSION(); (optional) package-manager candidate check; (optional) package update; (optional) restart mysqld"
+TARGET_FILE="DBMS(MySQL)"
+
+REASON_LINE="$EVIDENCE"
+DETAIL_CONTENT="action_result=${ACTION_RESULT}; action_log=${ACTION_LOG}"
+
+json_escape() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
+{
+  "command":"$(json_escape "$CHECK_COMMAND")",
+  "detail":"$(json_escape "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(json_escape "$TARGET_FILE")"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE_JSON")"
+
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "SELECT VERSION()으로 확인한 현재 버전을 벤더 최신 버전(VENDOR_LATEST_VERSION) 또는 패키지 저장소 최신 후보와 비교하십시오. 기준 미만이면 DO_UPDATE=Y로 업데이트를 수행하고, 필요 시 RESTART_MYSQL=Y로 재시작한 뒤 버전을 재확인하십시오.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

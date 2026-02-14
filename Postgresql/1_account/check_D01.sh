@@ -1,3 +1,4 @@
+#!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
@@ -14,52 +15,81 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ==============================================================================
 
-#!/bin/bash
+COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
+# shellcheck disable=SC1090
+. "$COMMON_FILE"
+load_pg_env
+
+# D-01: 기본 계정의 비밀번호, 정책 등을 변경하여 사용 (PostgreSQL)
+
 ID="D-01"
-CATEGORY="계정관리"
-TITLE="관리자(SUPERUSER) 계정 비밀번호 설정 여부 점검"
-IMPORTANCE="상"
-TARGET_FILE="pg_shadow.passwd"
-IMPACT_LEVEL="HIGH"
-ACTION_IMPACT="관리자(SUPERUSER) 계정의 무단 접근 및 DB 전체 권한 탈취 위험을 예방할 수 있습니다."
+
 STATUS="FAIL"
 EVIDENCE="N/A"
 GUIDE_MSG="N/A"
-DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
-# 1. 상태 점검
-# SUPERUSER 중 passwd NULL 계정 점검
-SUPERUSERS=$(sudo -u postgres psql -t -A -c "
-SELECT rolname
-FROM pg_roles
-WHERE rolsuper = true;
-" 2>/dev/null)
+run_psql() {
+  local sql="$1"
+  if PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -q -c "$sql" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$PG_SUPERUSER" psql -d "$POSTGRES_DB" -t -A -q -c "$sql" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+VULN_USERS=$(run_psql "
+SELECT s.usename
+FROM pg_shadow s
+JOIN pg_roles r ON r.rolname = s.usename
+WHERE r.rolsuper = true
+  AND (s.passwd IS NULL OR s.passwd = '');
+")
 
 if [ $? -ne 0 ]; then
-    STATUS="FAIL"
-    EVIDENCE="PostgreSQL 접속 실패 또는 권한 부족"
-    GUIDE_MSG="PostgreSQL 접속 권한을 확인한 후 다시 점검하십시오."
+  STATUS="FAIL"
+  EVIDENCE="SUPERUSER 비밀번호 설정 상태 조회 실패"
+  GUIDE_MSG="postgres 계정으로 pg_shadow 조회 권한을 확인하십시오."
+elif [ -z "$VULN_USERS" ]; then
+  STATUS="PASS"
+  EVIDENCE="SUPERUSER 계정의 비밀번호 설정 상태 양호"
+  GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 else
-    STATUS="MANUAL_CHECK"
-    EVIDENCE="관리자(SUPERUSER) 계정 목록: $(echo "$SUPERUSERS" | tr '\n' ',' | sed 's/,$//')"
-    GUIDE_MSG="PostgreSQL은 SUPERUSER 계정의 비밀번호 설정 여부를 자동으로 정확히 판별할 수 없습니다. 나열된 SUPERUSER 계정에 대해 관리자 계정으로 접속(sudo -u postgres psql) 후 각 계정의 인증 방식 및 비밀번호 설정 여부를 수동으로 확인하고, 필요 시 `ALTER USER <계정명> WITH PASSWORD '<강력한 비밀번호>';` 명령을 수행하십시오."
+  STATUS="FAIL"
+  EVIDENCE="비밀번호 미설정 SUPERUSER 계정: $(echo "$VULN_USERS" | tr '\n' ',' | sed 's/,$//')"
+  GUIDE_MSG="기본 관리자 계정의 비밀번호를 변경하십시오. 예) ALTER ROLE <계정명> WITH PASSWORD '<강력한 비밀번호>';"
 fi
 
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="(psql 접속) SUPERUSER 중 passwd NULL/공란 계정 조회"
+TARGET_FILE="pg_shadow"
 
-# 2. JSON 출력
-cat <<EOF
+REASON_LINE="$EVIDENCE"
+DETAIL_CONTENT="$GUIDE_MSG"
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "check_id": "$ID",
-  "category": "$CATEGORY",
-  "title": "$TITLE",
-  "importance": "$IMPORTANCE",
-  "status": "$STATUS",
-  "evidence": "$EVIDENCE",
-  "guide": "$GUIDE_MSG",
-  "target_file": "$TARGET_FILE",
-  "action_impact": "$ACTION_IMPACT",
-  "impact_level": "$IMPACT_LEVEL",
-  "check_date": "$CHECK_DATE"
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
 }
 EOF
+)
 
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+
+echo ""
+cat <<EOF
+{
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
+}
+EOF

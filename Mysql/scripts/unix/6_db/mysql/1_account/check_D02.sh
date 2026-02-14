@@ -16,17 +16,13 @@
 # ============================================================================
 
 ID="D-02"
-CATEGORY="계정 관리"
-TITLE="불필요한 계정 제거 또는 잠금 설정"
-IMPORTANCE="상"
+STATUS="FAIL"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
 TARGET_FILE="mysql.user(table)"
 
-# 기본 결과값: 점검 전 FAIL, 양호 조건 충족 시 PASS로 변경
-STATUS="FAIL"
-EVIDENCE="N/A"
-
 # 실행 안정성: DB 응답 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
-TIMEOUT_BIN=""
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 MYSQL_TIMEOUT=5
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
@@ -42,21 +38,18 @@ SYSTEM_USERS_CSV="'root','mysql.sys','mysql.session','mysql.infoschema','mysqlxs
 AUTHORIZED_USERS_CSV="${AUTHORIZED_USERS_CSV:-}"
 DEMO_USERS_CSV="${DEMO_USERS_CSV:-scott,pm,adams,clark,test,guest,demo,sample}"
 
-# 계정 잠금 여부 포함 조회
 QUERY_PRIMARY="
 SELECT user, host, IFNULL(account_locked,'N') AS account_locked
 FROM mysql.user
 WHERE user NOT IN (${SYSTEM_USERS_CSV});
 "
 
-# 구버전 호환: account_locked 미지원 환경에서는 시스템 외 계정 존재 여부로 판정
 QUERY_FALLBACK="
 SELECT user, host, 'N' AS account_locked
 FROM mysql.user
 WHERE user NOT IN (${SYSTEM_USERS_CSV});
 "
 
-# 공통 실행 함수: timeout 적용 + 오류 토큰(ERROR/ERROR_TIMEOUT) 표준화
 run_mysql_query() {
     local query="$1"
     if [[ -n "$TIMEOUT_BIN" ]]; then
@@ -76,7 +69,6 @@ in_csv() {
     return 1
 }
 
-# 1차 조회 실패 시 2차(구버전 호환) 조회로 재시도
 RESULT="$(run_mysql_query "$QUERY_PRIMARY")"
 QUERY_MODE="PRIMARY"
 if [[ "$RESULT" == "ERROR" ]]; then
@@ -84,13 +76,17 @@ if [[ "$RESULT" == "ERROR" ]]; then
     QUERY_MODE="FALLBACK"
 fi
 
-# 점검 불가 상황(시간초과/접속실패) 처리
+REASON_LINE=""
+DETAIL_CONTENT=""
+
 if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
     STATUS="FAIL"
-    EVIDENCE="MySQL 계정 목록을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 진단에 실패했습니다. DB 응답 지연 또는 접속 설정을 확인해야 합니다."
+    REASON_LINE="MySQL 계정 목록을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 진단에 실패했습니다. DB 응답 지연 또는 접속 설정을 확인해야 합니다."
+    DETAIL_CONTENT="result=ERROR_TIMEOUT"
 elif [[ "$RESULT" == "ERROR" ]]; then
     STATUS="FAIL"
-    EVIDENCE="MySQL 접속에 실패하여 계정 잠금 상태를 확인할 수 없습니다. 진단 계정 권한 또는 접속 정보를 점검해야 합니다."
+    REASON_LINE="MySQL 접속에 실패하여 계정 잠금 상태를 확인할 수 없습니다. 진단 계정 권한 또는 접속 정보를 점검해야 합니다."
+    DETAIL_CONTENT="result=ERROR"
 else
     VULN_COUNT=0
     SAMPLE="N/A"
@@ -128,38 +124,41 @@ else
     if [[ "$VULN_COUNT" -eq 0 ]]; then
         STATUS="PASS"
         if [[ -n "$AUTHORIZED_USERS_CSV" ]]; then
-            EVIDENCE="D-02 양호: 허용 계정 목록 기준으로 불필요 계정이 확인되지 않았습니다."
+            REASON_LINE="D-02 양호: 허용 계정 목록 기준으로 불필요 계정이 확인되지 않았습니다."
         elif [[ "$QUERY_MODE" == "FALLBACK" ]]; then
-            EVIDENCE="D-02 양호(구버전 호환 점검): 명백한 불필요 계정(익명/데모/테스트) 활성 상태가 확인되지 않았습니다."
+            REASON_LINE="D-02 양호(구버전 호환 점검): 명백한 불필요 계정(익명/데모/테스트) 활성 상태가 확인되지 않았습니다."
         else
-            EVIDENCE="D-02 양호: 명백한 불필요 계정(익명/데모/테스트) 활성 상태가 확인되지 않았습니다."
+            REASON_LINE="D-02 양호: 명백한 불필요 계정(익명/데모/테스트) 활성 상태가 확인되지 않았습니다."
         fi
+        DETAIL_CONTENT="vuln_count=0"
     else
         STATUS="FAIL"
-        EVIDENCE="D-02 취약: 불필요 계정으로 판단되는 활성 계정이 확인되었습니다. (${VULN_COUNT}개, 사유: ${REASON}, 예: ${SAMPLE})"
+        REASON_LINE="D-02 취약: 불필요 계정으로 판단되는 활성 계정이 확인되었습니다."
+        DETAIL_CONTENT="vuln_count=${VULN_COUNT}, reason=${REASON}, sample=${SAMPLE}"
     fi
 fi
 
-# 시스템 테이블 점검이므로 파일 해시는 N/A 처리
-FILE_HASH="N/A(TABLE_CHECK)"
+CHECK_COMMAND="$MYSQL_CMD \"$QUERY_PRIMARY\" (fallback: \"$QUERY_FALLBACK\")"
 
-IMPACT_LEVEL="MEDIUM"
-ACTION_IMPACT="이 조치를 적용하면 불필요한 계정이 삭제되어 해당 계정으로의 접속 및 관련 권한이 모두 사라집니다. 삭제된 계정을 사용하던 자동화 작업, 테스트 스크립트, 애플리케이션 연결 등에서 접속 실패가 발생할 수 있으므로, 사전에 영향 범위를 확인하고 필요한 대체 계정이나 권한을 준비한 후 적용해야 합니다."
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 표준 JSON 결과 출력 (수집 파이프라인 연계 포맷)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
+    "item_code": "$ID",
     "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "계정 목록을 점검하여 익명 계정 및 데모/테스트 계정(${DEMO_USERS_CSV})은 삭제하거나 잠그십시오. 기관 허용 계정 목록을 운영하는 경우 AUTHORIZED_USERS_CSV 기준으로 목록 외 계정을 정리하십시오.",
-    "target_file": "$TARGET_FILE",
-    "file_hash": "$FILE_HASH",
-    "impact_level": "$IMPACT_LEVEL",
-    "action_impact": "$ACTION_IMPACT",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF

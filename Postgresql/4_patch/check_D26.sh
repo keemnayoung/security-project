@@ -1,3 +1,4 @@
+#!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
 # @Version: 1.0.0
 # @Author: 윤영아
@@ -13,39 +14,58 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-#!/bin/bash
+
+COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
+# shellcheck disable=SC1090
+. "$COMMON_FILE"
+load_pg_env
+
 ID="D-26"
-CATEGORY="패치관리"
-TITLE="DB 감사 로그 정책"
-DESCRIPTION="감사 기록 정책 설정이 기관 정책에 적합하게 설정되어 있는지 점검"
-IMPORTANCE="상"
-DATE=(date '+%Y-%m-%d %H:%M:%S')
-TARGET_FILE="logging_collector"
-ACTION_IMPACT="DB 감사 로그 수집이 활성화됩니다. 다만 로그 증가로 인해 디스크 사용량이 증가할 수 있으므로 주기적인 로그 관리가 필요합니다."
-IMPACT_LEVEL="HIGH"
+STATUS="FAIL"
 
-log_collector=$(psql -U postgres -t -c "SHOW logging_collector;" 2>/dev/null | xargs)
+TARGET_FILE="postgresql.conf(logging_collector)"
+CHECK_COMMAND="SHOW logging_collector;"
+REASON_LINE=""
+DETAIL_CONTENT=""
 
-if [ "$log_collector" = "on" ]; then
+CURRENT_VALUE="$(run_psql "SHOW logging_collector;" | xargs)"
+
+if [ "$CURRENT_VALUE" = "on" ]; then
   STATUS="PASS"
-  EVIDENCE="DB 감사 로그 수집 기능(logging_collector)이 활성화됨"
+  REASON_LINE="D-26 PASS: logging_collector=on"
+  DETAIL_CONTENT="현재 기준에서 추가 조치가 필요하지 않습니다."
+elif [ "$CURRENT_VALUE" = "off" ]; then
+  STATUS="FAIL"
+  REASON_LINE="D-26 FAIL: logging_collector=off"
+  DETAIL_CONTENT="postgresql.conf 또는 ALTER SYSTEM으로 logging_collector=on 적용 후 서비스 재시작하십시오."
 else
   STATUS="FAIL"
-  EVIDENCE="DB 감사 로그 수집 기능(logging_collector)이 비활성화됨"
+  REASON_LINE="D-26 FAIL: logging_collector 조회 실패"
+  DETAIL_CONTENT="DB 접속 정보 및 설정 파일 권한을 확인하십시오."
 fi
 
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\"/\\\\"/g; s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
+{
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+
+echo ""
 cat <<EOF
-{ 
-"check_id":"$ID",
-"category":"$CATEGORY",
-"title":"$TITLE",
-"importance":"$IMPORTANCE",
-"status":"$STATUS",
-"evidence":"$EVIDENCE",
-"guide":"PostgreSQL 데이터 디렉터리의 postgresql.conf 파일에서 logging_collector를 on으로 설정하십시오. 설정 변경 후 systemctl restart postgresql 명령을 통해 서비스를 재시작하여 적용 여부를 확인해야 합니다.",
-"target_file":"$TARGET_FILE",
-"action_impact":"$ACTION_IMPACT",
-"impact_level":"$IMPACT_LEVEL",
-"check_date": "$DATE"
+{
+    "item_code": "$ID",
+    "status": "$STATUS",
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+    "scan_date": "$SCAN_DATE"
 }
 EOF
