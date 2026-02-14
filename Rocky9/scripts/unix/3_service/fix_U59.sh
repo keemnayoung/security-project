@@ -17,71 +17,135 @@
 
 # [보완] U-59 안전한 SNMP 버전 사용
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-59"
-CATEGORY="서비스 관리"
-TITLE="안전한 SNMP 버전 사용"
-IMPORTANCE="상"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active snmpd 2>/dev/null || echo "systemctl_or_snmpd_not_found"); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (ls -l /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || true); (grep -inE "^[[:space:]]*(rouser|rwuser|createUser)[[:space:]]+" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "snmpv3_directives_not_found"); (grep -inE "^[[:space:]]*(rocommunity|rwcommunity|com2sec)[[:space:]]+" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "snmpv1v2_directives_not_found")'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
 TARGET_FILE="/etc/snmp/snmpd.conf"
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
+}
 
-# 가이드: systemctl list-units --type=service | grep snmpd
-if ! systemctl list-units --type=service 2>/dev/null | grep -q snmpd && ! pgrep -x snmpd >/dev/null; then
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="SNMP 서비스가 비활성화되어 있습니다."
+has_non_comment_match() {
+  local file="$1"
+  local pattern="$2"
+  [ -f "$file" ] || return 1
+  grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$file" 2>/dev/null | grep -qE "$pattern"
+}
+
+# root 권한 확인(파일 읽기/서비스 확인은 가능하지만, 본 항목은 원칙적으로 root로 점검/조치 권장)
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  IS_SUCCESS=0
+  REASON_LINE="root 권한이 아니어서 SNMP 설정 점검 결과를 신뢰하기 어려워 조치가 완료되지 않았습니다."
+  DETAIL_CONTENT="sudo로 실행해야 합니다."
 else
-    CONF="/etc/snmp/snmpd.conf"
-    if [ ! -f "$CONF" ]; then
-        CONF="/usr/share/snmp/snmpd.conf"
+  HAS_SYSTEMCTL=0
+  command -v systemctl >/dev/null 2>&1 && HAS_SYSTEMCTL=1
+
+  SNMP_ACTIVE=0
+  SNMP_PROC=0
+
+  if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
+    systemctl is-active snmpd >/dev/null 2>&1 && SNMP_ACTIVE=1
+  fi
+  pgrep -x snmpd >/dev/null 2>&1 && SNMP_PROC=1
+
+  # SNMP 미사용이면 양호
+  if [ "$SNMP_ACTIVE" -eq 0 ] && [ "$SNMP_PROC" -eq 0 ]; then
+    IS_SUCCESS=1
+    REASON_LINE="SNMP(snmpd) 서비스가 비활성화되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    append_detail "snmpd_service_active(after)=inactive_or_not_running"
+    append_detail "snmpd_process(after)=not_running"
+    append_detail "snmp_conf_checked=not_applicable"
+  else
+    # 설정 파일 후보
+    CONF_A="/etc/snmp/snmpd.conf"
+    CONF_B="/usr/share/snmp/snmpd.conf"
+    CONF=""
+
+    if [ -f "$CONF_A" ]; then
+      CONF="$CONF_A"
+    elif [ -f "$CONF_B" ]; then
+      CONF="$CONF_B"
     fi
-    
-    if [ -f "$CONF" ]; then
-        # v3 사용자 설정 확인
-        V3_USER=$(grep -E "^(rouser|rwuser|createUser)" "$CONF" 2>/dev/null)
-        
-        if [ -n "$V3_USER" ]; then
-            # 이미 v3 사용 중
-            ACTION_RESULT="SUCCESS"
-            ACTION_LOG="SNMPv3 사용자 설정이 이미 존재하여 안전한 SNMP 버전을 사용 중입니다."
-        else
-            # v1/v2 사용 중 → 수동 조치 안내
-            ACTION_RESULT="MANUAL"
-            ACTION_LOG="SNMP v1/v2 사용이 감지되었습니다. SNMPv3로 업그레이드가 필요합니다. 다음 명령어로 SNMPv3 사용자를 생성하십시오: 'net-snmp-create-v3-user -ro -A <인증암호> -X <암호화암호> -a SHA -x AES <사용자명>' 생성 후 'systemctl restart snmpd'로 재시작하십시오. 기존 v1/v2 Community String은 snmpd.conf에서 주석 처리하거나 삭제하십시오."
-        fi
+
+    if [ -z "$CONF" ]; then
+      IS_SUCCESS=0
+      REASON_LINE="SNMP(snmpd) 서비스가 실행 중이나 snmpd.conf 파일을 찾지 못해 조치가 완료되지 않았습니다."
+      append_detail "snmpd_service_active(after)=$([ "$SNMP_ACTIVE" -eq 1 ] && echo active || echo inactive)"
+      append_detail "snmpd_process(after)=$([ "$SNMP_PROC" -eq 1 ] && echo running || echo not_running)"
+      append_detail "snmp_conf_file(after)=not_found"
     else
-        ACTION_RESULT="FAIL"
-        ACTION_LOG="snmpd.conf 파일을 찾을 수 없습니다."
+      TARGET_FILE="$CONF"
+
+      # SNMPv3 지시자(rouser/rwuser/createUser) 존재 여부
+      V3_OK=0
+      if has_non_comment_match "$CONF" '^[[:space:]]*(rouser|rwuser|createUser)[[:space:]]+'; then
+        V3_OK=1
+      fi
+
+      # v1/v2 지시자(community/com2sec) 존재 여부(참고 정보)
+      V12_FOUND=0
+      if has_non_comment_match "$CONF" '^[[:space:]]*(rocommunity|rwcommunity|com2sec)[[:space:]]+'; then
+        V12_FOUND=1
+      fi
+
+      # (조치 후 상태만 기록) - 실제 조치 대신 현 상태 기록 + 수동 안내
+      append_detail "snmp_conf_file(after)=$CONF"
+      append_detail "snmpv3_directives_present(after)=$([ "$V3_OK" -eq 1 ] && echo yes || echo no)"
+      append_detail "snmpv1v2_directives_present(after)=$([ "$V12_FOUND" -eq 1 ] && echo yes || echo no)"
+
+      if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
+        systemctl is-active snmpd >/dev/null 2>&1 && append_detail "snmpd_service_active(after)=active" || append_detail "snmpd_service_active(after)=inactive"
+      else
+        append_detail "snmpd_service_active(after)=systemctl_not_found"
+      fi
+      pgrep -x snmpd >/dev/null 2>&1 && append_detail "snmpd_process(after)=running" || append_detail "snmpd_process(after)=not_running"
+
+      if [ "$V3_OK" -eq 1 ]; then
+        IS_SUCCESS=1
+        REASON_LINE="SNMPv3 설정이 확인되어 안전한 SNMP 버전을 사용 중이므로 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      else
+        IS_SUCCESS=0
+        REASON_LINE="SNMP(snmpd) 서비스가 실행 중이며 SNMPv3 설정이 확인되지 않아 조치가 완료되지 않았습니다. SNMPv3로 구성하고 v1/v2 community 설정은 제거(주석/삭제)해야 합니다."
+        append_detail "manual_guide(after)=SNMPv3 사용자 생성 예시: net-snmp-create-v3-user -ro -A <AUTH_PASS> -X <PRIV_PASS> -a SHA -x AES <USER>; 적용 후 systemctl restart snmpd. v1/v2 설정(rocommunity/rwcommunity/com2sec)은 주석 처리 또는 삭제"
+      fi
     fi
+  fi
 fi
 
-if [ "$ACTION_RESULT" == "SUCCESS" ]; then
-    STATUS="PASS"
-    EVIDENCE="안전한 SNMP 버전 사용 환경이 구성되어 있습니다."
-elif [ "$ACTION_RESULT" == "MANUAL" ]; then
-    STATUS="MANUAL"
-    EVIDENCE="SNMP v1/v2 사용이 감지되었습니다. SNMPv3로 업그레이드가 필요합니다."
-else
-    STATUS="FAIL"
-    EVIDENCE="SNMP 설정 파일 확인이 필요합니다."
-fi
+# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재(조치 후) 상태)
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
-# 3. 마스터 템플릿 표준 출력
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

@@ -17,74 +17,156 @@
 
 # [보완] U-40 NFS 접근 통제
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-40"
-CATEGORY="서비스 관리"
-TITLE="NFS 접근 통제"
-IMPORTANCE="상"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
 TARGET_FILE="/etc/exports"
+CHECK_COMMAND="stat -c '%U %G %a %n' /etc/exports 2>/dev/null; grep -nEv '^[[:space:]]*#|^[[:space:]]*$' /etc/exports 2>/dev/null | head -n 50"
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+REASON_LINE=""
+DETAIL_CONTENT=""
+ACTION_ERR_LOG=""
+MODIFIED=0
+FAIL_FLAG=0
 
-if [ ! -f "$TARGET_FILE" ]; then
-    ACTION_RESULT="SUCCESS"
-    ACTION_LOG="NFS exports 파일이 존재하지 않습니다."
-else
-    # [Step 1] 조치 전 상태 확인
-    BEFORE_OWNER=$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)
-    BEFORE_PERMS=$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)
-    
-    # [Step 3] 파일 소유자를 root로 변경
-    # 가이드: chown root /etc/exports
-    chown root "$TARGET_FILE" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG 소유자를 root로 변경했습니다."
-    
-    # [Step 4] 파일 권한을 644로 변경
-    # 가이드: chmod 644 /etc/exports
-    chmod 644 "$TARGET_FILE" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG 권한을 644로 변경했습니다."
-    
-    # [Step 5] everyone(*) 공유 설정 자동 변경
-    # 가이드: /home/example host1 (ro, root_squash)
-    # everyone(*)을 127.0.0.1(로컬)로 변경
-    if grep -v "^#" "$TARGET_FILE" 2>/dev/null | grep -qE "\*\(|\s+\*$|\s+\*\s"; then
-        cp "$TARGET_FILE" "${TARGET_FILE}.bak_$(date +%Y%m%d_%H%M%S)"
-        
-        # * 를 127.0.0.1로 변경
-        sed -i 's/\s\+\*\s\+/ 127.0.0.1 /g' "$TARGET_FILE"
-        sed -i 's/\s\+\*$/127.0.0.1/g' "$TARGET_FILE"
-        sed -i 's/\*(/127.0.0.1(/g' "$TARGET_FILE"
-        
-        ACTION_LOG="$ACTION_LOG everyone(*) 공유를 127.0.0.1(로컬)로 변경했습니다. 특정 네트워크에서 NFS 접근이 필요한 경우 /etc/exports 파일에서 127.0.0.1을 해당 IP 또는 네트워크 대역(예: 192.168.1.0/24)으로 수동 변경하십시오."
-    fi
-    
-    # [Step 6] NFS 서비스 설정 적용
-    # 가이드: exportfs -ra
-    exportfs -ra 2>/dev/null
-    ACTION_LOG="$ACTION_LOG exportfs -ra를 실행했습니다."
-    
-    ACTION_LOG="/etc/exports 파일의 소유자를 root로 변경하고 권한을 644로 설정했으며, everyone(*) 공유가 있는 경우 로컬(127.0.0.1)로 제한했습니다. 특정 네트워크의 NFS 접근이 필요하다면 /etc/exports 파일에서 허용할 IP 또는 네트워크 대역으로 수동 변경하십시오."
+# (필수) root 권한 권장 안내(실패 원인 명확화용)
+if [ "$(id -u)" -ne 0 ]; then
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 chown/chmod/exportfs 조치가 실패할 수 있습니다."
 fi
 
-STATUS="PASS"
-EVIDENCE="NFS 접근 통제가 적절히 설정되어 있습니다."
+append_err() {
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+  else
+    ACTION_ERR_LOG="$1"
+  fi
+}
 
-# 3. 마스터 템플릿 표준 출력
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
+}
+
+# exports 내 와일드카드(*) 허용 여부(활성 라인 기준)
+has_wildcard_share() {
+  [ -f "$TARGET_FILE" ] || return 1
+  # 예: /path *(rw,...) 또는 /path  *(...) 등 다양한 공백 케이스 방어
+  grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$TARGET_FILE" 2>/dev/null | grep -qE '(^|[[:space:]])\*([[:space:]]|\(|$)'
+}
+
+# ---------------------------
+# 조치 프로세스
+# ---------------------------
+if [ ! -f "$TARGET_FILE" ]; then
+  IS_SUCCESS=1
+  REASON_LINE="NFS exports 파일(/etc/exports)이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="exports_file=not_found"
+else
+  # stat 수집 실패 방어(필수)
+  OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+  GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+  PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+
+  if [ -z "$OWNER" ] || [ -z "$GROUP" ] || [ -z "$PERM" ]; then
+    IS_SUCCESS=0
+    REASON_LINE="/etc/exports 파일의 소유자/그룹/권한 정보를 수집하지 못해 조치 수행 및 검증이 불가능하므로 조치가 완료되지 않았습니다."
+    DETAIL_CONTENT="owner=${OWNER:-unknown}\ngroup=${GROUP:-unknown}\nperm=${PERM:-unknown}"
+  else
+    # 1) 소유자/그룹 root:root 표준화
+    if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+      chown root:root "$TARGET_FILE" 2>/dev/null || append_err "chown root:root 실패"
+      MODIFIED=1
+    fi
+
+    # 2) 권한 644 표준화
+    if [ "$PERM" != "644" ]; then
+      chmod 644 "$TARGET_FILE" 2>/dev/null || append_err "chmod 644 실패"
+      MODIFIED=1
+    fi
+
+    # 3) everyone(*) 공유는 자동 변경 대신 FAIL + 수동 조치 권고(안전)
+    if has_wildcard_share; then
+      FAIL_FLAG=1
+      append_err "exports 파일에서 everyone(*) 공유 설정이 확인되었습니다."
+    fi
+
+    # 4) 설정 반영(exportfs -ra) (명령 있을 때만)
+    if command -v exportfs >/dev/null 2>&1; then
+      exportfs -ra 2>/dev/null || append_err "exportfs -ra 실행 실패"
+    else
+      append_err "exportfs 명령을 사용할 수 없어 설정 반영을 수행하지 못했습니다."
+    fi
+
+    # 조치 후/현재 상태 수집(현재 설정만 evidence에 포함)
+    AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
+    AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
+    AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+
+    # 현재 exports 주요 라인(요약)
+    ACTIVE_LINES="$(grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$TARGET_FILE" 2>/dev/null | head -n 10)"
+    [ -z "$ACTIVE_LINES" ] && ACTIVE_LINES="no_active_exports_lines"
+
+    WILDCARD_STATUS="not_found"
+    if has_wildcard_share; then
+      WILDCARD_STATUS="wildcard_share_exists"
+    else
+      WILDCARD_STATUS="no_wildcard_share"
+    fi
+
+    append_detail "exports(after) owner=$AFTER_OWNER group=$AFTER_GROUP perm=$AFTER_PERM"
+    append_detail "wildcard_share_check(after)=$WILDCARD_STATUS"
+    append_detail "exports_active_lines(after)=$ACTIVE_LINES"
+
+    # 최종 검증
+    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ "$AFTER_PERM" = "644" ] && [ "$FAIL_FLAG" -eq 0 ]; then
+      IS_SUCCESS=1
+      if [ "$MODIFIED" -eq 1 ]; then
+        REASON_LINE="/etc/exports 파일의 소유자/그룹이 root로 설정되고 권한이 644로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      else
+        REASON_LINE="/etc/exports 파일의 소유자/그룹이 root이고 권한이 644로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      fi
+    else
+      IS_SUCCESS=0
+      if [ "$FAIL_FLAG" -eq 1 ]; then
+        REASON_LINE="조치를 수행했으나 /etc/exports 파일에 everyone(*) 공유 설정이 남아 있어 수동으로 허용 IP 또는 네트워크 대역(예: 192.168.1.0/24)으로 제한해야 조치가 완료됩니다."
+      else
+        REASON_LINE="조치를 수행했으나 /etc/exports 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+      fi
+    fi
+  fi
+fi
+
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

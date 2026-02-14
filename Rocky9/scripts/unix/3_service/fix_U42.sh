@@ -17,88 +17,230 @@
 
 # [보완] U-42 불필요한 RPC 서비스 비활성화
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-42"
-CATEGORY="서비스 관리"
-TITLE="불필요한 RPC 서비스 비활성화"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+TARGET_FILE="/etc/inetd.conf
+/etc/xinetd.d/*
+systemd(rpc related services)"
 
-# [inetd] /etc/inetd.conf 파일 수정 (주석 처리)
-# 가이드: RPC 서비스 라인 주석 처리 후 inetd 재시작
+# NOTE: rpc 관련 서비스는 환경에 따라 필수(NFS 등)일 수 있으므로,
+# 무분별한 전체 중지는 위험. 대표적으로 불필요로 분류되는 항목 위주로 존재할 때만 조치.
+RPC_UNITS_CANDIDATES=(
+  "rpcbind.service"
+  "rpcbind.socket"
+  "rpc-statd.service"
+  "rpc-statd-notify.service"
+  "rpc-gssd.service"
+  "rpc-svcgssd.service"
+  "rpc-idmapd.service"
+)
+
+CHECK_COMMAND='
+( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nE "^[[:space:]]*rpc([[:space:]]|$)" ) || echo "inetd_no_active_rpc_lines";
+if [ -d /etc/xinetd.d ]; then
+  for f in /etc/xinetd.d/*; do
+    [ -f "$f" ] || continue
+    ( echo "$f" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$f" 2>/dev/null ) || continue
+    echo "xinetd_rpc_file:$f"
+    grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1
+  done
+else
+  echo "xinetd_dir_not_found"
+fi;
+(command -v systemctl >/dev/null 2>&1 && (
+  systemctl list-unit-files 2>/dev/null | grep -Ei "^rpc.*\.(service|socket)[[:space:]]" | head -n 50 || echo "no_rpc_unit_files";
+  for u in rpcbind.service rpcbind.socket rpc-statd.service rpc-statd-notify.service rpc-gssd.service rpc-svcgssd.service rpc-idmapd.service; do
+    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
+  done
+)) || echo "systemctl_not_found"
+'
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+ACTION_ERR_LOG=""
+MODIFIED=0
+FAIL_FLAG=0
+
+# (필수) root 권한 권장 안내(실패 원인 명확화용)
+if [ "$(id -u)" -ne 0 ]; then
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 sed/systemctl 조치가 실패할 수 있습니다."
+fi
+
+append_err() {
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+  else
+    ACTION_ERR_LOG="$1"
+  fi
+}
+
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
+}
+
+restart_inetd_if_exists() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qE "^inetd\.service" || return 0
+  systemctl restart inetd 2>/dev/null || append_err "systemctl restart inetd 실패"
+}
+
+restart_xinetd_if_exists() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qE "^xinetd\.service" || return 0
+  systemctl restart xinetd 2>/dev/null || append_err "systemctl restart xinetd 실패"
+}
+
+disable_systemd_unit_if_exists() {
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
+
+  systemctl stop "$unit" 2>/dev/null || append_err "systemctl stop ${unit} 실패"
+  systemctl disable "$unit" 2>/dev/null || append_err "systemctl disable ${unit} 실패"
+  systemctl mask "$unit" 2>/dev/null || append_err "systemctl mask ${unit} 실패"
+  MODIFIED=1
+}
+
+########################################
+# 1) inetd: /etc/inetd.conf 내 rpc 시작 라인 주석 처리(활성 라인만)
+########################################
 if [ -f "/etc/inetd.conf" ]; then
-    if grep -v "^#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*rpc"; then
-
-        cp /etc/inetd.conf /etc/inetd.conf.bak_$(date +%Y%m%d_%H%M%S)
-        # rpc로 시작하는 라인 주석 처리
-        sed -i 's/^\([[:space:]]*rpc\)/#\1/g' /etc/inetd.conf
-        # inetd 서비스 재시작
-        systemctl restart inetd 2>/dev/null || killall -HUP inetd 2>/dev/null
-        ACTION_LOG="$ACTION_LOG /etc/inetd.conf RPC 서비스를 주석 처리하고 inetd를 재시작했습니다."
-    fi
+  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*rpc([[:space:]]|$)"; then
+    cp -a /etc/inetd.conf "/etc/inetd.conf.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "inetd.conf 백업 실패"
+    sed -i 's/^\([[:space:]]*rpc\)/#\1/g' /etc/inetd.conf 2>/dev/null || append_err "inetd.conf rpc 라인 주석 처리 실패"
+    MODIFIED=1
+    restart_inetd_if_exists
+  fi
 fi
 
-# [xinetd] /etc/xinetd.d/ 디렉터리 내 RPC 파일 disable 설정값 수정
-# 가이드: disable = yes로 수정 후 xinetd 재시작
-XINETD_MODIFIED=0
+########################################
+# 2) xinetd: /etc/xinetd.d 내 rpc 관련 파일 disable=no -> disable=yes
+########################################
+XINETD_CHANGED=0
 if [ -d "/etc/xinetd.d" ]; then
-    for conf in /etc/xinetd.d/*; do
-        if [ -f "$conf" ]; then
-            if echo "$conf" | grep -qi "rpc" || grep -q "service.*rpc" "$conf" 2>/dev/null; then
-                if grep -qiE "disable\s*=\s*no" "$conf" 2>/dev/null; then
-
-                    cp "$conf" "${conf}.bak_$(date +%Y%m%d_%H%M%S)"
-                    sed -i 's/disable\s*=\s*no/disable = yes/gi' "$conf"
-                    XINETD_MODIFIED=1
-                    ACTION_LOG="$ACTION_LOG $(basename $conf)에서 disable=yes로 설정했습니다."
-                fi
-            fi
-        fi
-    done
+  for conf in /etc/xinetd.d/*; do
+    [ -f "$conf" ] || continue
+    # 파일명에 rpc 포함 또는 service 라인에 rpc 포함(보수적)
+    if echo "$conf" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$conf" 2>/dev/null; then
+      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+        cp -a "$conf" "${conf}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "$(basename "$conf") 백업 실패"
+        sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' "$conf" 2>/dev/null \
+          || append_err "$(basename "$conf") disable=yes 변경 실패"
+        XINETD_CHANGED=1
+        MODIFIED=1
+      fi
+    fi
+  done
 fi
 
-if [ $XINETD_MODIFIED -eq 1 ]; then
-    systemctl restart xinetd 2>/dev/null
-    ACTION_LOG="$ACTION_LOG xinetd를 재시작했습니다."
+if [ "$XINETD_CHANGED" -eq 1 ]; then
+  restart_xinetd_if_exists
 fi
 
-# [systemd] 불필요한 RPC 서비스 중지 및 비활성화
-# 가이드: systemctl stop/disable <서비스명>
-RPC_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep rpc | awk '{print $1}')
-for svc in $RPC_SERVICES; do
-
-    systemctl stop "$svc" 2>/dev/null
-    systemctl disable "$svc" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG $svc 서비스를 중지하고 비활성화했습니다."
+########################################
+# 3) systemd: 대표 RPC 유닛 stop/disable/mask(존재할 때만)
+#    ※ rpcbind는 NFS 등에 필요할 수 있어, 불필요한 경우에만 적용 권고.
+########################################
+for u in "${RPC_UNITS_CANDIDATES[@]}"; do
+  disable_systemd_unit_if_exists "$u"
 done
 
-if [ -n "$ACTION_LOG" ]; then
-    ACTION_LOG="불필요한 RPC 서비스의 설정을 수정하여 서비스를 비활성화했습니다."
+########################################
+# 4) 조치 후 검증 + detail(현재/조치 후 상태만)
+########################################
+# inetd 활성 rpc 라인 남아있으면 실패
+INETD_POST="inetd_conf_not_found"
+if [ -f "/etc/inetd.conf" ]; then
+  INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*rpc([[:space:]]|$)' | head -n 5)"
+  [ -z "$INETD_POST" ] && INETD_POST="no_active_rpc_lines"
+fi
+[ "$INETD_POST" != "no_active_rpc_lines" ] && FAIL_FLAG=1
+append_detail "inetd_active_rpc_lines(after)=$INETD_POST"
+
+# xinetd rpc 파일 중 disable=no 남아있으면 실패(존재하는 것만)
+XINETD_BAD=0
+XINETD_POST_SUMMARY=""
+if [ -d "/etc/xinetd.d" ]; then
+  for conf in /etc/xinetd.d/*; do
+    [ -f "$conf" ] || continue
+    if echo "$conf" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$conf" 2>/dev/null; then
+      line="$(grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
+      [ -z "$line" ] && line="disable_setting_not_found"
+      XINETD_POST_SUMMARY="${XINETD_POST_SUMMARY}$(basename "$conf"):${line}; "
+      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+        XINETD_BAD=1
+      fi
+    fi
+  done
 else
-    ACTION_LOG="RPC 서비스가 이미 비활성화되어 있어 추가 조치 없이 양호한 상태를 유지합니다."
+  XINETD_POST_SUMMARY="xinetd_dir_not_found"
+fi
+[ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_rpc_related_xinetd_files"
+append_detail "xinetd_rpc_disable_settings(after)=$XINETD_POST_SUMMARY"
+[ "$XINETD_BAD" -eq 1 ] && FAIL_FLAG=1
+
+# systemd enabled/active면 실패
+if command -v systemctl >/dev/null 2>&1; then
+  for u in "${RPC_UNITS_CANDIDATES[@]}"; do
+    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
+      en="$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
+      ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
+      append_detail "${u}(after) enabled=$en active=$ac"
+      echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
+      echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+    fi
+  done
+else
+  append_detail "systemctl_not_found"
+  FAIL_FLAG=1
 fi
 
-STATUS="PASS"
-EVIDENCE="취약점 조치가 완료되었습니다."
+# 최종 판정
+if [ "$FAIL_FLAG" -eq 0 ]; then
+  IS_SUCCESS=1
+  if [ "$MODIFIED" -eq 1 ]; then
+    REASON_LINE="불필요한 RPC 서비스가 비활성화되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
+    REASON_LINE="RPC 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  fi
+else
+  IS_SUCCESS=0
+  REASON_LINE="조치를 수행했으나 RPC 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+fi
 
-# 3. 마스터 템플릿 표준 출력
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

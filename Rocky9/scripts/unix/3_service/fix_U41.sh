@@ -17,58 +17,162 @@
 
 # [보완] U-41 불필요한 automountd 제거
 
-# 1. 항목 정보 정의
+
+# 기본 변수
 ID="U-41"
-CATEGORY="서비스 관리"
-TITLE="불필요한 automountd 제거"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+CHECK_COMMAND='
+(command -v systemctl >/dev/null 2>&1 && (
+  systemctl list-unit-files 2>/dev/null | grep -Ei "^(autofs)\.service[[:space:]]" || echo "autofs_unit_file_not_found";
+  systemctl list-units --type=service 2>/dev/null | grep -Ei "autofs" || echo "no_running_autofs_service";
+  systemctl list-unit-files 2>/dev/null | grep -Ei "automount.*\.mount[[:space:]]" || echo "no_automount_mount_units";
+  for u in autofs.service; do
+    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
+  done
+)) || echo "systemctl_not_found"
+'
 
-# [Step 1] automount 또는 autofs 서비스 활성화 여부 확인
-# 가이드: systemctl list-units --type=service | grep -E "automount|autofs"
-AUTOFS_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "automount|autofs" | awk '{print $1}')
+REASON_LINE=""
+DETAIL_CONTENT=""
+TARGET_FILE="systemd(autofs.service, automount*.mount)"
 
-# [Step 2] automount 또는 autofs 서비스 중지
-# 가이드: systemctl stop <서비스명>
-for svc in $AUTOFS_SERVICES; do
-    systemctl stop "$svc" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG $svc 중지;"
-done
+ACTION_ERR_LOG=""
 
-# [Step 3] automount 또는 autofs 서비스 비활성화
-# 가이드: systemctl disable <서비스명>
-for svc in $AUTOFS_SERVICES; do
-    systemctl disable "$svc" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG $svc 비활성화;"
-done
-
-if [ -n "$ACTION_LOG" ]; then
-    ACTION_LOG="불필요한 automountd(autofs) 서비스를 중지하고 비활성화 처리했습니다."
-else
-    ACTION_LOG="automountd(autofs) 서비스가 이미 비활성화되어 있어 추가 조치 없이 양호한 상태를 유지합니다."
+# (필수) root 권한 권장 안내(실패 원인 명확화용)
+if [ "$(id -u)" -ne 0 ]; then
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 systemctl stop/disable/mask 조치가 실패할 수 있습니다."
 fi
 
-STATUS="PASS"
-EVIDENCE="NFS 서비스 파일 접근 제어가 적절히 설정되어 있습니다."
+MODIFIED=0
+FAIL_FLAG=0
 
-# 3. 마스터 템플릿 표준 출력
+append_err() {
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+  else
+    ACTION_ERR_LOG="$1"
+  fi
+}
+
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
+}
+
+# systemd 조치(있을 때만): stop/disable/mask
+disable_unit_if_exists() {
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
+
+  systemctl stop "$unit" 2>/dev/null || append_err "systemctl stop ${unit} 실패"
+  systemctl disable "$unit" 2>/dev/null || append_err "systemctl disable ${unit} 실패"
+  systemctl mask "$unit" 2>/dev/null || append_err "systemctl mask ${unit} 실패"
+  MODIFIED=1
+}
+
+# mount 유닛 조치(있을 때만)
+disable_mount_if_exists() {
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
+
+  systemctl stop "$unit" 2>/dev/null || append_err "systemctl stop ${unit} 실패"
+  systemctl disable "$unit" 2>/dev/null || append_err "systemctl disable ${unit} 실패"
+  systemctl mask "$unit" 2>/dev/null || append_err "systemctl mask ${unit} 실패"
+  MODIFIED=1
+}
+
+# ---------------------------
+# 조치 수행
+# ---------------------------
+if ! command -v systemctl >/dev/null 2>&1; then
+  IS_SUCCESS=0
+  REASON_LINE="systemctl 명령을 사용할 수 없어 automountd(autofs) 서비스 비활성화 조치를 수행할 수 없습니다."
+  DETAIL_CONTENT="systemctl_not_found"
+else
+  # 1) autofs 서비스 비활성화
+  disable_unit_if_exists "autofs.service"
+
+  # 2) automount 관련 mount 유닛이 있으면 비활성화(환경별 존재 가능)
+  AUTOMOUNT_MOUNTS="$(systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -E '^automount.*\.mount$' | head -n 50)"
+  if [ -n "$AUTOMOUNT_MOUNTS" ]; then
+    for m in $AUTOMOUNT_MOUNTS; do
+      disable_mount_if_exists "$m"
+    done
+  fi
+
+  # ---------------------------
+  # 조치 후 검증(현재/조치 후 상태만)
+  # ---------------------------
+  # autofs.service
+  if systemctl list-unit-files 2>/dev/null | grep -qiE "^autofs\.service[[:space:]]"; then
+    en="$(systemctl is-enabled autofs.service 2>/dev/null || echo unknown)"
+    ac="$(systemctl is-active autofs.service 2>/dev/null || echo unknown)"
+    append_detail "autofs.service(after) enabled=$en active=$ac"
+    echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
+    echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+  else
+    append_detail "autofs.service(after)=not_installed_or_not_registered"
+  fi
+
+  # automount*.mount
+  if [ -n "$AUTOMOUNT_MOUNTS" ]; then
+    for m in $AUTOMOUNT_MOUNTS; do
+      en="$(systemctl is-enabled "$m" 2>/dev/null || echo unknown)"
+      ac="$(systemctl is-active "$m" 2>/dev/null || echo unknown)"
+      append_detail "${m}(after) enabled=$en active=$ac"
+      echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
+      echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+    done
+  else
+    append_detail "automount_mount_units(after)=not_found"
+  fi
+
+  if [ "$FAIL_FLAG" -eq 0 ]; then
+    IS_SUCCESS=1
+    if [ "$MODIFIED" -eq 1 ]; then
+      REASON_LINE="불필요한 automountd(autofs) 서비스가 비활성화되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    else
+      REASON_LINE="automountd(autofs) 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    fi
+  else
+    IS_SUCCESS=0
+    REASON_LINE="조치를 수행했으나 automountd(autofs) 서비스가 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  fi
+fi
+
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+fi
+
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

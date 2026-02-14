@@ -17,70 +17,84 @@
 
 # [보완] U-63 sudo 명령어 접근 관리
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-63"
-CATEGORY="서비스 관리"
-TITLE="sudo 명령어 접근 관리"
-IMPORTANCE="중"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
+CHECK_COMMAND="stat -c '%U %a %n' /etc/sudoers 2>/dev/null"
+REASON_LINE=""
+DETAIL_CONTENT=""
 TARGET_FILE="/etc/sudoers"
 
-# 2. 보완 로직
+# 유틸: JSON escape
+json_escape() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g'
+}
+
+# 로직(사용자 제공 스크립트 기반)
 ACTION_RESULT="SUCCESS"
 ACTION_LOG=""
 
 if [ -f "$TARGET_FILE" ]; then
-    # 현재 상태 확인
-    OWNER=$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)
-    PERMS=$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)
+  # 현재 상태 확인
+  OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)"
+  PERMS="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)"
 
-    
-    # 소유자 변경
-    if [ "$OWNER" != "root" ]; then
-        chown root "$TARGET_FILE"
-        ACTION_LOG="$ACTION_LOG 소유자를 root로 변경했습니다."
-    fi
-    
-    # 권한 변경
-    if [ "$PERMS" -gt 640 ]; then
-        chmod 640 "$TARGET_FILE"
-        ACTION_LOG="$ACTION_LOG 권한을 640으로 변경했습니다."
-    fi
-    
-    # 변경 후 상태 확인
+  # 소유자 변경
+  if [ "$OWNER" != "root" ]; then
+    chown root "$TARGET_FILE" 2>/dev/null
+    ACTION_LOG="$ACTION_LOG 소유자를 root로 변경했습니다."
+  fi
 
-    
+  # 권한 변경
+  if [ -n "$PERMS" ] && [ "$PERMS" -gt 640 ]; then
+    chmod 640 "$TARGET_FILE" 2>/dev/null
+    ACTION_LOG="$ACTION_LOG 권한을 640으로 변경했습니다."
+  fi
+
+  # 변경 후 상태 확인(현재(after)만)
+  AFTER_OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)"
+  AFTER_PERMS="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)"
+  DETAIL_CONTENT="/etc/sudoers 현재 설정: owner=${AFTER_OWNER:-unknown}, perm=${AFTER_PERMS:-unknown}"
+
 else
-    ACTION_RESULT="FAIL"
-    ACTION_LOG="/etc/sudoers 파일이 존재하지 않습니다."
+  ACTION_RESULT="FAIL"
+  ACTION_LOG="/etc/sudoers 파일이 존재하지 않습니다."
 fi
 
-if [ "$ACTION_RESULT" == "FAIL" ]; then
-    STATUS="FAIL"
-    EVIDENCE="/etc/sudoers 파일이 존재하지 않습니다."
+# 결과 판단(사용자 제공 흐름 유지)
+if [ "$ACTION_RESULT" = "FAIL" ]; then
+  IS_SUCCESS=0
+  REASON_LINE="/etc/sudoers 파일이 존재하지 않아 조치가 완료되지 않았습니다."
 elif [ -n "$ACTION_LOG" ]; then
-    ACTION_LOG="/etc/sudoers 파일의 소유자를 root로 변경하고 권한을 640으로 설정했습니다."
-    STATUS="PASS"
-    EVIDENCE="/etc/sudoers 파일의 권한이 적절히 설정되어 있습니다."
+  IS_SUCCESS=1
+  REASON_LINE="/etc/sudoers 파일의 소유자를 root로 변경하고 권한을 640으로 설정했습니다."
 else
-    ACTION_LOG="/etc/sudoers 파일이 이미 적절한 권한으로 설정되어 있습니다."
-    STATUS="PASS"
-    EVIDENCE="/etc/sudoers 파일의 권한이 적절히 설정되어 있습니다."
+  IS_SUCCESS=1
+  REASON_LINE="/etc/sudoers 파일이 이미 적절한 권한으로 설정되어 있습니다."
 fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성(command/detail/target_file) + escape
+RAW_EVIDENCE_JSON=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE_JSON")"
+
+# 최종 출력 (프로젝트 표준: echo "" 후 scan 결과 JSON)
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+  "item_code": "$ID",
+  "action_date": "$ACTION_DATE",
+  "is_success": $IS_SUCCESS,
+  "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

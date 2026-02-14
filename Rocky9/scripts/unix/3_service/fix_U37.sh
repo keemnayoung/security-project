@@ -17,249 +17,303 @@
 
 # [보완] U-37 crontab 설정파일 권한 설정
 
-# 1. 항목 정보 정의
+# 기본 변수
 ID="U-37"
-CATEGORY="서비스 관리"
-TITLE="crontab 설정파일 권한 설정 미흡"
-IMPORTANCE="상"
-TARGET_FILE="N/A"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
 
-# 2. 보완 로직
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
-STATUS="PASS"
-EVIDENCE="crontab 및 at 관련 파일의 권한이 적절히 설정되어 있습니다."
+REASON_LINE=""
+DETAIL_CONTENT=""
+ACTION_ERR_LOG=""
 
-append_log() {
-    if [ -n "$ACTION_LOG" ]; then
-        ACTION_LOG="$ACTION_LOG $1"
-    else
-        ACTION_LOG="$1"
-    fi
+R_SERVICES_UNUSED=""
+
+# 대상(가이드 기준)
+CRONTAB_CMD="/usr/bin/crontab"
+AT_CMD="/usr/bin/at"
+
+CRON_SPOOL_DIRS=("/var/spool/cron" "/var/spool/cron/crontabs")
+CRON_ETC_FILES=("/etc/crontab")
+CRON_ETC_DIRS=("/etc/cron.d" "/etc/cron.daily" "/etc/cron.hourly" "/etc/cron.weekly" "/etc/cron.monthly")
+AT_SPOOL_DIRS=("/var/spool/at" "/var/spool/cron/atjobs")
+
+TARGET_FILE="$CRONTAB_CMD
+$AT_CMD
+${CRON_SPOOL_DIRS[*]}
+${CRON_ETC_FILES[*]}
+${CRON_ETC_DIRS[*]}
+${AT_SPOOL_DIRS[*]}"
+
+CHECK_COMMAND='
+for p in /usr/bin/crontab /usr/bin/at; do
+  [ -e "$p" ] && stat -c "%U %G %a %n" "$p" 2>/dev/null || echo "not_found:$p";
+done;
+for d in /var/spool/cron /var/spool/cron/crontabs /var/spool/at /var/spool/cron/atjobs; do
+  [ -d "$d" ] && find "$d" -maxdepth 1 -type f -exec stat -c "%U %G %a %n" {} \; 2>/dev/null | head -n 50 || echo "dir_not_found:$d";
+done;
+for f in /etc/crontab; do
+  [ -f "$f" ] && stat -c "%U %G %a %n" "$f" 2>/dev/null || echo "not_found:$f";
+done;
+for d in /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly; do
+  [ -d "$d" ] && stat -c "%U %G %a %n" "$d" 2>/dev/null || echo "dir_not_found:$d";
+done
+'
+
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+MODIFIED=0
+FAIL_FLAG=0
+
+append_err() {
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+  else
+    ACTION_ERR_LOG="$1"
+  fi
 }
 
-fail() {
-    STATUS="FAIL"
-    ACTION_RESULT="FAIL"
-    if [ -n "$1" ]; then
-        append_log "$1"
-    fi
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
 }
 
-check_perm_exceeds() {
-    local current="$1"
-    local max="$2"
-    [ -n "$current" ] || return 0
-    [ "$current" -gt "$max" ] && return 0 || return 1
+# (필수) root 권한 권장 안내(실패 원인 명확화용)
+if [ "$(id -u)" -ne 0 ]; then
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 chown/chmod 조치가 실패할 수 있습니다."
+fi
+
+# 권한 초과 판정(정수 비교)
+perm_exceeds() {
+  local cur="$1"
+  local max="$2"
+  [ -z "$cur" ] && return 1
+  [ -z "$max" ] && return 1
+  # 숫자 형식 검증
+  echo "$cur" | grep -Eq '^[0-7]{3,4}$' || return 1
+  echo "$max" | grep -Eq '^[0-7]{3,4}$' || return 1
+  [ "$cur" -gt "$max" ]
 }
 
-ensure_owner_root() {
-    local f="$1"
-    if [ -e "$f" ]; then
-        chown root "$f" 2>/dev/null || fail "$f 소유자를 root로 변경하지 못했습니다."
-    fi
+ensure_owner_root_root() {
+  local path="$1"
+  [ -e "$path" ] || return 0
+  chown root:root "$path" 2>/dev/null || { append_err "$path 소유자/그룹을 root:root로 변경하지 못했습니다."; FAIL_FLAG=1; }
 }
 
 ensure_mode() {
-    local f="$1"
-    local mode="$2"
-    if [ -e "$f" ]; then
-        chmod "$mode" "$f" 2>/dev/null || fail "$f 권한을 ${mode}로 변경하지 못했습니다."
-    fi
+  local path="$1"
+  local mode="$2"
+  [ -e "$path" ] || return 0
+  chmod "$mode" "$path" 2>/dev/null || { append_err "$path 권한을 ${mode}로 변경하지 못했습니다."; FAIL_FLAG=1; }
 }
 
-verify_cmd() {
-    local f="$1"
-    if [ -f "$f" ]; then
-        local owner perms
-        owner="$(stat -c '%U' "$f" 2>/dev/null || true)"
-        perms="$(stat -c '%a' "$f" 2>/dev/null || true)"
-        if [ "$owner" != "root" ]; then
-            fail "$f 소유자가 root가 아닙니다(현재: $owner)."
-        fi
-        if check_perm_exceeds "$perms" 750; then
-            fail "$f 권한이 750을 초과합니다(현재: $perms)."
-        fi
-    fi
+# 검증(현재/조치 후 상태만 기록)
+verify_file_max() {
+  local path="$1"
+  local max="$2"
+  [ -f "$path" ] || return 0
+  local owner group perm
+  owner="$(stat -c '%U' "$path" 2>/dev/null)"
+  group="$(stat -c '%G' "$path" 2>/dev/null)"
+  perm="$(stat -c '%a' "$path" 2>/dev/null)"
+  append_detail "file(after)=$path owner=$owner group=$group perm=$perm"
+  [ "$owner" = "root" ] || FAIL_FLAG=1
+  [ "$group" = "root" ] || FAIL_FLAG=1
+  if perm_exceeds "$perm" "$max"; then
+    FAIL_FLAG=1
+  fi
 }
 
-verify_file() {
-    local f="$1"
-    local max="$2"
-    if [ -f "$f" ]; then
-        local owner perms
-        owner="$(stat -c '%U' "$f" 2>/dev/null || true)"
-        perms="$(stat -c '%a' "$f" 2>/dev/null || true)"
-        if [ "$owner" != "root" ]; then
-            fail "$f 소유자가 root가 아닙니다(현재: $owner)."
-        fi
-        if check_perm_exceeds "$perms" "$max"; then
-            fail "$f 권한이 ${max}을 초과합니다(현재: $perms)."
-        fi
-    fi
+verify_dir_max() {
+  local path="$1"
+  local max="$2"
+  [ -d "$path" ] || return 0
+  local owner group perm
+  owner="$(stat -c '%U' "$path" 2>/dev/null)"
+  group="$(stat -c '%G' "$path" 2>/dev/null)"
+  perm="$(stat -c '%a' "$path" 2>/dev/null)"
+  append_detail "dir(after)=$path owner=$owner group=$group perm=$perm"
+  [ "$owner" = "root" ] || FAIL_FLAG=1
+  [ "$group" = "root" ] || FAIL_FLAG=1
+  if perm_exceeds "$perm" "$max"; then
+    FAIL_FLAG=1
+  fi
 }
 
-verify_dir() {
-    local d="$1"
-    local max="$2"
-    if [ -d "$d" ]; then
-        local owner perms
-        owner="$(stat -c '%U' "$d" 2>/dev/null || true)"
-        perms="$(stat -c '%a' "$d" 2>/dev/null || true)"
-        if [ "$owner" != "root" ]; then
-            fail "$d 소유자가 root가 아닙니다(현재: $owner)."
-        fi
-        if check_perm_exceeds "$perms" "$max"; then
-            fail "$d 권한이 ${max}을 초과합니다(현재: $perms)."
-        fi
-    fi
-}
+# ---------------------------
+# root 권한 아니면 조치 중단(요구 톤 유지)
+# ---------------------------
+if [ "$(id -u)" -ne 0 ]; then
+  IS_SUCCESS=0
+  REASON_LINE="root 권한이 아니어서 crontab/at 관련 파일 권한 조치를 수행할 수 없어 조치를 중단합니다."
+  DETAIL_CONTENT="current_user_uid=$(id -u)"
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+  fi
 
-if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    STATUS="FAIL"
-    ACTION_RESULT="FAIL"
-    EVIDENCE="root 권한으로 실행해야 조치가 가능합니다."
-    ACTION_LOG="권한이 부족하여 조치를 수행할 수 없습니다. sudo로 실행해야 합니다."
-    echo ""
-    cat << EOF
+  RAW_EVIDENCE=$(cat <<EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "sudo로 실행한 뒤, crontab/at 관련 파일 권한을 640 이하(디렉토리 750 이하), 소유자를 root로 설정해야 합니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
 }
 EOF
-    exit 1
+)
+  RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+  echo ""
+  cat << EOF
+{
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
+}
+EOF
+  exit 1
 fi
 
-# [Step 3] crontab 명령어 소유자 root, 권한 750으로 변경
-# 가이드: SUID 설정 제거 필요
-CRONTAB_CMD="/usr/bin/crontab"
+# ---------------------------
+# 조치 수행
+# ---------------------------
+
+# 1) crontab/at 명령어: root:root + 750 고정(특수권한도 제거됨)
 if [ -f "$CRONTAB_CMD" ]; then
-    ensure_owner_root "$CRONTAB_CMD"
-    ensure_mode "$CRONTAB_CMD" 750
-    AFTER="$(stat -c '%U:%a' "$CRONTAB_CMD" 2>/dev/null || true)"
-    append_log "$CRONTAB_CMD 권한을 root:750 기준으로 설정했습니다(현재: $AFTER)."
+  cp -a "$CRONTAB_CMD" "${CRONTAB_CMD}.bak_${TIMESTAMP}" 2>/dev/null || true
+  ensure_owner_root_root "$CRONTAB_CMD"
+  ensure_mode "$CRONTAB_CMD" 750
+  MODIFIED=1
 fi
 
-# [Step 3] at 명령어 소유자 root, 권한 750으로 변경
-# 가이드: SUID 설정 제거 필요
-AT_CMD="/usr/bin/at"
 if [ -f "$AT_CMD" ]; then
-    ensure_owner_root "$AT_CMD"
-    ensure_mode "$AT_CMD" 750
-    AFTER="$(stat -c '%U:%a' "$AT_CMD" 2>/dev/null || true)"
-    append_log "$AT_CMD 권한을 root:750 기준으로 설정했습니다(현재: $AFTER)."
+  cp -a "$AT_CMD" "${AT_CMD}.bak_${TIMESTAMP}" 2>/dev/null || true
+  ensure_owner_root_root "$AT_CMD"
+  ensure_mode "$AT_CMD" 750
+  MODIFIED=1
 fi
 
-# [Step 4] cron 작업 목록 파일 소유자 root, 권한 640으로 변경
-CRON_SPOOL_DIRS=("/var/spool/cron" "/var/spool/cron/crontabs")
+# 2) cron spool 파일: root:root + 640
 for dir in "${CRON_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            if [ -f "$f" ]; then
-                ensure_owner_root "$f"
-                ensure_mode "$f" 640
-            fi
-        done
-    fi
+  if [ -d "$dir" ]; then
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      ensure_owner_root_root "$f"
+      ensure_mode "$f" 640
+    done
+    MODIFIED=1
+  fi
 done
-append_log "cron spool 파일(/var/spool/cron*)을 root:640 기준으로 설정했습니다."
 
-# [Step 4] /etc/<cron 관련 파일> 소유자 root, 권한 640으로 변경
-CRON_ETC_FILES=("/etc/crontab" "/etc/cron.d" "/etc/cron.daily" "/etc/cron.hourly" "/etc/cron.weekly" "/etc/cron.monthly")
+# 3) /etc/crontab 파일: root:root + 640
 for f in "${CRON_ETC_FILES[@]}"; do
-    if [ -e "$f" ]; then
-        ensure_owner_root "$f"
-        if [ -d "$f" ]; then
-            ensure_mode "$f" 750
-        else
-            ensure_mode "$f" 640
-        fi
-    fi
-done
-append_log "/etc/crontab 및 /etc/cron.* 을 파일 640, 디렉토리 750 기준으로 설정했습니다."
-
-# [Step 4] at 작업 목록 파일 소유자 root, 권한 640으로 변경
-AT_SPOOL_DIRS=("/var/spool/at" "/var/spool/cron/atjobs")
-for dir in "${AT_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            if [ -f "$f" ]; then
-                ensure_owner_root "$f"
-                ensure_mode "$f" 640
-            fi
-        done
-    fi
-done
-append_log "at spool 파일(/var/spool/at*, /var/spool/cron/atjobs)을 root:640 기준으로 설정했습니다."
-
-# [검증]
-verify_cmd "/usr/bin/crontab"
-verify_cmd "/usr/bin/at"
-
-CRON_SPOOL_DIRS=("/var/spool/cron" "/var/spool/cron/crontabs")
-for dir in "${CRON_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            [ -f "$f" ] || continue
-            verify_file "$f" 640
-        done
-    fi
+  if [ -f "$f" ]; then
+    cp -a "$f" "${f}.bak_${TIMESTAMP}" 2>/dev/null || true
+    ensure_owner_root_root "$f"
+    ensure_mode "$f" 640
+    MODIFIED=1
+  fi
 done
 
-CRON_ETC_FILES=("/etc/crontab")
-for f in "${CRON_ETC_FILES[@]}"; do
-    verify_file "$f" 640
-done
-
-CRON_ETC_DIRS=("/etc/cron.d" "/etc/cron.daily" "/etc/cron.hourly" "/etc/cron.weekly" "/etc/cron.monthly")
+# 4) /etc/cron.* 디렉토리: root:root + 750
 for d in "${CRON_ETC_DIRS[@]}"; do
-    verify_dir "$d" 750
+  if [ -d "$d" ]; then
+    ensure_owner_root_root "$d"
+    ensure_mode "$d" 750
+    MODIFIED=1
+  fi
 done
 
-AT_SPOOL_DIRS=("/var/spool/at" "/var/spool/cron/atjobs")
+# 5) at spool 파일: root:root + 640
 for dir in "${AT_SPOOL_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*; do
-            [ -f "$f" ] || continue
-            verify_file "$f" 640
-        done
-    fi
+  if [ -d "$dir" ]; then
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      ensure_owner_root_root "$f"
+      ensure_mode "$f" 640
+    done
+    MODIFIED=1
+  fi
 done
 
-if [ "$STATUS" = "FAIL" ]; then
-    EVIDENCE="조치 후에도 일부 항목이 기준을 만족하지 않습니다."
+# ---------------------------
+# 조치 후 검증(현재/조치 후 상태만)
+# ---------------------------
+# 명령어
+verify_file_max "$CRONTAB_CMD" 750
+verify_file_max "$AT_CMD" 750
+
+# spool 파일들
+for dir in "${CRON_SPOOL_DIRS[@]}"; do
+  if [ -d "$dir" ]; then
+    # dir 자체 권한은 가이드에 명시가 없어서 here는 기록만 하고 파일만 강제(필요시 dir도 750으로 바꿀 수 있음)
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      verify_file_max "$f" 640
+    done
+  fi
+done
+
+for dir in "${AT_SPOOL_DIRS[@]}"; do
+  if [ -d "$dir" ]; then
+    for f in "$dir"/*; do
+      [ -f "$f" ] || continue
+      verify_file_max "$f" 640
+    done
+  fi
+done
+
+# /etc 파일/디렉토리
+for f in "${CRON_ETC_FILES[@]}"; do
+  verify_file_max "$f" 640
+done
+
+for d in "${CRON_ETC_DIRS[@]}"; do
+  verify_dir_max "$d" 750
+done
+
+# ---------------------------
+# 최종 판정
+# ---------------------------
+if [ "$FAIL_FLAG" -eq 0 ]; then
+  IS_SUCCESS=1
+  if [ "$MODIFIED" -eq 1 ]; then
+    REASON_LINE="crontab 및 at 관련 파일의 소유자/권한이 기준에 맞게 설정되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
+    REASON_LINE="crontab 및 at 관련 파일의 소유자/권한이 이미 기준에 맞게 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  fi
 else
-    STATUS="PASS"
-    ACTION_RESULT="SUCCESS"
-    EVIDENCE="crontab 및 at 관련 파일의 권한이 적절히 설정되어 있습니다."
+  IS_SUCCESS=0
+  REASON_LINE="조치를 수행했으나 crontab 및 at 관련 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
 fi
 
-# 출력 정리: 대시보드가 문장을 분리할 때 ';'가 노이즈로 보이므로 제거합니다.
-ACTION_LOG=$(echo "$ACTION_LOG" | tr ';' ' ' | tr -s ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+fi
 
-# 3. 마스터 템플릿 표준 출력
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
+
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF

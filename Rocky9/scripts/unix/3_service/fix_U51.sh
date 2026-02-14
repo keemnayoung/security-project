@@ -17,10 +17,11 @@
 
 set -u
 
+# 기본 변수
 ID="U-51"
-CATEGORY="서비스 관리"
-TITLE="DNS 서비스의 취약한 동적 업데이트 설정 금지"
-IMPORTANCE="중"
+ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+IS_SUCCESS=0
+
 TARGET_FILE="N/A"
 
 # 실행 모드:
@@ -28,217 +29,300 @@ TARGET_FILE="N/A"
 # - yes: 자동 조치를 수행하지 않고 수동 조치 안내만 출력합니다.
 USE_DNS_DYNAMIC_UPDATE="${USE_DNS_DYNAMIC_UPDATE:-no}"
 
-STATUS="PASS"
-EVIDENCE="취약점 조치가 완료되었습니다."
-GUIDE="allow-update 제한 설정을 적용하고 named 서비스를 재시작했습니다."
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
+CHECK_COMMAND='
+(command -v systemctl >/dev/null 2>&1 && (
+  for u in named.service named-chroot.service; do
+    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && \
+      echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
+  done
+)) || echo "systemctl_not_found";
+(command -v named-checkconf >/dev/null 2>&1 && echo "named-checkconf_available") || echo "named-checkconf_not_found";
+for f in /etc/named.conf /etc/bind/named.conf.options /etc/bind/named.conf; do
+  [ -f "$f" ] && echo "seed_conf=$f"
+done
+'
 
-append_log() {
-    local msg="$1"
-    [ -z "$msg" ] && return 0
-    if [ -n "$ACTION_LOG" ]; then
-        ACTION_LOG="$ACTION_LOG; $msg"
-    else
-        ACTION_LOG="$msg"
-    fi
+REASON_LINE=""
+DETAIL_CONTENT=""
+ACTION_ERR_LOG=""
+
+MODIFIED=0
+MANUAL_REQUIRED=0
+
+append_err() {
+  if [ -n "$ACTION_ERR_LOG" ]; then
+    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+  else
+    ACTION_ERR_LOG="$1"
+  fi
 }
 
-json_escape() {
-    echo "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+append_detail() {
+  if [ -n "$DETAIL_CONTENT" ]; then
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
+  else
+    DETAIL_CONTENT="$1"
+  fi
 }
 
-is_named_running() {
-    systemctl list-units --type=service 2>/dev/null | grep -qE '\bnamed(\.service)?\b' && return 0
-    pgrep -x named >/dev/null 2>&1 && return 0
-    return 1
-}
-
-collect_named_conf_files() {
-    local -a seeds=("$@")
-    local -a queue=()
-    local -A seen=()
-    local -a out=()
-    local f inc inc_path dir
-
-    for f in "${seeds[@]}"; do
-        [ -f "$f" ] || continue
-        queue+=("$f")
-    done
-
-    while [ "${#queue[@]}" -gt 0 ]; do
-        f="${queue[0]}"
-        queue=("${queue[@]:1}")
-
-        [ -f "$f" ] || continue
-        if [ -n "${seen[$f]:-}" ]; then
-            continue
-        fi
-        seen["$f"]=1
-        out+=("$f")
-
-        dir="$(dirname "$f")"
-        while IFS= read -r inc; do
-            [ -z "$inc" ] && continue
-            if [[ "$inc" = /* ]]; then
-                inc_path="$inc"
-            else
-                inc_path="${dir}/${inc}"
-            fi
-            [ -f "$inc_path" ] && queue+=("$inc_path")
-        done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
-    done
-
-    printf '%s\n' "${out[@]}"
-}
-
-backup_once() {
-    local f="$1"
-    [ -f "$f" ] || return 0
-    if [ ! -f "${f}.bak_kisa_u51" ]; then
-        cp -a "$f" "${f}.bak_kisa_u51" 2>/dev/null || true
-        append_log "$f 백업 파일(${f}.bak_kisa_u51)을 생성했습니다."
-    fi
-}
-
-rewrite_allow_update_to_none() {
-    # allow-update 블록(단일/멀티라인)을 allow-update { none; }; 으로 치환한다.
-    # 파일의 최상위에 새로 추가하지는 않는다(구문 오류 방지).
-    local file="$1"
-    local tmp
-    tmp="$(mktemp)"
-
-    awk '
-      BEGIN { inblk=0; saw=0; }
-      {
-        line=$0
-        if (inblk==0) {
-          if (line ~ /^[[:space:]]*allow-update[[:space:]]*\\{/) {
-            inblk=1
-            saw=1
-            print "    allow-update { none; };"
-            # allow-update { ... }; 가 한 줄에 끝나는 경우도 처리
-            if (line ~ /\\};[[:space:]]*$/) {
-              inblk=0
-            }
-            next
-          }
-          print line
-          next
-        }
-        # inblk==1: 원본 allow-update 블록은 버린다. 닫힘(};)까지 스킵.
-        if (line ~ /\\};[[:space:]]*$/) {
-          inblk=0
-        }
-        next
-      }
-      END { if (saw==0) exit 3; }
-    ' "$file" >"$tmp"
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        mv "$tmp" "$file"
-        return 0
-    fi
-    rm -f "$tmp"
-    return 1
-}
+# (필수) root 권한 권장 안내(실패 원인 명확화용)
+if [ "$(id -u)" -ne 0 ]; then
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 설정 파일 수정 및 서비스 재시작이 실패할 수 있습니다."
+fi
 
 mode="no"
 case "$USE_DNS_DYNAMIC_UPDATE" in
-    yes|YES|Yes|true|TRUE|on|ON|1) mode="yes" ;;
-    no|NO|No|false|FALSE|off|OFF|0) mode="no" ;;
-    *) mode="no" ;;
+  yes|YES|Yes|true|TRUE|on|ON|1) mode="yes" ;;
+  no|NO|No|false|FALSE|off|OFF|0) mode="no" ;;
+  *) mode="no" ;;
 esac
 
-if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    STATUS="FAIL"
-    ACTION_RESULT="FAIL"
-    EVIDENCE="root 권한으로 실행해야 조치가 가능합니다."
-    ACTION_LOG="권한 부족으로 조치를 수행하지 못했습니다."
-else
-    if ! is_named_running; then
-        STATUS="PASS"
-        ACTION_RESULT="SUCCESS"
-        EVIDENCE="DNS(named) 서비스가 비활성화되어 조치 대상이 없습니다."
-        ACTION_LOG="DNS(named) 서비스가 비활성화되어 조치 대상이 없습니다."
-        GUIDE="DNS 미사용 환경은 named 서비스 비활성 상태를 유지해야 합니다."
-    else
-        if [ "$mode" = "yes" ]; then
-            STATUS="MANUAL"
-            ACTION_RESULT="MANUAL_REQUIRED"
-            EVIDENCE="동적 업데이트 필요 환경은 자동 조치를 수행하지 않았습니다."
-            GUIDE="동적 업데이트가 필요한 경우 allow-update를 허용 IP 또는 키로 제한 지정하고 named 서비스를 재시작해야 합니다."
-            ACTION_LOG="USE_DNS_DYNAMIC_UPDATE=yes로 설정되어 자동 조치를 건너뛰었습니다."
-        else
-            CONF_SEEDS=("/etc/named.conf" "/etc/bind/named.conf.options" "/etc/bind/named.conf")
-            mapfile -t CONF_FILES < <(collect_named_conf_files "${CONF_SEEDS[@]}")
-            if [ "${#CONF_FILES[@]}" -eq 0 ]; then
-                STATUS="FAIL"
-                ACTION_RESULT="FAIL"
-                EVIDENCE="DNS 설정 파일(/etc/named.conf 등)을 찾지 못했습니다."
-                ACTION_LOG="자동 조치 가능한 DNS 설정 파일이 없습니다."
-            else
-                main_conf=""
-                for f in "${CONF_SEEDS[@]}"; do
-                    [ -f "$f" ] && main_conf="$f" && break
-                done
-                [ -z "$main_conf" ] && main_conf="${CONF_FILES[0]}"
-                TARGET_FILE="$main_conf"
+is_named_running() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active named.service >/dev/null 2>&1 && return 0
+    systemctl is-active named-chroot.service >/dev/null 2>&1 && return 0
+  fi
+  pgrep -x named >/dev/null 2>&1 && return 0
+  return 1
+}
 
-                changed=0
-                for f in "${CONF_FILES[@]}"; do
-                    [ -f "$f" ] || continue
-                    if grep -qE '^[[:space:]]*allow-update[[:space:]]*\\{' "$f" 2>/dev/null; then
-                        backup_once "$f"
-                        if rewrite_allow_update_to_none "$f"; then
-                            changed=1
-                            append_log "$f의 allow-update 설정을 allow-update { none; }; 으로 제한했습니다."
-                        fi
-                    fi
-                done
+restart_named_if_exists() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl list-unit-files 2>/dev/null | grep -qiE '^named\.service[[:space:]]'; then
+    systemctl restart named.service >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  if systemctl list-unit-files 2>/dev/null | grep -qiE '^named-chroot\.service[[:space:]]'; then
+    systemctl restart named-chroot.service >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  return 0
+}
 
-                if [ "$changed" -eq 0 ]; then
-                    STATUS="PASS"
-                    ACTION_RESULT="SUCCESS"
-                    EVIDENCE="allow-update 설정이 없어 동적 업데이트가 차단되어 있습니다."
-                    GUIDE="동적 업데이트가 필요하면 allow-update를 허용 IP 또는 키로 제한 지정해야 합니다."
-                    append_log "allow-update 설정이 발견되지 않아 변경 사항이 없습니다."
-                else
-                    if systemctl restart named >/dev/null 2>&1; then
-                        append_log "named 서비스를 재시작했습니다."
-                    else
-                        STATUS="MANUAL"
-                        ACTION_RESULT="MANUAL_REQUIRED"
-                        EVIDENCE="일부 조치를 자동 적용하지 못했습니다."
-                        GUIDE="allow-update 제한 설정 적용 후 named 서비스 재시작을 수동으로 수행하고 설정 구문 오류 여부를 확인해야 합니다."
-                        append_log "named 서비스 재시작에 실패했습니다."
-                    fi
-                fi
-            fi
-        fi
+collect_named_conf_files() {
+  local -a seeds=("$@")
+  local -a queue=()
+  local -A seen=()
+  local -a out=()
+  local f inc inc_path dir
+
+  for f in "${seeds[@]}"; do
+    [ -f "$f" ] || continue
+    queue+=("$f")
+  done
+
+  while [ "${#queue[@]}" -gt 0 ]; do
+    f="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    [ -f "$f" ] || continue
+    if [ -n "${seen[$f]:-}" ]; then
+      continue
     fi
+    seen["$f"]=1
+    out+=("$f")
+
+    dir="$(dirname "$f")"
+    while IFS= read -r inc; do
+      [ -z "$inc" ] && continue
+      if [[ "$inc" = /* ]]; then
+        inc_path="$inc"
+      else
+        inc_path="${dir}/${inc}"
+      fi
+      [ -f "$inc_path" ] && queue+=("$inc_path")
+    done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
+backup_once() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  if [ ! -f "${f}.bak_kisa_u51" ]; then
+    cp -a "$f" "${f}.bak_kisa_u51" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
+rewrite_allow_update_to_none() {
+  # allow-update 블록(단일/멀티라인)을 allow-update { none; }; 으로 치환한다.
+  # 파일의 최상위에 새로 추가하지는 않는다(구문 오류 방지).
+  local file="$1"
+  local tmp rc
+  tmp="$(mktemp)"
+
+  awk '
+    BEGIN { inblk=0; saw=0; }
+    {
+      line=$0
+      if (inblk==0) {
+        if (line ~ /^[[:space:]]*allow-update[[:space:]]*\{/) {
+          inblk=1
+          saw=1
+          print "    allow-update { none; };"
+          if (line ~ /\};[[:space:]]*$/) {
+            inblk=0
+          }
+          next
+        }
+        print line
+        next
+      }
+      if (line ~ /\};[[:space:]]*$/) {
+        inblk=0
+      }
+      next
+    }
+    END { if (saw==0) exit 3; }
+  ' "$file" > "$tmp"
+  rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    mv "$tmp" "$file"
+    return 0
+  fi
+
+  rm -f "$tmp"
+  return 1
+}
+
+########################################
+# 조치 프로세스
+########################################
+if [ "$(id -u)" -ne 0 ]; then
+  IS_SUCCESS=0
+  REASON_LINE="root 권한이 아니어서 DNS 동적 업데이트 제한 설정을 적용할 수 없어 조치를 중단합니다."
+  append_detail "mode(current)=$mode"
+else
+  if ! is_named_running; then
+    IS_SUCCESS=1
+    REASON_LINE="DNS(named) 서비스가 비활성화되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    append_detail "named_status(current)=inactive_or_not_running"
+    append_detail "mode(current)=$mode"
+  else
+    append_detail "named_status(current)=running"
+    append_detail "mode(current)=$mode"
+
+    if [ "$mode" = "yes" ]; then
+      MANUAL_REQUIRED=1
+      IS_SUCCESS=0
+      REASON_LINE="동적 업데이트 필요 환경으로 설정되어 자동 조치를 수행하지 않아 조치가 완료되지 않았습니다."
+      append_detail "manual_guide=allow-update를 허용 IP 또는 TSIG key로 제한 지정해야 합니다(예: allow-update { key \"tsig-key\"; 10.0.0.2; };)."
+    else
+      CONF_SEEDS=("/etc/named.conf" "/etc/bind/named.conf.options" "/etc/bind/named.conf")
+      mapfile -t CONF_FILES < <(collect_named_conf_files "${CONF_SEEDS[@]}")
+
+      if [ "${#CONF_FILES[@]}" -eq 0 ]; then
+        IS_SUCCESS=0
+        REASON_LINE="DNS 설정 파일(/etc/named.conf 등)을 찾지 못해 자동 조치를 완료할 수 없습니다."
+        append_detail "conf_files(current)=not_found"
+        append_detail "manual_guide=DNS 설정 파일 경로를 확인한 뒤 allow-update를 allow-update { none; }; 로 제한해야 합니다."
+      else
+        main_conf=""
+        for f in "${CONF_SEEDS[@]}"; do
+          [ -f "$f" ] && main_conf="$f" && break
+        done
+        [ -z "$main_conf" ] && main_conf="${CONF_FILES[0]}"
+        TARGET_FILE="$main_conf"
+        append_detail "main_conf(current)=$main_conf"
+
+        changed=0
+        for f in "${CONF_FILES[@]}"; do
+          [ -f "$f" ] || continue
+          if grep -qE '^[[:space:]]*allow-update[[:space:]]*\{' "$f" 2>/dev/null; then
+            backup_once "$f" || append_err "$f 백업 실패"
+            if rewrite_allow_update_to_none "$f"; then
+              changed=1
+              MODIFIED=1
+              append_detail "allow_update_rewrite(after)=$f"
+            else
+              MANUAL_REQUIRED=1
+              append_detail "allow_update_rewrite(after)=failed file=$f"
+            fi
+          fi
+        done
+
+        # allow-update가 아예 없으면, 기본적으로 동적 업데이트 차단으로 간주
+        if [ "$changed" -eq 0 ] && [ "$MANUAL_REQUIRED" -eq 0 ]; then
+          IS_SUCCESS=1
+          REASON_LINE="allow-update 설정이 존재하지 않아 동적 업데이트가 차단된 상태로 확인되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+          append_detail "allow_update_found(after)=no"
+        else
+          # 구문 검증(named-checkconf) 후 재시작
+          if [ "$MANUAL_REQUIRED" -eq 0 ]; then
+            if command -v named-checkconf >/dev/null 2>&1; then
+              if ! named-checkconf "$main_conf" >/dev/null 2>&1; then
+                MANUAL_REQUIRED=1
+                append_detail "named_checkconf(after)=failed"
+                append_detail "manual_guide=named-checkconf 오류 원인을 확인 후 설정을 수정하고 named 재시작이 필요합니다."
+              else
+                append_detail "named_checkconf(after)=ok"
+              fi
+            else
+              append_detail "named_checkconf(after)=not_available"
+            fi
+          fi
+
+          if [ "$MANUAL_REQUIRED" -eq 0 ]; then
+            if restart_named_if_exists; then
+              append_detail "named_restart(after)=ok"
+            else
+              MANUAL_REQUIRED=1
+              append_detail "named_restart(after)=failed"
+              append_detail "manual_guide=설정 적용 후 named 서비스를 수동으로 재시작하고 로그로 실패 원인을 확인해야 합니다."
+            fi
+          fi
+
+          # 조치 후 근거: main_conf에서 allow-update 라인(주석 제외) 수집
+          AU_LINES="$(grep -nEv '^[[:space:]]*#' "$main_conf" 2>/dev/null | grep -nE 'allow-update[[:space:]]*\{' | head -n 5)"
+          [ -z "$AU_LINES" ] && AU_LINES="allow-update_line_not_found_in_main_conf"
+          append_detail "allow_update_lines(after)=$AU_LINES"
+
+          if [ "$MANUAL_REQUIRED" -eq 1 ]; then
+            IS_SUCCESS=0
+            REASON_LINE="조치를 수행했으나 DNS 동적 업데이트 제한 설정을 자동으로 완료하지 못해 조치가 완료되지 않았습니다."
+          else
+            IS_SUCCESS=1
+            if [ "$MODIFIED" -eq 1 ]; then
+              REASON_LINE="DNS 동적 업데이트가 차단되도록 allow-update { none; }; 설정이 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+            else
+              REASON_LINE="DNS 동적 업데이트 제한 설정이 적절히 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+            fi
+          fi
+        fi
+      fi
+    fi
+  fi
 fi
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="allow-update { none; }; 조치를 적용하면 DNS 동적 업데이트가 동작하지 않습니다. 동적 업데이트가 필요한 환경에서는 허용 대상을 제한 지정한 뒤 include 참조 파일을 함께 점검하고 named 재시작 절차를 반영해야 합니다."
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+fi
 
-EVIDENCE="$(json_escape "$EVIDENCE")"
-GUIDE="$(json_escape "$GUIDE")"
-ACTION_LOG="$(json_escape "$ACTION_LOG")"
+# raw_evidence 구성
+RAW_EVIDENCE=$(cat <<EOF
+{
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "target_file": "$TARGET_FILE"
+}
+EOF
+)
 
+# JSON escape 처리 (따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/"/\\"/g' \
+  | sed ':a;N;$!ba;s/\n/\\n/g')
+
+# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {
-    "check_id": "$ID",
-    "category": "$CATEGORY",
-    "title": "$TITLE",
-    "importance": "$IMPORTANCE",
-    "status": "$STATUS",
-    "evidence": "$EVIDENCE",
-    "guide": "$GUIDE",
-    "action_result": "$ACTION_RESULT",
-    "action_log": "$ACTION_LOG",
-    "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
-    "check_date": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "item_code": "$ID",
+    "action_date": "$ACTION_DATE",
+    "is_success": $IS_SUCCESS,
+    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
 }
 EOF
