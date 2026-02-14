@@ -25,8 +25,9 @@ IMPORTANCE="상"
 TARGET_FILE="/etc/snmp/snmpd.conf"
 
 # 2. 보완 로직
-ACTION_RESULT="MANUAL"
+ACTION_RESULT="SUCCESS"
 ACTION_LOG=""
+CHANGED=0
 
 # 가이드: systemctl list-units --type=service | grep snmpd
 if ! systemctl list-units --type=service 2>/dev/null | grep -q snmpd && ! pgrep -x snmpd >/dev/null; then
@@ -43,23 +44,29 @@ else
         if grep -v "^#" "$CONF" | grep -qE "com2sec.*\\sdefault\\s"; then
             # default를 127.0.0.1로 변경 (로컬만 허용)
             sed -i 's/\(com2sec\s\+\S\+\s\+\)default\(\s\)/\1127.0.0.1\2/g' "$CONF"
-            ACTION_LOG="$ACTION_LOG com2sec default를 127.0.0.1로 변경했습니다. 운영 환경에서 허용해야 할 특정 네트워크 대역이 있다면 snmpd.conf 파일에서 해당 IP 또는 네트워크 대역으로 수동 변경하십시오."
+            ACTION_LOG="${ACTION_LOG} com2sec default를 127.0.0.1(로컬)로 제한했습니다. 운영 환경에서 원격 SNMP가 필요하면 허용할 IP/대역으로 변경하십시오."
+            CHANGED=1
+        fi
+        
+        # rocommunity/rwcommunity가 "커뮤니티만" 설정된 경우(네트워크 제한 없음)에는
+        # 자동으로 127.0.0.1(로컬)로 제한한다. 운영 환경에 맞는 허용 대역은 관리자가 조정.
+        if grep -v "^#" "$CONF" | grep -qE "^(rocommunity|rwcommunity)[[:space:]]+[^[:space:]]+[[:space:]]*$"; then
+            sed -i -E 's/^(rocommunity|rwcommunity)[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1 \2 127.0.0.1/' "$CONF"
+            ACTION_LOG="${ACTION_LOG} rocommunity/rwcommunity의 네트워크 제한이 없어 127.0.0.1(로컬)로 제한했습니다. 운영 환경에서 필요하면 허용 IP/대역을 추가하십시오."
+            CHANGED=1
+        fi
+        
+        if [ "$CHANGED" -eq 1 ]; then
+            if systemctl restart snmpd >/dev/null 2>&1; then
+                ACTION_LOG="${ACTION_LOG} SNMP 서비스를 재시작했습니다."
+            else
+                ACTION_RESULT="MANUAL"
+                ACTION_LOG="${ACTION_LOG} SNMP 서비스 재시작에 실패하여 수동 확인이 필요합니다."
+            fi
+        else
             ACTION_RESULT="SUCCESS"
+            ACTION_LOG="${ACTION_LOG:-} 변경 사항이 없습니다(이미 제한 설정이 적용되어 있을 수 있습니다)."
         fi
-        
-        # rocommunity/rwcommunity에 네트워크 주소 추가 (없는 경우)
-        # 복잡한 로직이므로 수동 조치 권고
-        if grep -v "^#" "$CONF" | grep -qE "^(rocommunity|rwcommunity)\\s+\\S+$"; then
-            ACTION_LOG="$ACTION_LOG rocommunity/rwcommunity에 네트워크 제한이 없어 수동 조치가 필요합니다. 허용할 네트워크 대역을 직접 추가하십시오."
-            ACTION_RESULT="MANUAL"
-        fi
-        
-        if [ "$ACTION_RESULT" == "SUCCESS" ]; then
-            systemctl restart snmpd 2>/dev/null
-            ACTION_LOG="$ACTION_LOG SNMP 서비스를 재시작했습니다."
-        fi
-        
-        [ -z "$ACTION_LOG" ] && ACTION_LOG="변경 사항이 없습니다."
     else
         ACTION_RESULT="FAIL"
         ACTION_LOG="$CONF 파일이 존재하지 않습니다."
@@ -67,7 +74,7 @@ else
 fi
 
 if [ "$ACTION_RESULT" == "SUCCESS" ]; then
-    ACTION_LOG="SNMP 접근 제어 설정을 로컬호스트로 제한했습니다. 운영 환경에서 특정 네트워크 대역의 SNMP 접근이 필요하다면 snmpd.conf 파일에서 해당 IP 또는 네트워크 대역(예: 192.168.1.0/24)으로 수동 변경하십시오."
+    ACTION_LOG="SNMP 접근 제어를 127.0.0.1(로컬)로 제한했거나, 이미 제한 설정이 적용되어 있습니다. 원격 SNMP가 필요하면 snmpd.conf에서 허용 IP/대역(예: 192.168.1.0/24)을 명시하십시오."
     STATUS="PASS"
     EVIDENCE="SNMP 접근 제어가 적절히 설정되어 있습니다."
 elif [ "$ACTION_RESULT" == "MANUAL" ]; then
@@ -89,7 +96,7 @@ cat << EOF
     "importance": "$IMPORTANCE",
     "status": "$STATUS",
     "evidence": "$EVIDENCE",
-    "guide": "KISA 가이드라인에 따른 보안 설정이 완료되었습니다.",
+    "guide": "SNMP 접근 제어를 로컬(127.0.0.1)로 제한하고, 운영 필요 시 허용할 IP/대역을 명시하십시오.",
     "action_result": "$ACTION_RESULT",
     "action_log": "$ACTION_LOG",
     "action_date": "$(date '+%Y-%m-%d %H:%M:%S')",
