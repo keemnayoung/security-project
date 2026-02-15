@@ -193,7 +193,7 @@ else
   if [ "$LISTEN_STATUS" != "허용" ] || [ -n "$OPEN_ADDR" ] || [ -n "$OTHER_ADDR" ]; then
     STATUS="FAIL"
     EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS}). pg_hba.conf CIDR-ADDRESS 전체=${ALLOWED_ADDR:-없음}. 조건1(open/*/all)=${OPEN_ADDR:-없음}. 조건2(loopback/localhost 허용)=${LOOPBACK_ADDR:-없음}. 조건3(기타 원격 CIDR)=${OTHER_ADDR:-없음}. (참고) trust METHOD 라인=${TRUST_LINES:-없음}."
-    GUIDE_MSG="1) postgresql.conf(listen_addresses)를 localhost/루프백만 남겨야 합니다.\n2) pg_hba.conf의 CIDR-ADDRESS가 *, all, 0.0.0.0/0, ::/0 인 host 규칙은 제거하십시오.\n3) loopback/localhost가 아닌 CIDR(예: samenet/사내망 대역 등)은 기관 정책에 맞게 '필요 최소 대역만' 남기거나 제거하십시오.\n4) 적용 후 서비스 restart/reload 후 재점검하십시오."
+    GUIDE_MSG="1) postgresql.conf(listen_addresses)를 localhost/루프백만 남겨야 합니다.\n2) pg_hba.conf의 CIDR-ADDRESS가 *, all, 0.0.0.0/0, ::/0 인 host 규칙은 제거하십시오.\n3) loopback/localhost가 아닌 CIDR(예: samenet/사내망 대역 등)은 기관 정책에 맞게 '필요 최소 대역만' 남기거나 제거하십시오.\n4) 적용 후 서비스 재시작 명령어 sudo systemctl restart postgresql; 또는 시스템 재기동 명령어 sudo systemctl reload postgresql; 후 재점검하십시오."
   else
     STATUS="PASS"
     EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS}). pg_hba.conf CIDR-ADDRESS 전체=${ALLOWED_ADDR:-없음}. 조건1(open/*/all)=없음. 조건2(loopback/localhost 허용)=${LOOPBACK_ADDR:-없음}. 조건3(기타 원격 CIDR)=없음. (참고) trust METHOD 라인=${TRUST_LINES:-없음}."
