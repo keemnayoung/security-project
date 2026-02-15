@@ -15,6 +15,8 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+set -u
+
 # 기본 변수
 ID="U-51"
 STATUS="PASS"
@@ -24,34 +26,17 @@ REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE=""
 
-CHECK_COMMAND='systemctl is-active named named-chroot; pgrep -x named; grep -nE "^[[:space:]]*include[[:space:]]+\"" /etc/named.conf /etc/bind/named.conf /etc/bind/named.conf.options 2>/dev/null; grep -nE "allow-update[[:space:]]*\\{" /etc/named.conf /etc/bind/named.conf /etc/bind/named.conf.options 2>/dev/null'
+CONF_SEEDS=("/etc/named.conf" "/etc/bind/named.conf.options" "/etc/bind/named.conf")
 
-VULNERABLE=0
-FOUND_ANY=0
-DETAIL_LINES=""
-
-append_detail() {
-  local line="$1"
-  [ -z "$line" ] && return 0
-  if [ -z "$DETAIL_LINES" ]; then
-    DETAIL_LINES="$line"
-  else
-    DETAIL_LINES="${DETAIL_LINES}\n$line"
-  fi
-}
-
-add_target_file() {
-  local f="$1"
-  [ -z "$f" ] && return 0
-  if [ -z "$TARGET_FILE" ]; then
-    TARGET_FILE="$f"
-  else
-    TARGET_FILE="${TARGET_FILE}, $f"
-  fi
-}
+CHECK_COMMAND='
+systemctl is-active named named-chroot 2>/dev/null;
+pgrep -x named 2>/dev/null;
+grep -nE "^[[:space:]]*include[[:space:]]+\"" /etc/named.conf /etc/bind/named.conf /etc/bind/named.conf.options 2>/dev/null;
+# allow-update/update-policy 블록은 멀티라인일 수 있어 스크립트 내 awk 추출 로직으로 판정
+'
 
 # -----------------------------
-# named 실행 여부 확인
+# 공용
 # -----------------------------
 is_named_running() {
   systemctl is-active --quiet named 2>/dev/null && return 0
@@ -60,127 +45,163 @@ is_named_running() {
   return 1
 }
 
-# include "..." 재귀 추적하여 설정 파일 목록 수집(중복 제거)
-collect_named_conf_files() {
-  local -a seeds=("$@")
-  local -a queue=()
-  local -a out=()
-  local -a seen_list=()
-  local f dir inc inc_path seen_file
+append_detail() {
+  [ -z "${1:-}" ] && return 0
+  if [ -z "$DETAIL_CONTENT" ]; then DETAIL_CONTENT="$1"; else DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"; fi
+}
 
-  for f in "${seeds[@]}"; do
-    [ -f "$f" ] && queue+=("$f")
-  done
+add_target() {
+  local f="${1:-}"
+  [ -z "$f" ] && return 0
+  if [ -z "$TARGET_FILE" ]; then TARGET_FILE="$f"
+  else
+    case ",$TARGET_FILE," in *",$f,"*) : ;; *) TARGET_FILE="${TARGET_FILE}, $f" ;; esac
+  fi
+}
+
+# include "file"; 재귀 수집(중복 제거)
+collect_named_conf_files() {
+  local -a queue=() out=()
+  declare -A seen=()
+  local f dir inc inc_path
+
+  for f in "$@"; do [ -f "$f" ] && queue+=("$f"); done
 
   while [ "${#queue[@]}" -gt 0 ]; do
-    f="${queue[0]}"
-    queue=("${queue[@]:1}")
-
+    f="${queue[0]}"; queue=("${queue[@]:1}")
     [ -f "$f" ] || continue
-
-    # 중복 제거(배열로 단순 체크)
-    local already="N"
-    for seen_file in "${seen_list[@]}"; do
-      [ "$seen_file" = "$f" ] && already="Y" && break
-    done
-    [ "$already" = "Y" ] && continue
-
-    seen_list+=("$f")
+    [ -n "${seen["$f"]+x}" ] && continue
+    seen["$f"]=1
     out+=("$f")
 
     dir="$(dirname "$f")"
     while IFS= read -r inc; do
       [ -z "$inc" ] && continue
-      if [[ "$inc" = /* ]]; then
-        inc_path="$inc"
-      else
-        inc_path="${dir}/${inc}"
-      fi
+      [[ "$inc" = /* ]] && inc_path="$inc" || inc_path="${dir}/${inc}"
       [ -f "$inc_path" ] && queue+=("$inc_path")
-    done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
+    done < <(grep -hE '^[[:space:]]*include[[:space:]]+"' "$f" 2>/dev/null \
+            | sed -E 's/.*"([^"]+)".*/\1/')
   done
 
   printf '%s\n' "${out[@]}"
 }
 
-# allow-update 내용이 과도하게 열려있는지(대표 시그널)
-is_allow_update_wide_open() {
-  # any, *, 0.0.0.0/0, 0.0.0.0 등 포함 시 wide open으로 판단
-  echo "$1" | grep -qE '(\bany\b|\*|0\.0\.0\.0(/0)?|\:\:/0)'
+# allow-update/update-policy 블록(멀티라인) 추출
+# 출력: TYPE|FILE|ONE_LINE_CONTENT
+extract_update_blocks() {
+  local f="$1"
+  awk -v FILE="$f" '
+    BEGIN{IGNORECASE=1; inblk=0; type=""; buf=""}
+    function norm(s){gsub(/[[:space:]]+/," ",s); gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); return s}
+    {
+      line=$0
+      sub(/^[[:space:]]*#.*/,"",line)      # 라인 주석(#) 제거(단순)
+      sub(/[[:space:]]*\/\/.*/,"",line)    # 라인 주석(//) 제거(단순)
+      if(line ~ /^[[:space:]]*$/) next
+
+      if(!inblk && line ~ /(allow-update|update-policy)[[:space:]]*\{/){
+        inblk=1
+        type=(line ~ /allow-update[[:space:]]*\{/ ? "allow-update" : "update-policy")
+        buf=line
+        if(line ~ /\}[[:space:]]*;/){
+          print type "|" FILE "|" norm(buf)
+          inblk=0; type=""; buf=""
+        }
+        next
+      }
+
+      if(inblk){
+        buf = buf " " line
+        if(line ~ /\}[[:space:]]*;/){
+          print type "|" FILE "|" norm(buf)
+          inblk=0; type=""; buf=""
+        }
+      }
+    }
+  ' "$f" 2>/dev/null
+}
+
+# 과도 개방 판정(대표 시그널)
+is_wide_open_allow() {
+  local s="$1"
+  echo "$s" | grep -qiE '\ballow-update[[:space:]]*\{[^}]*\bnone\b' && return 1
+  echo "$s" | grep -qiE '(\bany\b|\*|0\.0\.0\.0(/0)?|::/0)' && return 0
+  return 1
+}
+
+is_wide_open_policy() {
+  local s="$1"
+  # update-policy는 TSIG key 기반이 일반적이므로, grant가 * / any 등으로 과도하면 취약 시그널로 처리
+  echo "$s" | grep -qiE '\bgrant[[:space:]]+(\*|any)\b' && return 0
+  echo "$s" | grep -qiE '\bgrant[[:space:]]+[^;]*\b(\*|any)\b' && return 0
+  return 1
 }
 
 # -----------------------------
 # 진단 시작
 # -----------------------------
-CONF_SEEDS=("/etc/named.conf" "/etc/bind/named.conf.options" "/etc/bind/named.conf")
-
 if ! is_named_running; then
   STATUS="PASS"
-  REASON_LINE="DNS(named) 서비스가 비활성화되어 점검 대상이 없습니다."
-  DETAIL_CONTENT="none"
+  REASON_LINE="DNS(named) 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="systemctl/pgrep 기준으로 named 프로세스가 동작하지 않습니다."
 else
-  FOUND_ANY=1
-
   mapfile -t CONF_FILES < <(collect_named_conf_files "${CONF_SEEDS[@]}")
-
   if [ "${#CONF_FILES[@]}" -eq 0 ]; then
     STATUS="FAIL"
-    VULNERABLE=1
-    REASON_LINE="DNS 서비스가 실행 중이나 설정 파일(/etc/named.conf 등)을 찾지 못해 동적 업데이트(allow-update) 제한 여부를 확인할 수 없어 취약합니다. 설정 파일 위치를 확인하고 allow-update 정책을 점검해야 합니다."
+    REASON_LINE="DNS 서비스가 실행 중이나 설정 파일을 확인할 수 없어 취약합니다. 설정 파일 위치를 확인하고 allow-update/update-policy를 점검해야 합니다. (조치: named.conf에 allow-update { none; }; 또는 허용 대상을 IP/TSIG로 제한 후 서비스 재시작)"
     DETAIL_CONTENT="conf_files=none"
   else
-    append_detail "[info] named_running=Y"
-    append_detail "[info] conf_files=$(printf "%s " "${CONF_FILES[@]}" | sed 's/[[:space:]]$//')"
-
-    found_any_allow_update=0
-    wide_open_count=0
-    restricted_count=0
+    found=0; bad=0; good=0
+    shown=0; max_show=25
 
     for f in "${CONF_FILES[@]}"; do
-      add_target_file "$f"
+      add_target "$f"
 
-      # allow-update는 여러 개가 있을 수 있으므로 전부 확인(주석 제외)
-      while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        found_any_allow_update=1
+      while IFS= read -r rec; do
+        [ -z "$rec" ] && continue
+        found=1
+        type="${rec%%|*}"; rest="${rec#*|}"; file="${rest%%|*}"; content="${rest#*|}"
 
-        if is_allow_update_wide_open "$line"; then
-          VULNERABLE=1
-          wide_open_count=$((wide_open_count + 1))
-          append_detail "[check] $f allow-update=WIDE_OPEN | $(echo "$line" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+        if [ "$type" = "allow-update" ]; then
+          if is_wide_open_allow "$content"; then bad=$((bad+1)); verdict="WIDE_OPEN"
+          else good=$((good+1)); verdict="RESTRICTED" ; fi
         else
-          restricted_count=$((restricted_count + 1))
-          append_detail "[check] $f allow-update=SET(restricted?) | $(echo "$line" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          if is_wide_open_policy "$content"; then bad=$((bad+1)); verdict="WIDE_OPEN"
+          else good=$((good+1)); verdict="RESTRICTED" ; fi
         fi
-      done < <(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null | grep -E 'allow-update[[:space:]]*\{' || true)
+
+        if [ "$shown" -lt "$max_show" ]; then
+          append_detail "[check] $file $type=$verdict | $content"
+          shown=$((shown+1))
+        fi
+      done < <(extract_update_blocks "$f")
     done
 
-    if [ "$VULNERABLE" -eq 1 ]; then
+    if [ "$found" -eq 0 ]; then
+      STATUS="PASS"
+      REASON_LINE="설정 파일들(${CONF_FILES[0]} 등 include로 참조되는 파일 포함)에서 allow-update/update-policy가 확인되지 않아 동적 업데이트가 비활성화되어 이 항목에 대한 보안 위협이 없습니다."
+      [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="allow-update/update-policy 블록 미검출"
+    elif [ "$bad" -gt 0 ]; then
       STATUS="FAIL"
-      REASON_LINE="DNS 동적 업데이트(allow-update) 허용 대상이 과도하게 열려 있어 취약합니다. 비인가 사용자가 DNS 레코드를 변경할 수 있으므로 동적 업데이트가 불필요하면 allow-update를 none으로 차단하고, 필요한 경우에도 허용 IP 또는 키(TSIG)만으로 제한해야 합니다."
+      REASON_LINE="설정 파일에서 DNS 동적 업데이트(allow-update/update-policy)가 과도하게 허용되어 취약합니다. (조치: 동적 업데이트가 불필요하면 allow-update { none; }; 적용, 필요 시에도 허용 IP 또는 TSIG 키로만 제한 후 named 재시작)"
+      append_detail "[summary] found_blocks=$found restricted=$good wide_open=$bad"
     else
       STATUS="PASS"
-      if [ "$found_any_allow_update" -eq 1 ]; then
-        REASON_LINE="DNS 동적 업데이트(allow-update)가 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
-      else
-        REASON_LINE="allow-update 설정이 없어 DNS 동적 업데이트가 차단되어 있어 이 항목에 대한 보안 위협이 없습니다."
-      fi
+      REASON_LINE="설정 파일에서 DNS 동적 업데이트(allow-update/update-policy)가 제한적으로 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
+      append_detail "[summary] found_blocks=$found restricted=$good wide_open=$bad"
     fi
-
-    append_detail "[summary] allow_update_found=$found_any_allow_update restricted_count=$restricted_count wide_open_count=$wide_open_count"
-    DETAIL_CONTENT="$DETAIL_LINES"
-    [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
   fi
 fi
 
-# target_file 기본값 보정
 [ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/named.conf, /etc/bind/named.conf.options, /etc/bind/named.conf (and included files)"
+[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 
 # raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
@@ -188,7 +209,7 @@ EOF
 
 # JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
+  | sed 's/\\/\\\\/g; s/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
 # scan_history 저장용 JSON 출력

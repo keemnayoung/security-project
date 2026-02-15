@@ -34,7 +34,7 @@ ACTION_ERR_LOG=""
 
 # (필수) root 권한 권장 안내(실패 원인 명확화용)
 if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 sed/chmod/chown/systemctl 조치가 실패할 수 있습니다."
+  ACTION_ERR_LOG="(주의) root 권한이 아니면 sed/systemctl 조치가 실패할 수 있습니다."
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -98,11 +98,14 @@ disable_systemd_unit_if_exists "fingerd.socket"
 # 2) inetd: /etc/inetd.conf에서 finger 활성 라인 주석 처리
 ############################
 if [ -f "/etc/inetd.conf" ]; then
-  # 활성 finger 라인 존재 여부
   if grep -Ev "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*finger([[:space:]]|$)"; then
     cp -a /etc/inetd.conf "/etc/inetd.conf.bak_${TIMESTAMP}" 2>/dev/null || append_err "inetd.conf 백업 실패"
-    # 라인 시작의 공백+finger 를 주석 처리
-    sed -i 's/^\([[:space:]]*finger\)/#\1/g' /etc/inetd.conf 2>/dev/null || append_err "inetd.conf finger 라인 주석 처리 실패"
+
+    # [보완] 이미 주석(#)인 라인은 제외하고, 활성 finger 라인만 주석 처리
+    # - 라인 시작에 공백이 있을 수 있으므로 ^[[:space:]]*finger 를 대상으로 함
+    sed -i -E '/^[[:space:]]*#/! s/^([[:space:]]*finger([[:space:]]|$))/#\1/' /etc/inetd.conf 2>/dev/null \
+      || append_err "inetd.conf finger 라인 주석 처리 실패"
+
     MODIFIED=1
     restart_inetd_if_exists
   fi
@@ -114,24 +117,27 @@ fi
 if [ -f "/etc/xinetd.d/finger" ]; then
   cp -a /etc/xinetd.d/finger "/etc/xinetd.d/finger.bak_${TIMESTAMP}" 2>/dev/null || append_err "xinetd finger 파일 백업 실패"
 
-  # disable 라인이 있고 no인 경우 -> yes로 변경
-  if grep -Ev "^[[:space:]]*#" /etc/xinetd.d/finger 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-    sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' /etc/xinetd.d/finger 2>/dev/null \
-      || append_err "xinetd finger disable=no -> yes 변경 실패"
+  # [보완] disable 라인이 존재하면 값이 무엇이든 disable = yes로 표준화(대소문자/공백/기타값 방어)
+  if grep -nEv "^[[:space:]]*#" /etc/xinetd.d/finger 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*="; then
+    sed -i -E 's/^[[:space:]]*disable[[:space:]]*=.*/\tdisable = yes/I' /etc/xinetd.d/finger 2>/dev/null \
+      || append_err "xinetd finger disable 라인 표준화(disable=yes) 실패"
     MODIFIED=1
     restart_xinetd_if_exists
-
   else
-    # disable 라인이 없으면 service 블록 안에 추가 시도(가능한 범위에서 보수적으로)
-    if ! grep -Ev "^[[:space:]]*#" /etc/xinetd.d/finger 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*="; then
-      # "{" 다음 줄에 들여쓰기 2칸으로 disable=yes 삽입(일반적인 xinetd 형식 가정)
-      sed -i '/^[[:space:]]*{[[:space:]]*$/a\  disable = yes' /etc/xinetd.d/finger 2>/dev/null \
-        || append_err "xinetd finger disable=yes 추가 실패"
+    # [보완] disable 라인이 없으면 service finger 블록 내에 추가 시도
+    # 1) service finger { ... } 구조가 있으면 마지막 '}' 직전에 삽입
+    if grep -qiE "^[[:space:]]*service[[:space:]]+finger([[:space:]]|\{)" /etc/xinetd.d/finger 2>/dev/null && \
+       grep -qE "^[[:space:]]*\}[[:space:]]*$" /etc/xinetd.d/finger 2>/dev/null; then
+      sed -i -E '0,/^[[:space:]]*\}[[:space:]]*$/ { s/^[[:space:]]*\}[[:space:]]*$/\tdisable = yes\n}/ }' /etc/xinetd.d/finger 2>/dev/null \
+        || append_err "xinetd finger disable=yes 블록 삽입 실패"
       MODIFIED=1
       restart_xinetd_if_exists
     else
-      # disable=yes인 경우는 변경 없음
-      :
+      # 2) 구조 파악이 어려우면 파일 끝에 추가
+      echo -e "\n\tdisable = yes" >> /etc/xinetd.d/finger 2>/dev/null \
+        || append_err "xinetd finger disable=yes 파일 끝 추가 실패"
+      MODIFIED=1
+      restart_xinetd_if_exists
     fi
   fi
 fi
@@ -148,13 +154,9 @@ if [ -f "/etc/inetd.conf" ]; then
   fi
 fi
 
-# xinetd disable=no 또는 disable 라인이 아예 없으면 취약(보수적 판단)
+# xinetd: 파일이 존재할 때 disable=yes가 확인되지 않으면 취약(보수적 판단)
 if [ -f "/etc/xinetd.d/finger" ]; then
-  if grep -Ev "^[[:space:]]*#" /etc/xinetd.d/finger 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-    FINGER_ACTIVE=1
-  fi
   if ! grep -Ev "^[[:space:]]*#" /etc/xinetd.d/finger 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*yes([[:space:]]|$)"; then
-    # 파일이 존재하는데 yes가 확인되지 않으면 취약으로 판단
     FINGER_ACTIVE=1
   fi
 fi
@@ -164,11 +166,9 @@ SYSTEMD_FINGER_BAD=0
 if command -v systemctl >/dev/null 2>&1; then
   for u in finger.socket finger.service fingerd.service fingerd.socket; do
     if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      # enabled 상태면 취약
       if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled"; then
         SYSTEMD_FINGER_BAD=1
       fi
-      # active 상태면 취약
       if systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
         SYSTEMD_FINGER_BAD=1
       fi
@@ -176,7 +176,7 @@ if command -v systemctl >/dev/null 2>&1; then
   done
 fi
 
-# detail 근거 수집(조치 후 상태)
+# detail 근거 수집(조치 후 상태만)
 append_detail "inetd_active_finger=$( [ -f /etc/inetd.conf ] && (grep -Ev '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*finger([[:space:]]|$)' | head -n 3) || echo 'inetd_conf_not_found' )"
 append_detail "xinetd_finger_disable=$( [ -f /etc/xinetd.d/finger ] && (grep -nEv '^[[:space:]]*#' /etc/xinetd.d/finger 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 3) || echo 'xinetd_finger_not_found' )"
 
@@ -209,7 +209,7 @@ if [ -n "$ACTION_ERR_LOG" ]; then
   DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성(조치 이후 상태만)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

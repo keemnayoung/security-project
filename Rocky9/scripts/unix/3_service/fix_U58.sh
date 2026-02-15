@@ -17,126 +17,96 @@
 
 # [보완] U-58 불필요한 SNMP 서비스 구동 점검
 
+set -u
+
 # 기본 변수
 ID="U-58"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
-CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl status snmpd 2>/dev/null | sed -n "1,12p" || echo "systemctl_not_found"); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (rpm -q net-snmp 2>/dev/null || true); (command -v snmpd >/dev/null 2>&1 && snmpd -v 2>&1 | head -n 1 || true)'
+UNITS=("snmpd" "snmptrapd")
+PROCS=("snmpd" "snmptrapd")
+
+CHECK_COMMAND='systemctl is-active snmpd snmptrapd 2>/dev/null; systemctl is-enabled snmpd snmptrapd 2>/dev/null; systemctl list-unit-files 2>/dev/null | grep -E "^(snmpd|snmptrapd)\.service"; pgrep -a -x snmpd 2>/dev/null; pgrep -a -x snmptrapd 2>/dev/null; command -v snmpd 2>/dev/null; command -v snmptrapd 2>/dev/null'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE="/usr/sbin/snmpd"
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
-}
+append_detail(){ [ -n "${1:-}" ] || return 0; DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\n}$1"; }
 
 # root 권한 확인
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   IS_SUCCESS=0
-  REASON_LINE="root 권한이 아니어서 SNMP(snmpd) 서비스 중지/비활성화 조치를 수행할 수 없어 조치가 완료되지 않았습니다."
+  REASON_LINE="root 권한이 아니어서 SNMP(snmpd/snmptrapd) 서비스 중지/비활성화 조치를 수행할 수 없어 조치가 완료되지 않았습니다."
   DETAIL_CONTENT="sudo로 실행해야 합니다."
 else
-  HAS_SYSTEMCTL=0
-  command -v systemctl >/dev/null 2>&1 && HAS_SYSTEMCTL=1
-
-  WAS_ACTIVE=0
-  WAS_ENABLED=0
-  WAS_RUNNING_PROC=0
-
-  # 현재 상태 수집(현재/조치 후에 포함할 최소 데이터로만 사용)
-  if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
-    systemctl is-active snmpd >/dev/null 2>&1 && WAS_ACTIVE=1
-    systemctl is-enabled snmpd >/dev/null 2>&1 && WAS_ENABLED=1
-  fi
-  pgrep -x snmpd >/dev/null 2>&1 && WAS_RUNNING_PROC=1
+  HAS_SYSTEMCTL=0; command -v systemctl >/dev/null 2>&1 && HAS_SYSTEMCTL=1
 
   MODIFIED=0
 
   # 1) systemd 서비스 중지/비활성화/마스킹(가능 시)
   if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
-    if systemctl list-unit-files 2>/dev/null | grep -qE '^snmpd\.service'; then
-      if systemctl stop snmpd >/dev/null 2>&1; then
-        MODIFIED=1
+    for u in "${UNITS[@]}"; do
+      if systemctl list-unit-files 2>/dev/null | grep -qE "^${u}\.service"; then
+        systemctl stop "$u" >/dev/null 2>&1 && MODIFIED=1
+        systemctl disable "$u" >/dev/null 2>&1 && MODIFIED=1
+        systemctl mask "$u" >/dev/null 2>&1 && MODIFIED=1
       fi
-      if systemctl disable snmpd >/dev/null 2>&1; then
-        MODIFIED=1
-      fi
-      # 재활성화 방지(가능 시)
-      if systemctl mask snmpd >/dev/null 2>&1; then
-        MODIFIED=1
-      fi
-    fi
+    done
   fi
 
   # 2) 잔존 프로세스 종료(서비스가 아니어도 떠 있을 수 있음)
-  if pgrep -x snmpd >/dev/null 2>&1; then
-    pkill -x snmpd >/dev/null 2>&1 || true
-    sleep 1
-    if pgrep -x snmpd >/dev/null 2>&1; then
-      pkill -9 -x snmpd >/dev/null 2>&1 || true
+  for p in "${PROCS[@]}"; do
+    if pgrep -x "$p" >/dev/null 2>&1; then
+      pkill -x "$p" >/dev/null 2>&1 || true
+      sleep 1
+      pgrep -x "$p" >/dev/null 2>&1 && pkill -9 -x "$p" >/dev/null 2>&1 || true
+      MODIFIED=1
     fi
-    MODIFIED=1
-  fi
+  done
 
-  # 3) 최종 상태 수집(조치 후/현재만 기록)
-  AFTER_ACTIVE="unknown"
-  AFTER_ENABLED="unknown"
-  AFTER_MASKED="unknown"
+  # 3) 조치 후 상태 수집(조치 후/현재만 기록)
+  STILL_BAD=0
 
   if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
-    systemctl is-active snmpd >/dev/null 2>&1 && AFTER_ACTIVE="active" || AFTER_ACTIVE="inactive"
-    systemctl is-enabled snmpd >/dev/null 2>&1 && AFTER_ENABLED="enabled" || AFTER_ENABLED="disabled"
-    # masked 여부는 is-enabled 결과가 masked로 나올 수 있어 함께 확인
-    if systemctl is-enabled snmpd 2>/dev/null | grep -qi '^masked$'; then
-      AFTER_MASKED="masked"
+    for u in "${UNITS[@]}"; do
+      a="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
+      e="$(systemctl is-enabled "$u" 2>/dev/null | head -n 1 | tr -d '\r')"
+      [ -z "$e" ] && e="unknown"
+      append_detail "[systemd-after] ${u}: active=${a}, enabled=${e}"
+      # active 이거나 enabled(또는 masked가 아닌 enabled류)면 실패로 간주
+      [ "$a" = "active" ] && STILL_BAD=1
+      [ "$e" = "enabled" ] && STILL_BAD=1
+    done
+  else
+    append_detail "[systemd-after] systemctl_not_found"
+    # systemctl 없는 환경이면 프로세스만으로 판단
+  fi
+
+  for p in "${PROCS[@]}"; do
+    if pgrep -a -x "$p" >/dev/null 2>&1; then
+      append_detail "[process-after] ${p}: running=Y, list=$(pgrep -a -x "$p" 2>/dev/null | head -n 3 | tr '\n' ';')"
+      STILL_BAD=1
     else
-      # unit-file이 없으면 not-found가 나올 수 있음
-      AFTER_MASKED="$(systemctl is-enabled snmpd 2>/dev/null | tr -d '\r' | head -n 1)"
-      [ -z "$AFTER_MASKED" ] && AFTER_MASKED="unknown"
+      append_detail "[process-after] ${p}: running=N"
     fi
-  else
-    AFTER_ACTIVE="systemctl_not_found"
-    AFTER_ENABLED="systemctl_not_found"
-    AFTER_MASKED="systemctl_not_found"
-  fi
+  done
 
-  if pgrep -a -x snmpd >/dev/null 2>&1; then
-    AFTER_PROC="running"
-    AFTER_PROC_LIST="$(pgrep -a -x snmpd 2>/dev/null | head -n 5)"
-  else
-    AFTER_PROC="not_running"
-    AFTER_PROC_LIST="snmpd_process_not_found"
-  fi
+  # 바이너리 경로(참고 증적)
+  SNMPD_BIN="$(command -v snmpd 2>/dev/null || true)"
+  SNMPTRAPD_BIN="$(command -v snmptrapd 2>/dev/null || true)"
+  [ -n "$SNMPD_BIN" ] && TARGET_FILE="$SNMPD_BIN"
+  append_detail "[binary] snmpd_path=${SNMPD_BIN:-NOT_FOUND}, snmptrapd_path=${SNMPTRAPD_BIN:-NOT_FOUND}"
 
-  append_detail "snmpd_service_active(after)=$AFTER_ACTIVE"
-  append_detail "snmpd_service_enabled(after)=$AFTER_ENABLED"
-  append_detail "snmpd_service_masked(after)=$AFTER_MASKED"
-  append_detail "snmpd_process(after)=$AFTER_PROC"
-  append_detail "snmpd_process_list(after)=$AFTER_PROC_LIST"
-
-  # 4) 최종 판정(서비스가 active이거나 프로세스가 남아있으면 실패)
-  STILL_ACTIVE=0
-  STILL_PROC=0
-
-  [ "$AFTER_ACTIVE" = "active" ] && STILL_ACTIVE=1
-  [ "$AFTER_PROC" = "running" ] && STILL_PROC=1
-
-  if [ "$STILL_ACTIVE" -eq 0 ] && [ "$STILL_PROC" -eq 0 ]; then
+  # 4) 최종 판정
+  if [ "$STILL_BAD" -eq 0 ]; then
     IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ] || [ "$WAS_ACTIVE" -eq 1 ] || [ "$WAS_ENABLED" -eq 1 ] || [ "$WAS_RUNNING_PROC" -eq 1 ]; then
-      REASON_LINE="불필요한 SNMP(snmpd) 서비스를 중지하고 비활성화하여 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      REASON_LINE="SNMP(snmpd) 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
+    REASON_LINE="불필요한 SNMP(snmpd/snmptrapd) 서비스를 중지하고 비활성화하여 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    [ "$MODIFIED" -eq 0 ] && REASON_LINE="SNMP(snmpd/snmptrapd) 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 SNMP(snmpd) 서비스가 여전히 활성 상태이거나 프로세스가 남아 있어 조치가 완료되지 않았습니다."
+    REASON_LINE="조치를 수행했으나 SNMP(snmpd/snmptrapd) 서비스가 여전히 활성 상태이거나 자동기동(enabled)이 남아 있거나 프로세스가 잔존하여 조치가 완료되지 않았습니다."
   fi
 fi
 
@@ -150,9 +120,9 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리 (백슬래시/따옴표/줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
+  | sed 's/\\/\\\\/g; s/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
 # DB 저장용 JSON 출력

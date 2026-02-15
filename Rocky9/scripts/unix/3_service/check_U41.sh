@@ -25,22 +25,41 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="N/A"
-CHECK_COMMAND='systemctl list-units --type=service 2>/dev/null | grep -E "(automount|autofs)" || echo "no_autofs_related_services"'
+
+# 핵심: 실행(active) + 부팅(enabled) 여부까지 확인
+CHECK_COMMAND='
+(systemctl list-units --type=service --all 2>/dev/null | grep -E "^[[:space:]]*autofs\.service" || echo "autofs_service_not_listed");
+(systemctl list-units --type=socket --all 2>/dev/null | grep -E "^[[:space:]]*autofs\.socket" || echo "autofs_socket_not_listed");
+(systemctl is-active autofs.service 2>/dev/null || echo "autofs.service:unknown");
+(systemctl is-enabled autofs.service 2>/dev/null || echo "autofs.service:unknown");
+(systemctl is-active autofs.socket 2>/dev/null || echo "autofs.socket:unknown");
+(systemctl is-enabled autofs.socket 2>/dev/null || echo "autofs.socket:unknown");
+'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
 
-# automount/autofs 서비스 활성화 여부 점검
-AUTOFS_SERVICES=$(systemctl list-units --type=service 2>/dev/null | grep -E "automount|autofs" | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
+# 실행 결과 수집(최소)
+AUTOFS_SVC_ACTIVE="$(systemctl is-active autofs.service 2>/dev/null || echo unknown)"
+AUTOFS_SVC_ENABLED="$(systemctl is-enabled autofs.service 2>/dev/null || echo unknown)"
+AUTOFS_SOCK_ACTIVE="$(systemctl is-active autofs.socket 2>/dev/null || echo unknown)"
+AUTOFS_SOCK_ENABLED="$(systemctl is-enabled autofs.socket 2>/dev/null || echo unknown)"
 
-if [ -n "$AUTOFS_SERVICES" ]; then
+# 판단: active 이거나 enabled면 취약으로 처리(재부팅/재기동 시 활성화 가능)
+VULN=0
+if [ "$AUTOFS_SVC_ACTIVE" = "active" ] || [ "$AUTOFS_SVC_ENABLED" = "enabled" ] || \
+   [ "$AUTOFS_SOCK_ACTIVE" = "active" ] || [ "$AUTOFS_SOCK_ENABLED" = "enabled" ]; then
+  VULN=1
+fi
+
+if [ "$VULN" -eq 1 ]; then
   STATUS="FAIL"
-  REASON_LINE="automount/autofs 서비스가 활성화되어 있어 자동 마운트 기능을 통한 비인가 접근 경로가 생길 수 있으므로 취약합니다. 실제 사용 여부(NFS/Samba/이동식 매체 자동 마운트 등)를 확인한 뒤 불필요하면 비활성화해야 합니다."
-  DETAIL_CONTENT="active_services=${AUTOFS_SERVICES}"
+  REASON_LINE="systemd에서 autofs 서비스/소켓이 실행 중이거나(enabled 포함) 자동 시작으로 설정되어 있어 자동 마운트 기능이 동작할 수 있으므로 취약합니다. 조치: 사용하지 않으면 'systemctl stop autofs.service autofs.socket' 후 'systemctl disable autofs.service autofs.socket' (필요 시 mask)로 비활성화하고, 적용 시 /etc/auto.* 또는 /etc/autofs* 설정 사용 여부를 함께 확인하세요."
+  DETAIL_CONTENT="autofs.service(active=${AUTOFS_SVC_ACTIVE}, enabled=${AUTOFS_SVC_ENABLED}), autofs.socket(active=${AUTOFS_SOCK_ACTIVE}, enabled=${AUTOFS_SOCK_ENABLED})"
 else
   STATUS="PASS"
-  REASON_LINE="automount/autofs 관련 서비스가 활성화되어 있지 않아 자동 마운트 기반 접근 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="no_active_services"
+  REASON_LINE="systemd에서 autofs 서비스/소켓이 실행 중이지 않고(enabled도 아님) 자동 시작으로 설정되어 있지 않아 자동 마운트 기능이 동작하지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="autofs.service(active=${AUTOFS_SVC_ACTIVE}, enabled=${AUTOFS_SVC_ENABLED}), autofs.socket(active=${AUTOFS_SOCK_ACTIVE}, enabled=${AUTOFS_SOCK_ENABLED})"
 fi
 
 # raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)

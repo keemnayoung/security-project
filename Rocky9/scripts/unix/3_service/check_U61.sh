@@ -19,6 +19,9 @@
 
 # [진단] U-61 SNMP Access Control 설정
 
+set -u
+set -o pipefail
+
 # 기본 변수
 ID="U-61"
 STATUS="PASS"
@@ -27,189 +30,122 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE=""
-CHECK_COMMAND='systemctl is-active snmpd; systemctl is-enabled snmpd; pgrep -a -x snmpd; grep -nE "^(agentAddress|com2sec|rocommunity|rwcommunity|rouser|rwuser)" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null'
+CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active snmpd 2>/dev/null || echo "systemctl_or_snmpd_not_found"); (command -v systemctl >/dev/null 2>&1 && systemctl is-enabled snmpd 2>/dev/null || true); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (grep -nE "^[[:space:]]*(agentAddress|com2sec|rocommunity|rwcommunity|rouser|rwuser|createUser)\b" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "snmpd_conf_not_found_or_no_directives")'
 
-VULNERABLE=0
+# 1) SNMP 실행 여부
 SNMP_RUNNING=0
-DETAIL_LINES=""
+ACTIVE="N"; ENABLED="N"; PROC="N"
 
-append_detail() {
-  local line="$1"
-  [ -z "$line" ] && return 0
-  if [ -z "$DETAIL_LINES" ]; then
-    DETAIL_LINES="$line"
-  else
-    DETAIL_LINES="${DETAIL_LINES}\n$line"
-  fi
-}
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet snmpd 2>/dev/null; then ACTIVE="Y"; SNMP_RUNNING=1; fi
+if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet snmpd 2>/dev/null; then ENABLED="Y"; fi
+if pgrep -x snmpd >/dev/null 2>&1; then PROC="Y"; SNMP_RUNNING=1; fi
 
-add_target_file() {
-  local f="$1"
-  [ -z "$f" ] && return 0
-  if [ -z "$TARGET_FILE" ]; then
-    TARGET_FILE="$f"
-  else
-    TARGET_FILE="${TARGET_FILE}, $f"
-  fi
-}
+DETAIL_CONTENT="[systemd] snmpd_active=${ACTIVE} snmpd_enabled=${ENABLED}\n[process] snmpd_running=${PROC}"
 
-# 1) SNMP 서비스 실행 여부 확인
-ACTIVE="N"
-ENABLED="N"
-PROC="N"
-
-if systemctl is-active --quiet snmpd 2>/dev/null; then
-  ACTIVE="Y"
-  SNMP_RUNNING=1
-fi
-if systemctl is-enabled --quiet snmpd 2>/dev/null; then
-  ENABLED="Y"
-fi
-if pgrep -x snmpd >/dev/null 2>&1; then
-  PROC="Y"
-  SNMP_RUNNING=1
-fi
-
-append_detail "[systemd] snmpd_active=$ACTIVE snmpd_enabled=$ENABLED"
-append_detail "[process] snmpd_running=$PROC"
-
-# 2) SNMP 미실행이면 점검 대상 없음(PASS)
+# 2) SNMP 미사용이면 PASS
 if [ "$SNMP_RUNNING" -eq 0 ]; then
   STATUS="PASS"
-  REASON_LINE="SNMP 서비스가 비활성화되어 있어 점검 대상이 없습니다."
-  DETAIL_CONTENT="$DETAIL_LINES"
-  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+  REASON_LINE="systemd/프로세스 기준으로 SNMP 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
   TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf"
 else
-  # 3) 설정 파일에서 접근 제어 관련 항목 점검
-  CONF_FILES=("/etc/snmp/snmpd.conf" "/usr/share/snmp/snmpd.conf")
-  FOUND_CONF=0
+  # 3) 설정 파일 점검(가이드 핵심: 접근 제어 설정 여부)
+  CONF_FILES=(/etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf)
+  FOUND=0
 
-  # 취약 판단 플래그
-  COM2SEC_FOUND=0
-  COM2SEC_DEFAULT_FOUND=0
+  OK_HINT=0
+  VULN=0
 
-  RO_RW_FOUND=0
-  RO_RW_NO_NET_RESTRICT=0
+  COM2SEC_OK=0; COM2SEC_WIDE=0
+  COMM_OK=0; COMM_WIDE=0; COMM_NO_SRC=0
+  V3_OK=0
+  AGENT_WIDE=0
 
-  AGENTADDR_FOUND=0
-  AGENTADDR_WIDE=0
+  for f in "${CONF_FILES[@]}"; do
+    [ -f "$f" ] || continue
+    FOUND=1
+    TARGET_FILE="${TARGET_FILE:+$TARGET_FILE, }$f"
 
-  # SNMPv3는 community 기반 접근 제어가 아니므로,
-  # v3만 쓰는 환경은 이 항목에서 "확인된 접근 제어"로 PASS 가능하도록 참고로만 수집
-  V3_USER_FOUND=0
+    CLEAN="$(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$f" 2>/dev/null || true)"
 
-  for conf in "${CONF_FILES[@]}"; do
-    if [ -f "$conf" ]; then
-      FOUND_CONF=1
-      add_target_file "$conf"
+    # agentAddress(참고): 0.0.0.0/::/udp:161 등 광범위 리슨은 위험도 상승
+    AG="$(echo "$CLEAN" | grep -E '^[[:space:]]*agentAddress\b' || true)"
+    if [ -n "$AG" ] && echo "$AG" | grep -qE '0\.0\.0\.0|::|udp:161|udp6:161'; then
+      AGENT_WIDE=1
+    fi
 
-      # 주석/공백 제외한 유효 라인만 대상으로 증적 수집
-      CLEAN="$(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$conf" 2>/dev/null || true)"
-
-      # agentAddress 점검: 0.0.0.0 또는 :: 또는 생략(=기본 listen) 등은 광범위 가능성
-      AGENT_LINES="$(echo "$CLEAN" | grep -E '^agentAddress\b' || true)"
-      if [ -n "$AGENT_LINES" ]; then
-        AGENTADDR_FOUND=1
-        # 단순 기준(보수적): 0.0.0.0 / :: / udp:161 / udp6:161 같이 전체 수신 형태가 있으면 광범위로 판단
-        if echo "$AGENT_LINES" | grep -qE '0\.0\.0\.0|::|udp:161|udp6:161'; then
-          AGENTADDR_WIDE=1
-          append_detail "[check] $conf agentAddress=WIDE_LISTEN"
+    # com2sec <secname> <source> <community>
+    C2="$(echo "$CLEAN" | grep -E '^[[:space:]]*com2sec\b' || true)"
+    if [ -n "$C2" ]; then
+      OK_HINT=1
+      while IFS= read -r line; do
+        src="$(echo "$line" | awk '{print $3}')"
+        comm="$(echo "$line" | awk '{print $4}')"
+        if echo "$src" | grep -qE '^(default|0\.0\.0\.0(/0)?|::(/0)?)$'; then
+          COM2SEC_WIDE=1
+          [ "$comm" = "public" ] || [ "$comm" = "private" ] && COM2SEC_WIDE=1
         else
-          append_detail "[check] $conf agentAddress=RESTRICTED"
+          COM2SEC_OK=1
         fi
-      else
-        append_detail "[check] $conf agentAddress=NOT_SET"
-      fi
+      done <<< "$C2"
+    fi
 
-      # com2sec: com2sec <secname> <source> <community>
-      COM2SEC_LINES="$(echo "$CLEAN" | grep -E '^com2sec\b' || true)"
-      if [ -n "$COM2SEC_LINES" ]; then
-        COM2SEC_FOUND=1
-        # source 자리에 default가 있으면 전체 허용으로 취약
-        if echo "$COM2SEC_LINES" | awk '{print $3}' | grep -qx "default"; then
-          COM2SEC_DEFAULT_FOUND=1
-          append_detail "[check] $conf com2sec_source=default(WIDE_OPEN)"
+    # rocommunity/rwcommunity <community> [source[/mask]]
+    CR="$(echo "$CLEAN" | grep -E '^[[:space:]]*(rocommunity|rwcommunity)\b' || true)"
+    if [ -n "$CR" ]; then
+      OK_HINT=1
+      while IFS= read -r line; do
+        nf="$(echo "$line" | awk '{print NF}')"
+        comm="$(echo "$line" | awk '{print $2}')"
+        src="$(echo "$line" | awk '{print $3}')"
+        if [ -z "$nf" ] || [ "$nf" -le 2 ]; then
+          COMM_NO_SRC=1
         else
-          append_detail "[check] $conf com2sec_source=RESTRICTED"
-        fi
-      else
-        append_detail "[check] $conf com2sec=NOT_FOUND"
-      fi
-
-      # rocommunity/rwcommunity: rocommunity <community> [source[/mask]]
-      RO_RW_LINES="$(echo "$CLEAN" | grep -E '^(rocommunity|rwcommunity)\b' || true)"
-      if [ -n "$RO_RW_LINES" ]; then
-        RO_RW_FOUND=1
-        while IFS= read -r line; do
-          # 필드 수가 2개면 (community만) -> 네트워크 제한 없음(취약)
-          nf="$(echo "$line" | awk '{print NF}')"
-          if [ -n "$nf" ] && [ "$nf" -le 2 ]; then
-            RO_RW_NO_NET_RESTRICT=1
-            append_detail "[check] $conf ro/rwcommunity=NO_SOURCE_RESTRICTION"
+          if echo "$src" | grep -qE '^(default|0\.0\.0\.0(/0)?|::(/0)?)$'; then
+            COMM_WIDE=1
           else
-            append_detail "[check] $conf ro/rwcommunity=RESTRICTED"
+            COMM_OK=1
           fi
-        done <<< "$RO_RW_LINES"
-      else
-        append_detail "[check] $conf ro/rwcommunity=NOT_FOUND"
-      fi
+        fi
+        if [ "$comm" = "public" ] || [ "$comm" = "private" ]; then
+          # public/private 자체는 즉시 취약이라기보다, 제한이 없거나 광범위면 취약 근거 강화
+          [ "$nf" -le 2 ] && COMM_NO_SRC=1
+        fi
+      done <<< "$CR"
+    fi
 
-      # SNMPv3 사용자 설정(참고)
-      V3_LINES="$(echo "$CLEAN" | grep -E '^(rouser|rwuser|createUser)\b' || true)"
-      if [ -n "$V3_LINES" ]; then
-        V3_USER_FOUND=1
-        append_detail "[check] $conf snmpv3_user_config=FOUND"
-      else
-        append_detail "[check] $conf snmpv3_user_config=NOT_FOUND"
-      fi
-    else
-      append_detail "[conf] $conf=NOT_FOUND"
+    # SNMPv3 사용자(rouser/rwuser/createUser) 존재 시 접근 제어 힌트로 인정
+    V3="$(echo "$CLEAN" | grep -E '^[[:space:]]*(rouser|rwuser|createUser)\b' || true)"
+    if [ -n "$V3" ]; then
+      OK_HINT=1
+      V3_OK=1
     fi
   done
 
-  # 4) 최종 판정(보수적)
-  if [ "$FOUND_CONF" -eq 0 ]; then
+  if [ "$FOUND" -eq 0 ]; then
     STATUS="FAIL"
-    VULNERABLE=1
-    REASON_LINE="SNMP 서비스가 실행 중이나 설정 파일을 확인할 수 없어 접근 제어 정책을 검증할 수 없으므로 취약합니다. snmpd.conf 위치 및 include 설정을 확인한 뒤 접근 허용 대상을 제한해야 합니다."
+    REASON_LINE="SNMP 서비스가 실행 중이나 snmpd.conf를 확인할 수 없어(파일 미존재/경로 상이) 접근 제어 설정을 검증할 수 있어 취약합니다."
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n[conf] /etc/snmp/snmpd.conf,/usr/share/snmp/snmpd.conf=NOT_FOUND"
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n[조치] /etc/snmp/snmpd.conf에 com2sec 또는 rocommunity/rwcommunity에 '허용 네트워크'를 지정하고 snmpd를 재시작하세요. (예: com2sec <sec> <허용대역> <community> / rocommunity <community> <허용대역>)"
   else
-    # 취약 조건
-    if [ "$COM2SEC_DEFAULT_FOUND" -eq 1 ]; then
-      VULNERABLE=1
-    fi
-    if [ "$RO_RW_NO_NET_RESTRICT" -eq 1 ]; then
-      VULNERABLE=1
-    fi
+    # 취약 조건(가이드 핵심: 접근 제어 미설정/미흡)
+    [ "$OK_HINT" -eq 0 ] && VULN=1
+    [ "$COM2SEC_WIDE" -eq 1 ] && VULN=1
+    [ "$COMM_NO_SRC" -eq 1 ] && VULN=1
+    [ "$COMM_WIDE" -eq 1 ] && VULN=1
+    [ "$AGENT_WIDE" -eq 1 ] && VULN=1
 
-    # agentAddress는 설정이 없을 수도 있으나, 넓게 리슨이면 위험도가 커서 취약 근거로 반영
-    if [ "$AGENTADDR_WIDE" -eq 1 ]; then
-      VULNERABLE=1
-    fi
+    # 상세 요약(짧게)
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n[summary] com2sec_ok=${COM2SEC_OK} com2sec_wide=${COM2SEC_WIDE} ro_rw_ok=${COMM_OK} ro_rw_no_src=${COMM_NO_SRC} ro_rw_wide=${COMM_WIDE} snmpv3_user=${V3_OK} agentAddress_wide=${AGENT_WIDE}"
 
-    # 접근제어 관련 설정이 하나도 안 보이면(특히 v1/v2c 흔적도 없고 v3도 없으면) 확인 불가로 FAIL
-    ANY_ACCESS_HINT=0
-    [ "$COM2SEC_FOUND" -eq 1 ] && ANY_ACCESS_HINT=1
-    [ "$RO_RW_FOUND" -eq 1 ] && ANY_ACCESS_HINT=1
-    [ "$V3_USER_FOUND" -eq 1 ] && ANY_ACCESS_HINT=1
-
-    if [ "$ANY_ACCESS_HINT" -eq 0 ]; then
+    if [ "$VULN" -eq 1 ]; then
       STATUS="FAIL"
-      VULNERABLE=1
-      REASON_LINE="SNMP 서비스가 실행 중이나 접근 제어 관련 설정(com2sec/rocommunity/rwcommunity/rouser 등)을 확인할 수 없어 모든 호스트에서 접근이 허용될 가능성을 배제할 수 없으므로 취약합니다. 설정 include 경로를 확인하고 허용 네트워크/호스트를 제한해야 합니다."
+      REASON_LINE="snmpd.conf에서 com2sec/rocommunity/rwcommunity 접근 제어가 없거나(source 미지정), default(전체) 등으로 광범위 허용되어 취약합니다."
+      DETAIL_CONTENT="${DETAIL_CONTENT}\n[조치] (Redhat계열) com2sec의 source를 관리망/특정 호스트로 제한하세요. (Debian계열) rocommunity/rwcommunity 뒤에 <허용 네트워크>를 추가하세요. 적용 후 'systemctl restart snmpd'로 재시작하세요."
     else
-      if [ "$VULNERABLE" -eq 1 ]; then
-        STATUS="FAIL"
-        REASON_LINE="SNMP 접근 제어가 미흡하여 비인가 호스트에서 시스템 정보에 접근할 수 있는 위험이 있으므로 취약합니다. com2sec의 source를 default가 아닌 관리망/특정 호스트로 제한하고, rocommunity/rwcommunity에는 반드시 source 제한을 추가해야 합니다."
-      else
-        STATUS="PASS"
-        REASON_LINE="SNMP 접근 제어 설정이 확인되어 허용 대상이 제한되어 있으므로 이 항목에 대한 보안 위협이 없습니다."
-      fi
+      STATUS="PASS"
+      REASON_LINE="snmpd.conf에서 com2sec 또는 rocommunity/rwcommunity(또는 SNMPv3 사용자)가 확인되고 허용 대상(source)이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
     fi
   fi
-
-  DETAIL_CONTENT="$DETAIL_LINES"
-  [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
 # raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
@@ -222,9 +158,9 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+# JSON 저장을 위한 escape 처리 (백슬래시/따옴표/줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
+  | sed 's/\\/\\\\/g; s/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
 # scan_history 저장용 JSON 출력

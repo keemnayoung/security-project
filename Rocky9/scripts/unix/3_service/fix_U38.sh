@@ -29,14 +29,14 @@ CHECK_COMMAND='
 for s in echo discard daytime chargen; do
   [ -f "/etc/xinetd.d/$s" ] && echo "xinetd_file:$s" && grep -nEv "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1 || true;
 done;
-(command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -Ei "^(echo|discard|daytime|chargen)\.(service|socket)[[:space:]]") || echo "systemd_units_not_found"
+(command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -Eqi "^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(service|socket)[[:space:]]") || echo "systemd_units_not_found"
 '
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE="/etc/inetd.conf
 /etc/xinetd.d/(echo,discard,daytime,chargen)
-systemd(echo/discard/daytime/chargen)"
+systemd(echo/discard/daytime/chargen 및 -dgram/-stream 변형)"
 
 ACTION_ERR_LOG=""
 
@@ -131,15 +131,14 @@ fi
 
 ########################################
 # 3) systemd: DoS 서비스 유닛 비활성화(있을 때만)
+#    (필수 보완) -dgram/-stream 변형 유닛 포함
 ########################################
-disable_systemd_unit_if_exists "echo.service"
-disable_systemd_unit_if_exists "echo.socket"
-disable_systemd_unit_if_exists "discard.service"
-disable_systemd_unit_if_exists "discard.socket"
-disable_systemd_unit_if_exists "daytime.service"
-disable_systemd_unit_if_exists "daytime.socket"
-disable_systemd_unit_if_exists "chargen.service"
-disable_systemd_unit_if_exists "chargen.socket"
+for base in echo discard daytime chargen; do
+  for suf in "" "-dgram" "-stream"; do
+    disable_systemd_unit_if_exists "${base}${suf}.service"
+    disable_systemd_unit_if_exists "${base}${suf}.socket"
+  done
+done
 
 ########################################
 # 4) 조치 후 검증 + detail(현재/조치 후 상태만)
@@ -165,18 +164,23 @@ for s in "${DOS_SERVICES[@]}"; do
 done
 [ "$XINETD_BAD" -eq 1 ] && FAIL_FLAG=1
 
-# systemd enabled/active면 실패
+# systemd enabled/active면 실패(필수 보완: -dgram/-stream 포함)
 SYSTEMD_BAD=0
 if command -v systemctl >/dev/null 2>&1; then
-  for u in echo.service echo.socket discard.service discard.socket daytime.service daytime.socket chargen.service chargen.socket; do
-    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled"; then
-        SYSTEMD_BAD=1
-      fi
-      if systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
-        SYSTEMD_BAD=1
-      fi
-    fi
+  for base in echo discard daytime chargen; do
+    for suf in "" "-dgram" "-stream"; do
+      for typ in service socket; do
+        u="${base}${suf}.${typ}"
+        if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
+          if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled"; then
+            SYSTEMD_BAD=1
+          fi
+          if systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
+            SYSTEMD_BAD=1
+          fi
+        fi
+      done
+    done
   done
 fi
 [ "$SYSTEMD_BAD" -eq 1 ] && FAIL_FLAG=1
@@ -196,13 +200,19 @@ done
 append_detail "xinetd_disable_settings(after)=$XINETD_POST_SUMMARY"
 
 if command -v systemctl >/dev/null 2>&1; then
-  units="$(systemctl list-unit-files 2>/dev/null | grep -Ei '^(echo|discard|daytime|chargen)\.(service|socket)[[:space:]]' || echo 'systemd_units_not_found')"
+  units="$(systemctl list-unit-files 2>/dev/null | grep -Ei '^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(service|socket)[[:space:]]' || echo 'systemd_units_not_found')"
   append_detail "systemd_units(after)=$units"
-  for u in echo.service echo.socket discard.service discard.socket daytime.service daytime.socket chargen.service chargen.socket; do
-    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      append_detail "${u}_is_enabled(after)=$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
-      append_detail "${u}_is_active(after)=$(systemctl is-active "$u" 2>/dev/null || echo 'unknown')"
-    fi
+
+  for base in echo discard daytime chargen; do
+    for suf in "" "-dgram" "-stream"; do
+      for typ in service socket; do
+        u="${base}${suf}.${typ}"
+        if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
+          append_detail "${u}_is_enabled(after)=$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
+          append_detail "${u}_is_active(after)=$(systemctl is-active "$u" 2>/dev/null || echo 'unknown')"
+        fi
+      done
+    done
   done
 else
   append_detail "systemctl_not_found"
@@ -225,7 +235,7 @@ if [ -n "$ACTION_ERR_LOG" ]; then
   DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성 (after/current만 포함)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

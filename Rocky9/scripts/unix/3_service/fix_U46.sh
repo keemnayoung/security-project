@@ -17,207 +17,209 @@
 
 # [보완] U-46 일반 사용자의 메일 서비스 실행 방지
 
-# 기본 변수
+# 1. 항목 정보 정의
 ID="U-46"
-ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-IS_SUCCESS=0
+CATEGORY="서비스 관리"
+TITLE="일반 사용자의 메일 서비스 실행 방지"
+IMPORTANCE="상"
 
-CHECK_COMMAND='
-[ -f /etc/mail/sendmail.cf ] && grep -inE "^[[:space:]]*O[[:space:]]+PrivacyOptions=" /etc/mail/sendmail.cf 2>/dev/null || echo "sendmail_cf_not_found_or_no_privacyoptions";
-[ -f /usr/sbin/postsuper ] && stat -c "%U %G %a %n" /usr/sbin/postsuper 2>/dev/null || echo "postsuper_not_found";
-[ -f /usr/sbin/exiqgrep ] && stat -c "%U %G %a %n" /usr/sbin/exiqgrep 2>/dev/null || echo "exiqgrep_not_found";
-(command -v systemctl >/dev/null 2>&1 && systemctl is-active sendmail 2>/dev/null | head -n 1) || echo "systemctl_or_sendmail_service_unknown"
-'
+# 2. 조치 로직
+STATUS="PASS"
+ACTION_LOG=""
+TARGET_FILES=()
 
-REASON_LINE=""
-DETAIL_CONTENT=""
-TARGET_FILE="/etc/mail/sendmail.cf, /usr/sbin/postsuper, /usr/sbin/exiqgrep"
-
-ACTION_ERR_LOG=""
-
-# (필수) root 권한 권장 안내(실패 원인 명확화용)
-if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 파일 수정(chmod/sed) 및 서비스 재시작이 실패할 수 있습니다."
-fi
-
-MODIFIED=0
-FAIL_FLAG=0
-
-append_err() {
-  if [ -n "$ACTION_ERR_LOG" ]; then
-    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
-  else
-    ACTION_ERR_LOG="$1"
-  fi
+# 권한 판정: others execute(x) 여부 (o 자리의 x 비트=1이면 실행 가능)
+is_others_exec_on() {
+  local p="$1"
+  [[ "$p" =~ ^[0-9]{3,4}$ ]] || return 2
+  local o=$(( p % 10 ))
+  (( (o & 1) == 1 ))
 }
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
+add_target_file() {
+  local f="$1"
+  [ -n "$f" ] && TARGET_FILES+=("$f")
 }
 
-# 권한 형식 검증(3~4자리 8진)
-is_octal_perm() {
-  echo "$1" | grep -Eq '^[0-7]{3,4}$'
-}
+# -----------------------
+# [Sendmail] - restrictqrun 적용
+# -----------------------
+SENDMAIL_CF=""
+if command -v sendmail >/dev/null 2>&1; then
+  [ -f /etc/mail/sendmail.cf ] && SENDMAIL_CF="/etc/mail/sendmail.cf"
+  [ -z "$SENDMAIL_CF" ] && [ -f /etc/sendmail.cf ] && SENDMAIL_CF="/etc/sendmail.cf"
 
-# 기타 실행 비트(o+x) 존재 여부(001)
-has_other_exec_bit() {
-  local perm_raw="$1"
-  is_octal_perm "$perm_raw" || return 0  # 형식 이상이면 "있다고 가정"하여 조치 실패로 유도하지 않음
-  local dec=$((8#$perm_raw))
-  [ $((dec & 001)) -ne 0 ]
-}
+  if [ -n "$SENDMAIL_CF" ]; then
+    add_target_file "$SENDMAIL_CF"
 
-# systemd sendmail restart(있을 때만)
-restart_sendmail_if_exists() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qE "^sendmail\.service" || return 0
-  systemctl restart sendmail 2>/dev/null || append_err "systemctl restart sendmail 실패"
-}
+    # 주석 제외 PrivacyOptions 라인(대표 1개) 확인
+    PRIV_LINE="$(grep -iE '^[[:space:]]*(O[[:space:]]+)?PrivacyOptions([[:space:]]*=|[[:space:]]+)' "$SENDMAIL_CF" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n 1)"
 
-########################################
-# 1) Sendmail: PrivacyOptions에 restrictqrun 포함
-########################################
-CF_FILE="/etc/mail/sendmail.cf"
-if command -v sendmail >/dev/null 2>&1 && [ -f "$CF_FILE" ]; then
-  # PrivacyOptions 라인이 있고 restrictqrun이 없으면 추가, 라인이 없으면 신규 추가(보수적)
-  if grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null | grep -qi 'restrictqrun'; then
-    : # already ok
-  else
-    cp -a "$CF_FILE" "${CF_FILE}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "sendmail.cf 백업 실패"
-
-    if grep -qE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null; then
-      # 라인末에 ,restrictqrun 추가(중복 방지 위해 위에서 체크)
-      sed -i '/^[[:space:]]*O[[:space:]]\+PrivacyOptions=/ s/$/,restrictqrun/' "$CF_FILE" 2>/dev/null \
-        || append_err "sendmail.cf PrivacyOptions 수정 실패"
+    if [ -z "$PRIV_LINE" ]; then
+      # 라인 자체가 없으면 최소 설정을 추가
+      echo "O PrivacyOptions=restrictqrun" >> "$SENDMAIL_CF"
+      ACTION_LOG="${ACTION_LOG} sendmail: PrivacyOptions 라인이 없어 restrictqrun 라인을 추가했습니다."
     else
-      # 라인 자체가 없으면 추가
-      echo "O PrivacyOptions=restrictqrun" >> "$CF_FILE" 2>/dev/null \
-        || append_err "sendmail.cf PrivacyOptions 신규 추가 실패"
+      if echo "$PRIV_LINE" | grep -qi 'restrictqrun'; then
+        ACTION_LOG="${ACTION_LOG} sendmail: restrictqrun이 이미 설정되어 있어 변경하지 않았습니다."
+      else
+        # 기존 라인에 restrictqrun 추가 (O PrivacyOptions=... 또는 PrivacyOptions=... 모두 처리)
+        # 1) '...=' 뒤에 토큰들을 보존하면서 마지막에 ,restrictqrun 추가
+        sed -i -r '/^[[:space:]]*(O[[:space:]]+)?PrivacyOptions[[:space:]]*=/I {
+          /restrictqrun/I! s/[[:space:]]*$//;
+          /restrictqrun/I! s/$/,restrictqrun/;
+        }' "$SENDMAIL_CF"
+        ACTION_LOG="${ACTION_LOG} sendmail: PrivacyOptions에 restrictqrun을 추가했습니다."
+      fi
     fi
 
-    MODIFIED=1
-    restart_sendmail_if_exists
+    # 서비스 재시작(가능한 경우만)
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl restart sendmail 2>/dev/null || true
+    fi
   fi
 fi
 
-########################################
-# 2) Postfix: /usr/sbin/postsuper 기타 실행(o+x) 제거
-########################################
+# -----------------------
+# [Postfix] - postsuper others 실행 권한 제거
+# -----------------------
 POSTSUPER="/usr/sbin/postsuper"
 if [ -f "$POSTSUPER" ]; then
-  PERM="$(stat -c '%a' "$POSTSUPER" 2>/dev/null)"
-  if [ -z "$PERM" ] || ! is_octal_perm "$PERM"; then
-    append_err "$POSTSUPER 권한 값을 확인할 수 없어 조치/검증이 불완전할 수 있습니다."
-    FAIL_FLAG=1
+  add_target_file "$POSTSUPER"
+  PERMS="$(stat -c '%a' "$POSTSUPER" 2>/dev/null)"
+  if [ -z "$PERMS" ]; then
+    STATUS="FAIL"
+    ACTION_LOG="${ACTION_LOG} postfix: postsuper 권한 정보를 확인하지 못해 조치가 완료되지 않았습니다."
   else
-    if has_other_exec_bit "$PERM"; then
-      chmod o-x "$POSTSUPER" 2>/dev/null || append_err "$POSTSUPER chmod o-x 실패"
-      MODIFIED=1
+    if is_others_exec_on "$PERMS"; then
+      chmod o-x "$POSTSUPER" 2>/dev/null || true
+      ACTION_LOG="${ACTION_LOG} postfix: postsuper의 others 실행 권한(o+x)을 제거했습니다."
+    else
+      ACTION_LOG="${ACTION_LOG} postfix: postsuper의 others 실행 권한(o+x)이 없어 변경하지 않았습니다."
     fi
   fi
 fi
 
-########################################
-# 3) Exim: /usr/sbin/exiqgrep 기타 실행(o+x) 제거
-########################################
+# -----------------------
+# [Exim] - exiqgrep others 실행 권한 제거
+# -----------------------
 EXIQGREP="/usr/sbin/exiqgrep"
 if [ -f "$EXIQGREP" ]; then
-  PERM="$(stat -c '%a' "$EXIQGREP" 2>/dev/null)"
-  if [ -z "$PERM" ] || ! is_octal_perm "$PERM"; then
-    append_err "$EXIQGREP 권한 값을 확인할 수 없어 조치/검증이 불완전할 수 있습니다."
-    FAIL_FLAG=1
+  add_target_file "$EXIQGREP"
+  PERMS="$(stat -c '%a' "$EXIQGREP" 2>/dev/null)"
+  if [ -z "$PERMS" ]; then
+    STATUS="FAIL"
+    ACTION_LOG="${ACTION_LOG} exim: exiqgrep 권한 정보를 확인하지 못해 조치가 완료되지 않았습니다."
   else
-    if has_other_exec_bit "$PERM"; then
-      chmod o-x "$EXIQGREP" 2>/dev/null || append_err "$EXIQGREP chmod o-x 실패"
-      MODIFIED=1
+    if is_others_exec_on "$PERMS"; then
+      chmod o-x "$EXIQGREP" 2>/dev/null || true
+      ACTION_LOG="${ACTION_LOG} exim: exiqgrep의 others 실행 권한(o+x)을 제거했습니다."
+    else
+      ACTION_LOG="${ACTION_LOG} exim: exiqgrep의 others 실행 권한(o+x)이 없어 변경하지 않았습니다."
     fi
   fi
 fi
 
-########################################
-# 4) 조치 후/현재 상태 수집(현재 설정만 evidence에 포함)
-########################################
-# sendmail PrivacyOptions 현재값
-if [ -f "$CF_FILE" ]; then
-  PO_LINE="$(grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null | head -n 1)"
-  [ -z "$PO_LINE" ] && PO_LINE="PrivacyOptions_line_not_found"
-  append_detail "sendmail_privacyoptions(after)=$PO_LINE"
-  echo "$PO_LINE" | grep -qi 'restrictqrun' || FAIL_FLAG=1
-else
-  append_detail "sendmail_cf(after)=not_found"
-fi
+# -----------------------
+# 조치 후 최종 검증(현재 설정만 수집)
+# -----------------------
+VERIFY_FAIL=0
+AFTER_LINES=""
 
-# postsuper/exiqgrep 권한 현재값
-if [ -f "$POSTSUPER" ]; then
-  STAT="$(stat -c '%U:%G %a %n' "$POSTSUPER" 2>/dev/null)"
-  [ -z "$STAT" ] && STAT="stat_failed"
-  append_detail "postsuper(after)=$STAT"
-  P="$(echo "$STAT" | awk '{print $2}' 2>/dev/null)"
-  if is_octal_perm "$P" && has_other_exec_bit "$P"; then
-    FAIL_FLAG=1
-  fi
-else
-  append_detail "postsuper(after)=not_found"
-fi
-
-if [ -f "$EXIQGREP" ]; then
-  STAT="$(stat -c '%U:%G %a %n' "$EXIQGREP" 2>/dev/null)"
-  [ -z "$STAT" ] && STAT="stat_failed"
-  append_detail "exiqgrep(after)=$STAT"
-  P="$(echo "$STAT" | awk '{print $2}' 2>/dev/null)"
-  if is_octal_perm "$P" && has_other_exec_bit "$P"; then
-    FAIL_FLAG=1
-  fi
-else
-  append_detail "exiqgrep(after)=not_found"
-fi
-
-########################################
-# 5) 최종 판정
-########################################
-if [ "$FAIL_FLAG" -eq 0 ]; then
-  IS_SUCCESS=1
-  if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="일반 사용자의 메일 서비스 실행을 제한하도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+# sendmail after
+if [ -n "$SENDMAIL_CF" ] && [ -f "$SENDMAIL_CF" ]; then
+  AFTER_PRIV="$(grep -iE '^[[:space:]]*(O[[:space:]]+)?PrivacyOptions([[:space:]]*=|[[:space:]]+)' "$SENDMAIL_CF" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n 1)"
+  if [ -z "$AFTER_PRIV" ]; then
+    VERIFY_FAIL=1
+    AFTER_LINES="${AFTER_LINES}- sendmail: PrivacyOptions 라인이 없어 취약 상태입니다.\n"
   else
-    REASON_LINE="메일 서비스 실행 제한 설정이 적절히 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    if echo "$AFTER_PRIV" | grep -qi 'restrictqrun'; then
+      AFTER_LINES="${AFTER_LINES}- sendmail: ${SENDMAIL_CF}의 PrivacyOptions에 restrictqrun이 적용되어 있습니다. (현재: ${AFTER_PRIV})\n"
+    else
+      VERIFY_FAIL=1
+      AFTER_LINES="${AFTER_LINES}- sendmail: ${SENDMAIL_CF}의 PrivacyOptions에 restrictqrun이 없어 취약 상태입니다. (현재: ${AFTER_PRIV})\n"
+    fi
   fi
+fi
+
+# postfix after
+if [ -f "$POSTSUPER" ]; then
+  AFTER_P="$(stat -c '%a' "$POSTSUPER" 2>/dev/null)"
+  if [ -z "$AFTER_P" ]; then
+    VERIFY_FAIL=1
+    AFTER_LINES="${AFTER_LINES}- postfix: ${POSTSUPER} 권한을 재확인하지 못해 취약 여부 판단이 불가합니다.\n"
+  else
+    if is_others_exec_on "$AFTER_P"; then
+      VERIFY_FAIL=1
+      AFTER_LINES="${AFTER_LINES}- postfix: ${POSTSUPER}에 others 실행 권한(o+x)이 남아 있어 취약 상태입니다. (현재: ${AFTER_P})\n"
+    else
+      AFTER_LINES="${AFTER_LINES}- postfix: ${POSTSUPER}에 others 실행 권한(o+x)이 없어 양호 상태입니다. (현재: ${AFTER_P})\n"
+    fi
+  fi
+fi
+
+# exim after
+if [ -f "$EXIQGREP" ]; then
+  AFTER_E="$(stat -c '%a' "$EXIQGREP" 2>/dev/null)"
+  if [ -z "$AFTER_E" ]; then
+    VERIFY_FAIL=1
+    AFTER_LINES="${AFTER_LINES}- exim: ${EXIQGREP} 권한을 재확인하지 못해 취약 여부 판단이 불가합니다.\n"
+  else
+    if is_others_exec_on "$AFTER_E"; then
+      VERIFY_FAIL=1
+      AFTER_LINES="${AFTER_LINES}- exim: ${EXIQGREP}에 others 실행 권한(o+x)이 남아 있어 취약 상태입니다. (현재: ${AFTER_E})\n"
+    else
+      AFTER_LINES="${AFTER_LINES}- exim: ${EXIQGREP}에 others 실행 권한(o+x)이 없어 양호 상태입니다. (현재: ${AFTER_E})\n"
+    fi
+  fi
+fi
+
+# 대상이 하나도 없으면(메일 서비스 미설치/미존재) PASS 처리
+if [ ${#TARGET_FILES[@]} -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="메일 서비스 관련 점검 대상이 없어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="(조치 후 설정)\n- 점검 대상 파일/바이너리가 발견되지 않았습니다."
 else
-  IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 메일 서비스 실행 제한 설정이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  if [ "$VERIFY_FAIL" -eq 1 ] || [ "$STATUS" = "FAIL" ]; then
+    STATUS="FAIL"
+    REASON_LINE="조치 이후에도 일반 사용자의 메일 서비스 실행 제한이 완전히 적용되지 않아 취약합니다."
+  else
+    STATUS="PASS"
+    REASON_LINE="조치 이후 설정/권한이 기준에 부합하여 이 항목에 대한 보안 위협이 없습니다."
+  fi
+
+  [ -z "$ACTION_LOG" ] && ACTION_LOG="변경 사항이 없습니다."
+  DETAIL_CONTENT="(조치 내역) ${ACTION_LOG}\n\n(조치 후 설정)\n${AFTER_LINES}"
 fi
 
-if [ -n "$ACTION_ERR_LOG" ]; then
-  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
-fi
+TARGET_FILE="$(printf "%s\n" "${TARGET_FILES[@]}" | awk 'NF')"
 
-# raw_evidence 구성
-RAW_EVIDENCE=$(cat <<EOF
+# ===== 출력 포맷(scan_history) =====
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="(command -v sendmail >/dev/null 2>&1 && (grep -iE '^[[:space:]]*(O[[:space:]]+)?PrivacyOptions' /etc/mail/sendmail.cf 2>/dev/null | grep -v '^#' || grep -iE '^[[:space:]]*(O[[:space:]]+)?PrivacyOptions' /etc/sendmail.cf 2>/dev/null | grep -v '^#')); ([ -f /usr/sbin/postsuper ] && stat -c '%a %n' /usr/sbin/postsuper 2>/dev/null); ([ -f /usr/sbin/exiqgrep ] && stat -c '%a %n' /usr/sbin/exiqgrep 2>/dev/null)"
+
+json_escape() {
+  # backslash/quote/newline escape
+  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/\n/\\n/g;s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON="$(cat <<EOF
 {
-  "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "command":"$(json_escape "$CHECK_COMMAND")",
+  "detail":"$(json_escape "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(json_escape "$TARGET_FILE")"
 }
 EOF
-)
+)"
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE_JSON")"
 
-# DB 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
-    "item_code": "$ID",
-    "action_date": "$ACTION_DATE",
-    "is_success": $IS_SUCCESS,
-    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
+  "item_code": "$ID",
+  "status": "$STATUS",
+  "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+  "scan_date": "$SCAN_DATE"
 }
 EOF

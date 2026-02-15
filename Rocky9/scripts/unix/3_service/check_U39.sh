@@ -17,13 +17,23 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+
 # 기본 변수
 ID="U-39"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="systemd(nfs-server, rpcbind 등), /etc/exports"
-CHECK_COMMAND='systemctl list-units --type=service 2>/dev/null | egrep -i "(nfs|rpcbind)" || echo "no_nfs_related_services"; systemctl is-enabled nfs-server 2>/dev/null || true; systemctl is-active nfs-server 2>/dev/null || true; [ -f /etc/exports ] && (grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports || echo "exports_empty") || echo "exports_not_found"'
+
+# 가이드(예시) + 실제 판정에 필요한 핵심 커맨드 포함
+CHECK_COMMAND='
+systemctl list-units --type=service 2>/dev/null | egrep -i "(nfs|rpcbind)" || echo "no_nfs_related_services";
+for u in nfs-server.service rpcbind.service rpcbind.socket nfs-mountd.service nfs-idmapd.service rpc-statd.service nfsdcld.service; do
+  systemctl is-enabled "$u" 2>/dev/null || true;
+  systemctl is-active "$u" 2>/dev/null || true;
+done;
+[ -f /etc/exports ] && (grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports || echo "exports_empty") || echo "exports_not_found"
+'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
@@ -36,43 +46,63 @@ add_found() {
   [ -n "$msg" ] && FOUND_LINES+=("$msg")
 }
 
-# 1) systemd에서 NFS 관련 서비스 활성/로딩 여부 확인
-# - 단순 "list-units에서 보인다"가 아니라, loaded/active 상태 중심으로 판단(오탐 완화)
-NFS_UNITS_RAW=$(systemctl list-units --type=service 2>/dev/null | egrep -i "(^| )(nfs|rpcbind)" || true)
-if [ -n "$NFS_UNITS_RAW" ]; then
-  # ACTIVE 상태(3열: ACTIVE) 기준으로 필터링
-  NFS_ACTIVE=$(echo "$NFS_UNITS_RAW" | awk '$4=="running" || $4=="exited" || $4=="waiting" || $4=="listening" {print}')
-  if [ -n "$NFS_ACTIVE" ]; then
+# 1) NFS 관련 unit 상태 점검 (서비스/소켓 포함)
+# - 불필요 NFS 서비스 비활성화(가이드 취지) 관점에서 active 또는 enabled이면 "취약" 신호로 판단
+UNITS=(
+  "nfs-server.service"
+  "rpcbind.service"
+  "rpcbind.socket"
+  "nfs-mountd.service"
+  "nfs-idmapd.service"
+  "rpc-statd.service"
+  "nfsdcld.service"
+)
+
+for u in "${UNITS[@]}"; do
+  ACTIVE_STATE="$(systemctl is-active "$u" 2>/dev/null || echo "unknown")"
+  ENABLED_STATE="$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")"
+
+  # active이면 즉시 취약 신호
+  if [ "$ACTIVE_STATE" = "active" ] || [ "$ACTIVE_STATE" = "running" ] || [ "$ACTIVE_STATE" = "listening" ]; then
     FOUND=1
-    add_found "systemd 활성 NFS 관련 unit 감지: $(echo "$NFS_ACTIVE" | awk '{print $1"("$4")"}' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    add_found "systemd: $u 가 활성(active) 상태입니다. (is-active=$ACTIVE_STATE, is-enabled=$ENABLED_STATE)"
+    continue
+  fi
+
+  # enabled이면 취약 신호 (masked/disabled는 양호로 간주, static은 enable 개념이 아니므로 단독으로는 취약 처리하지 않음)
+  if [ "$ENABLED_STATE" = "enabled" ] || [ "$ENABLED_STATE" = "enabled-runtime" ]; then
+    FOUND=1
+    add_found "systemd: $u 가 부팅 시 자동 시작(enabled) 상태입니다. (is-enabled=$ENABLED_STATE, is-active=$ACTIVE_STATE)"
   else
-    # 로딩은 되었지만 active가 아닌 경우는 참고 정보로만 표시
-    add_found "systemd에 NFS 관련 unit이 있으나 active 상태는 아님(참고): $(echo "$NFS_UNITS_RAW" | awk '{print $1"("$4")"}' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    add_found "systemd: $u 상태(참고) (is-enabled=$ENABLED_STATE, is-active=$ACTIVE_STATE)"
   fi
-fi
+done
 
-# 2) /etc/exports에 실제 export 설정이 존재하면(NFS 사용 가능성) 취약(불필요 서비스 관점)
-# - 주석/공백 제외하고 라인이 있으면 "사용 중" 신호로 간주
+# 2) /etc/exports 설정 존재 여부(참고/보조 신호)
+# - 데몬이 꺼져 있어도 exports가 구성되어 있으면 NFS 사용 흔적이므로 FAIL 판단에 참고로 포함
 if [ -f /etc/exports ]; then
-  EXPORTS_ACTIVE=$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports 2>/dev/null || true)
+  EXPORTS_ACTIVE="$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports 2>/dev/null || true)"
   if [ -n "$EXPORTS_ACTIVE" ]; then
-    FOUND=1
-    add_found "/etc/exports에 export 설정 존재(주석 제외): $(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
+    add_found "/etc/exports에 export 설정이 존재합니다(주석 제외). 예: $(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
+  else
+    add_found "/etc/exports는 존재하나 유효 export 설정(주석/공백 제외)은 없습니다."
   fi
+else
+  add_found "/etc/exports 파일이 존재하지 않습니다."
 fi
 
-# 결과 유무에 따른 PASS/FAIL 결정
+# 결과 유무에 따른 PASS/FAIL 결정 + raw_evidence 문장 요구사항 반영
 if [ "$FOUND" -eq 1 ]; then
   STATUS="FAIL"
-  REASON_LINE="NFS 서비스(또는 export 설정)가 활성화/구성되어 있어, 불필요한 경우 비인가 파일 공유·접근 경로가 될 수 있으므로 취약합니다. 실제 사용 여부를 확인한 뒤 불필요하면 비활성화해야 합니다."
-  DETAIL_CONTENT=$(printf "%s\n" "${FOUND_LINES[@]}")
+  REASON_LINE="systemd에서 NFS 관련 서비스/소켓이 활성(active) 또는 자동 시작(enabled) 상태로 확인되어 취약합니다. (불필요한 NFS 사용 시 비인가 파일 공유·접근 경로가 될 수 있습니다.) 조치: NFS를 사용하지 않으면 'systemctl stop <서비스명>' 후 'systemctl disable <서비스명>'을 적용하고, 필요 시 /etc/exports의 공유 설정을 제거한 뒤 재확인하세요."
+  DETAIL_CONTENT="$(printf "%s\n" "${FOUND_LINES[@]}")"
 else
   STATUS="PASS"
-  REASON_LINE="NFS 서비스가 활성화되어 있지 않고(/etc/exports에 유효 설정도 확인되지 않아), 불필요한 파일 공유로 인한 비인가 접근 가능성이 없으므로 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="none"
+  REASON_LINE="systemd에서 NFS 관련 서비스/소켓이 활성화되어 있지 않고(disabled/masked 등), 불필요한 NFS 공유가 동작할 수 있는 상태가 아니므로 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="$(printf "%s\n" "${FOUND_LINES[@]}")"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# raw_evidence 구성 (첫 줄: 평가 문장 / 다음 줄부터: 현재 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

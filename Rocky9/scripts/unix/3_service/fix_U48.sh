@@ -19,218 +19,302 @@
 
 # 기본 변수
 ID="U-48"
-ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-IS_SUCCESS=0
+CATEGORY="서비스관리"
+TITLE="expn, vrfy 명령어 제한"
+IMPORTANCE="중"
 
-TARGET_FILE="/etc/mail/sendmail.cf, /etc/postfix/main.cf, (exim config)"
+# 출력(요청한 스크립트 기준: scan_history 형식 유지)
+STATUS="PASS"
+EVIDENCE=""
+ACTION_LOG=""
 
-CHECK_COMMAND='
-# Sendmail
-[ -f /etc/mail/sendmail.cf ] && grep -inE "^[[:space:]]*O[[:space:]]+PrivacyOptions=" /etc/mail/sendmail.cf 2>/dev/null | head -n 3 || echo "sendmail_cf_not_found_or_no_privacyoptions";
-# Postfix
-[ -f /etc/postfix/main.cf ] && grep -nEv "^[[:space:]]*#" /etc/postfix/main.cf 2>/dev/null | grep -niE "^[[:space:]]*disable_vrfy_command[[:space:]]*=" | head -n 3 || echo "postfix_main_cf_not_found_or_no_disable_vrfy_command";
-# Exim
-for f in /etc/exim/exim.conf /etc/exim4/exim4.conf; do
-  [ -f "$f" ] && echo "exim_conf=$f" && grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=" | head -n 5 && break
-done
-(command -v systemctl >/dev/null 2>&1 && (
-  for u in sendmail.service postfix.service exim.service exim4.service; do
-    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
-  done
-)) || echo "systemctl_not_found"
-'
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-REASON_LINE=""
-DETAIL_CONTENT=""
-ACTION_ERR_LOG=""
-MODIFIED=0
-FAIL_FLAG=0
-
-# (필수) root 권한 권장 안내(실패 원인 명확화용)
-if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 설정 파일 수정 및 서비스 재시작이 실패할 수 있습니다."
-fi
-
-append_err() {
-  if [ -n "$ACTION_ERR_LOG" ]; then
-    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
-  else
-    ACTION_ERR_LOG="$1"
-  fi
+# 유틸
+is_active() {
+  systemctl is-active --quiet "$1" 2>/dev/null
 }
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
+append_log() {
+  # 문장 구분을 위해 줄바꿈으로 누적
+  [ -n "$ACTION_LOG" ] && ACTION_LOG="${ACTION_LOG}\n"
+  ACTION_LOG="${ACTION_LOG}$1"
 }
 
-backup_file() {
+# 조치 이후(After) 증적 수집용
+AFTER_LINES=()
+TARGET_FILES=()
+
+add_target_file() {
   local f="$1"
-  [ -f "$f" ] || return 0
-  cp -a "$f" "${f}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "$f 백업 실패"
+  [ -f "$f" ] && TARGET_FILES+=("$f")
 }
 
-restart_if_unit_exists() {
-  local unit="$1"
-  command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
-  systemctl restart "$unit" 2>/dev/null || append_err "systemctl restart ${unit} 실패"
+add_after_line() {
+  local s="$1"
+  [ -n "$s" ] && AFTER_LINES+=("$s")
 }
 
-########################################
-# 1) Sendmail: PrivacyOptions에 goaway 포함
-########################################
-CF_FILE="/etc/mail/sendmail.cf"
-if command -v sendmail >/dev/null 2>&1 && [ -f "$CF_FILE" ]; then
-  if grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null | grep -qi 'goaway'; then
-    : # already ok
-  else
-    backup_file "$CF_FILE"
-    if grep -qE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null; then
-      sed -i '/^[[:space:]]*O[[:space:]]\+PrivacyOptions=/ s/$/,goaway/' "$CF_FILE" 2>/dev/null \
-        || append_err "sendmail.cf PrivacyOptions에 goaway 추가 실패"
-    else
-      echo "O PrivacyOptions=goaway" >> "$CF_FILE" 2>/dev/null || append_err "sendmail.cf PrivacyOptions 신규 추가 실패"
-    fi
-    MODIFIED=1
-    restart_if_unit_exists "sendmail.service"
-  fi
+# -------------------------
+# [Sendmail]
+# 가이드: PrivacyOptions에 goaway 또는 (noexpn+novrfy)
+# 조치는 goaway 추가로 표준화
+# 서비스명: sendmail 또는 sm-mta 가능
+# -------------------------
+SENDMAIL_CF="/etc/mail/sendmail.cf"
+SENDMAIL_INSTALLED=0
+if command -v sendmail >/dev/null 2>&1 || [ -f "$SENDMAIL_CF" ]; then
+  SENDMAIL_INSTALLED=1
 fi
 
-########################################
-# 2) Postfix: disable_vrfy_command = yes 보장
-########################################
-MAIN_CF="/etc/postfix/main.cf"
-if command -v postfix >/dev/null 2>&1 && [ -f "$MAIN_CF" ]; then
-  backup_needed=0
+if [ $SENDMAIL_INSTALLED -eq 1 ]; then
+  if is_active "sendmail" || is_active "sm-mta"; then
+    if [ -f "$SENDMAIL_CF" ]; then
+      add_target_file "$SENDMAIL_CF"
 
-  if ! grep -nEv "^[[:space:]]*#" "$MAIN_CF" 2>/dev/null | grep -qiE '^[[:space:]]*disable_vrfy_command[[:space:]]*='; then
-    backup_needed=1
-    echo "disable_vrfy_command = yes" >> "$MAIN_CF" 2>/dev/null || append_err "postfix disable_vrfy_command 추가 실패"
-    MODIFIED=1
-  else
-    # 값이 no/false/0 등으로 되어 있으면 yes로 교체(주석 제외)
-    if grep -nEv "^[[:space:]]*#" "$MAIN_CF" 2>/dev/null | grep -qiE '^[[:space:]]*disable_vrfy_command[[:space:]]*=[[:space:]]*(no|false|0)([[:space:]]|$)'; then
-      backup_needed=1
-      sed -i 's/^[[:space:]]*disable_vrfy_command[[:space:]]*=.*/disable_vrfy_command = yes/g' "$MAIN_CF" 2>/dev/null \
-        || append_err "postfix disable_vrfy_command 수정 실패"
-      MODIFIED=1
-    fi
-  fi
+      # 현재 PrivacyOptions 라인(주석 제외, 마지막 라인 기준)
+      PRIV_LINE="$(grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions' "$SENDMAIL_CF" 2>/dev/null | tail -n 1)"
+      PRIV_VAL="$(printf '%s' "$PRIV_LINE" | sed -E 's/^[0-9]+:[[:space:]]*O[[:space:]]+PrivacyOptions[[:space:]]*=?[[:space:]]*//I')"
 
-  [ "$backup_needed" -eq 1 ] && backup_file "$MAIN_CF"
-
-  postfix reload 2>/dev/null || append_err "postfix reload 실패"
-fi
-
-########################################
-# 3) Exim: acl_smtp_vrfy/acl_smtp_expn accept 허용 제거(주석)
-########################################
-if command -v exim >/dev/null 2>&1 || command -v exim4 >/dev/null 2>&1; then
-  CONF_FILES=("/etc/exim/exim.conf" "/etc/exim4/exim4.conf")
-  for conf in "${CONF_FILES[@]}"; do
-    if [ -f "$conf" ]; then
-      # accept로 열려있는 경우만 주석 처리(주석 제외)
-      if grep -nEv "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=[[:space:]]*accept([[:space:]]|$)'; then
-        backup_file "$conf"
-        sed -i 's/^[[:space:]]*\(acl_smtp_vrfy[[:space:]]*=[[:space:]]*accept\)/#\1/g' "$conf" 2>/dev/null || true
-        sed -i 's/^[[:space:]]*\(acl_smtp_expn[[:space:]]*=[[:space:]]*accept\)/#\1/g' "$conf" 2>/dev/null || true
-        MODIFIED=1
-        restart_if_unit_exists "exim4.service"
-        restart_if_unit_exists "exim.service"
+      # 이미 안전(goaway or noexpn+novrfy)
+      if echo "$PRIV_VAL" | grep -qiE '(^|,)[[:space:]]*goaway([[:space:]]*,|$)'; then
+        append_log "Sendmail: PrivacyOptions에 goaway가 이미 설정되어 있습니다."
+      elif echo "$PRIV_VAL" | grep -qiE '(^|,)[[:space:]]*noexpn([[:space:]]*,|$)' \
+        && echo "$PRIV_VAL" | grep -qiE '(^|,)[[:space:]]*novrfy([[:space:]]*,|$)'; then
+        append_log "Sendmail: PrivacyOptions에 noexpn, novrfy가 이미 설정되어 있습니다."
+      else
+        # 조치: PrivacyOptions 라인이 있으면 goaway 추가, 없으면 새로 추가
+        if grep -qiE '^[[:space:]]*O[[:space:]]+PrivacyOptions' "$SENDMAIL_CF" 2>/dev/null; then
+          # 마지막 PrivacyOptions 라인에 goaway가 없으면 ,goaway 추가(= 유무 모두 처리)
+          # O PrivacyOptions=...  /  O PrivacyOptions ...
+          sed -i -E '/^[[:space:]]*O[[:space:]]+PrivacyOptions/I{
+            /goaway/I! s/[[:space:]]*=?[[:space:]]*(.*)$/=\1,goaway/
+          }' "$SENDMAIL_CF"
+        else
+          echo "O PrivacyOptions=authwarnings,novrfy,noexpn,goaway" >> "$SENDMAIL_CF"
+        fi
+        systemctl restart sendmail 2>/dev/null || systemctl restart sm-mta 2>/dev/null || true
+        append_log "Sendmail: sendmail.cf의 PrivacyOptions에 goaway를 추가(또는 포함)하도록 조치했습니다."
       fi
-      break
+
+      # After 증적(조치 이후만)
+      AFTER_PRIV="$(grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions' "$SENDMAIL_CF" 2>/dev/null | tail -n 1)"
+      add_after_line "Sendmail After: ${AFTER_PRIV:-privacyoptions_not_found}"
+    else
+      # 활성인데 설정파일 확인 불가 -> 조치 실패로 취급
+      STATUS="FAIL"
+      append_log "Sendmail: 서비스는 활성 상태이나 /etc/mail/sendmail.cf 파일을 확인할 수 없어 조치가 완료되지 않았습니다."
     fi
-  done
-fi
-
-########################################
-# 4) 조치 후 검증(현재/조치 후 설정만 기록)
-########################################
-# Sendmail 검증
-if command -v sendmail >/dev/null 2>&1; then
-  if [ -f "$CF_FILE" ]; then
-    PO_LINE="$(grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions=' "$CF_FILE" 2>/dev/null | head -n 1)"
-    [ -z "$PO_LINE" ] && PO_LINE="PrivacyOptions_line_not_found"
-    append_detail "sendmail_privacyoptions(after)=$PO_LINE"
-    echo "$PO_LINE" | grep -qi 'goaway' || FAIL_FLAG=1
   else
-    append_detail "sendmail_cf(after)=not_found"
+    append_log "Sendmail: 서비스가 비활성(미사용) 상태라 조치 대상이 아닙니다."
   fi
 fi
 
-# Postfix 검증
-if command -v postfix >/dev/null 2>&1; then
-  if [ -f "$MAIN_CF" ]; then
-    VRFY_LINE="$(grep -nEv '^[[:space:]]*#' "$MAIN_CF" 2>/dev/null | grep -niE '^[[:space:]]*disable_vrfy_command[[:space:]]*=' | head -n 1)"
-    [ -z "$VRFY_LINE" ] && VRFY_LINE="disable_vrfy_command_not_set"
-    append_detail "postfix_disable_vrfy_command(after)=$VRFY_LINE"
-    echo "$VRFY_LINE" | grep -qiE '=.*yes' || FAIL_FLAG=1
+# -------------------------
+# [Postfix]
+# 가이드: disable_vrfy_command = yes
+# -------------------------
+POSTFIX_CF="/etc/postfix/main.cf"
+POSTFIX_INSTALLED=0
+if command -v postfix >/dev/null 2>&1 || [ -f "$POSTFIX_CF" ]; then
+  POSTFIX_INSTALLED=1
+fi
+
+if [ $POSTFIX_INSTALLED -eq 1 ]; then
+  if is_active "postfix"; then
+    if [ -f "$POSTFIX_CF" ]; then
+      add_target_file "$POSTFIX_CF"
+
+      # 조치: 주석/공백 변형 고려하여 활성 라인 기준으로 맞춤
+      # 1) 활성 라인이 있으면 yes로 교체
+      if grep -nEv '^[[:space:]]*#' "$POSTFIX_CF" 2>/dev/null | grep -qiE '^[[:space:]]*disable_vrfy_command[[:space:]]*='; then
+        sed -i -E 's/^[[:space:]]*disable_vrfy_command[[:space:]]*=.*/disable_vrfy_command = yes/I' "$POSTFIX_CF"
+        append_log "Postfix: main.cf의 disable_vrfy_command 값을 yes로 설정했습니다."
+      else
+        # 2) 활성 라인이 없으면 추가(주석 라인이 있더라도 활성 라인을 새로 둠)
+        echo "disable_vrfy_command = yes" >> "$POSTFIX_CF"
+        append_log "Postfix: main.cf에 disable_vrfy_command = yes를 추가했습니다."
+      fi
+
+      postfix reload 2>/dev/null || systemctl reload postfix 2>/dev/null || systemctl restart postfix 2>/dev/null || true
+
+      # After 증적(조치 이후만)
+      AFTER_POSTFIX="$(grep -inE '^[[:space:]]*disable_vrfy_command[[:space:]]*=' "$POSTFIX_CF" 2>/dev/null | tail -n 1)"
+      add_after_line "Postfix After: ${AFTER_POSTFIX:-disable_vrfy_command_not_found}"
+    else
+      STATUS="FAIL"
+      append_log "Postfix: 서비스는 활성 상태이나 /etc/postfix/main.cf 파일을 확인할 수 없어 조치가 완료되지 않았습니다."
+    fi
   else
-    append_detail "postfix_main_cf(after)=not_found"
-    FAIL_FLAG=1
+    append_log "Postfix: 서비스가 비활성(미사용) 상태라 조치 대상이 아닙니다."
   fi
 fi
 
-# Exim 검증(accept가 남아있으면 실패)
-if command -v exim >/dev/null 2>&1 || command -v exim4 >/dev/null 2>&1; then
-  found=0
-  for f in /etc/exim/exim.conf /etc/exim4/exim4.conf; do
-    [ -f "$f" ] || continue
-    found=1
-    line="$(grep -nEv '^[[:space:]]*#' "$f" 2>/dev/null | grep -niE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=' | head -n 2 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
-    [ -z "$line" ] && line="no_acl_smtp_vrfy_expn_active"
-    append_detail "exim_acl(after) file=$f ${line}"
-    grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -qiE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=[[:space:]]*accept' && FAIL_FLAG=1
-    break
-  done
-  [ "$found" -eq 0 ] && append_detail "exim_conf(after)=not_found"
+# -------------------------
+# [Exim]
+# 가이드: acl_smtp_vrfy=accept / acl_smtp_expn=accept 허용 시 취약 -> 제거/제한
+# 여기서는 accept 라인을 주석 처리로 조치
+# -------------------------
+EXIM_INSTALLED=0
+if command -v exim >/dev/null 2>&1 || command -v exim4 >/dev/null 2>&1 || [ -f /etc/exim/exim.conf ] || [ -f /etc/exim4/exim4.conf ]; then
+  EXIM_INSTALLED=1
 fi
 
-########################################
-# 5) 최종 판정
-########################################
-if [ "$FAIL_FLAG" -eq 0 ]; then
-  IS_SUCCESS=1
-  if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="expn, vrfy 명령어가 제한되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+if [ $EXIM_INSTALLED -eq 1 ]; then
+  if is_active "exim" || is_active "exim4"; then
+    CONF_FILES=("/etc/exim/exim.conf" "/etc/exim4/exim4.conf")
+    FOUND_CONF=0
+    for conf in "${CONF_FILES[@]}"; do
+      if [ -f "$conf" ]; then
+        FOUND_CONF=1
+        add_target_file "$conf"
+
+        # accept 허용 라인(주석 제외) 있으면 주석 처리
+        if grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -qiE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=[[:space:]]*accept\b'; then
+          sed -i -E 's/^[[:space:]]*(acl_smtp_vrfy[[:space:]]*=[[:space:]]*accept\b)/#\1/I' "$conf"
+          sed -i -E 's/^[[:space:]]*(acl_smtp_expn[[:space:]]*=[[:space:]]*accept\b)/#\1/I' "$conf"
+          append_log "Exim: acl_smtp_vrfy/acl_smtp_expn accept 허용 설정을 주석 처리했습니다."
+        else
+          append_log "Exim: acl_smtp_vrfy/acl_smtp_expn accept 허용 설정이 없어 추가 조치가 필요하지 않습니다."
+        fi
+
+        systemctl restart exim 2>/dev/null || systemctl restart exim4 2>/dev/null || true
+
+        # After 증적(조치 이후만)
+        AFTER_EXIM="$(grep -inE '^[[:space:]]*#?[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=' "$conf" 2>/dev/null | tail -n 5)"
+        add_after_line "Exim After (${conf}): ${AFTER_EXIM:-acl_smtp_rules_not_found}"
+      fi
+    done
+
+    if [ $FOUND_CONF -eq 0 ]; then
+      STATUS="FAIL"
+      append_log "Exim: 서비스는 활성 상태이나 설정 파일을 확인할 수 없어 조치가 완료되지 않았습니다."
+    fi
   else
-    REASON_LINE="expn, vrfy 명령어 제한 설정이 적절히 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    append_log "Exim: 서비스가 비활성(미사용) 상태라 조치 대상이 아닙니다."
   fi
+fi
+
+# -------------------------
+# 최종 검증(After 검증)로 PASS/FAIL 확정
+# - 활성 서비스가 하나라도 있고, 그 활성 서비스의 제한 설정이 만족되어야 PASS
+# - 설치되어 있어도 모두 비활성이면 PASS(미사용)
+# -------------------------
+FOUND_ANY=0
+FOUND_ACTIVE=0
+VERIFY_FAIL=0
+
+# Sendmail verify
+if [ $SENDMAIL_INSTALLED -eq 1 ]; then
+  FOUND_ANY=1
+  if is_active "sendmail" || is_active "sm-mta"; then
+    FOUND_ACTIVE=1
+    if [ -f "$SENDMAIL_CF" ]; then
+      PRIV_LINE_V="$(grep -inE '^[[:space:]]*O[[:space:]]+PrivacyOptions' "$SENDMAIL_CF" 2>/dev/null | tail -n 1)"
+      PRIV_VAL_V="$(printf '%s' "$PRIV_LINE_V" | sed -E 's/^[0-9]+:[[:space:]]*O[[:space:]]+PrivacyOptions[[:space:]]*=?[[:space:]]*//I')"
+      if echo "$PRIV_VAL_V" | grep -qiE '(^|,)[[:space:]]*goaway([[:space:]]*,|$)'; then
+        :
+      elif echo "$PRIV_VAL_V" | grep -qiE '(^|,)[[:space:]]*noexpn([[:space:]]*,|$)' \
+        && echo "$PRIV_VAL_V" | grep -qiE '(^|,)[[:space:]]*novrfy([[:space:]]*,|$)'; then
+        :
+      else
+        VERIFY_FAIL=1
+      fi
+    else
+      VERIFY_FAIL=1
+    fi
+  fi
+fi
+
+# Postfix verify
+if [ $POSTFIX_INSTALLED -eq 1 ]; then
+  FOUND_ANY=1
+  if is_active "postfix"; then
+    FOUND_ACTIVE=1
+    if [ -f "$POSTFIX_CF" ]; then
+      if ! grep -nEv '^[[:space:]]*#' "$POSTFIX_CF" 2>/dev/null | grep -qiE '^[[:space:]]*disable_vrfy_command[[:space:]]*=[[:space:]]*yes\b'; then
+        VERIFY_FAIL=1
+      fi
+    else
+      VERIFY_FAIL=1
+    fi
+  fi
+fi
+
+# Exim verify
+if [ $EXIM_INSTALLED -eq 1 ]; then
+  FOUND_ANY=1
+  if is_active "exim" || is_active "exim4"; then
+    FOUND_ACTIVE=1
+    # 활성인데 accept 허용이 남아있으면 FAIL
+    if [ -f /etc/exim/exim.conf ] && grep -nEv '^[[:space:]]*#' /etc/exim/exim.conf 2>/dev/null | grep -qiE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=[[:space:]]*accept\b'; then
+      VERIFY_FAIL=1
+    fi
+    if [ -f /etc/exim4/exim4.conf ] && grep -nEv '^[[:space:]]*#' /etc/exim4/exim4.conf 2>/dev/null | grep -qiE '^[[:space:]]*acl_smtp_(vrfy|expn)[[:space:]]*=[[:space:]]*accept\b'; then
+      VERIFY_FAIL=1
+    fi
+  fi
+fi
+
+if [ $FOUND_ANY -eq 0 ]; then
+  STATUS="PASS"
+  EVIDENCE="메일 서비스가 설치되어 있지 않아 조치 대상이 없으며 이 항목에 대한 보안 위협이 없습니다."
+elif [ $FOUND_ACTIVE -eq 0 ]; then
+  STATUS="PASS"
+  EVIDENCE="메일 서비스가 비활성(미사용) 상태라 조치 대상이 아니며 이 항목에 대한 보안 위협이 없습니다."
 else
-  IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 expn, vrfy 명령어 제한 설정이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  if [ $VERIFY_FAIL -eq 1 ] || [ "$STATUS" = "FAIL" ]; then
+    STATUS="FAIL"
+    EVIDENCE="조치를 시도했으나 expn/vrfy 제한 설정이 최종 검증에서 충족되지 않아 조치가 완료되지 않았습니다."
+  else
+    STATUS="PASS"
+    EVIDENCE="expn/vrfy 제한 설정이 조치 이후 최종 검증에서 확인되어 조치가 완료되었습니다."
+  fi
 fi
 
-if [ -n "$ACTION_ERR_LOG" ]; then
-  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+# 메시지 정리
+if [ -z "$ACTION_LOG" ]; then
+  ACTION_LOG="조치할 항목이 없거나(이미 제한/미사용/미설치) 변경 사항이 없습니다."
+else
+  ACTION_LOG="메일 서버의 expn/vrfy 명령어 제한 조치를 수행했습니다.\n${ACTION_LOG}"
 fi
 
-# raw_evidence 구성
-RAW_EVIDENCE=$(cat <<EOF
+# ---- After 값만 raw_evidence에 넣기 (요청사항) ----
+TARGET_FILE="$(printf "%s\n" "${TARGET_FILES[@]}" | awk 'NF' | sort -u)"
+[ -z "$TARGET_FILE" ] && TARGET_FILE="N/A"
+
+# After 설정(요약)
+AFTER_SUMMARY="$(printf "%s\n" "${AFTER_LINES[@]}" | awk 'NF')"
+[ -z "$AFTER_SUMMARY" ] && AFTER_SUMMARY="after_setting_not_available"
+
+CHECK_COMMAND="( command -v sendmail >/dev/null 2>&1 && [ -f /etc/mail/sendmail.cf ] && grep -in '^O[[:space:]]\\+PrivacyOptions' /etc/mail/sendmail.cf 2>/dev/null || true ); ( command -v postfix >/dev/null 2>&1 && [ -f /etc/postfix/main.cf ] && grep -inE '^[[:space:]]*disable_vrfy_command[[:space:]]*=' /etc/postfix/main.cf 2>/dev/null || true ); ( (command -v exim >/dev/null 2>&1 || command -v exim4 >/dev/null 2>&1) && ( [ -f /etc/exim/exim.conf ] && grep -inE '^acl_smtp_(vrfy|expn)[[:space:]]*=' /etc/exim/exim.conf 2>/dev/null || true ) && ( [ -f /etc/exim4/exim4.conf ] && grep -inE '^acl_smtp_(vrfy|expn)[[:space:]]*=' /etc/exim4/exim4.conf 2>/dev/null || true ) )"
+
+REASON_LINE="$ACTION_LOG"
+DETAIL_CONTENT="상태: ${STATUS}\n근거: ${EVIDENCE}\n(조치 이후 설정)\n${AFTER_SUMMARY}\n대상 파일: ${TARGET_FILE}"
+
+json_escape() {
+  # 백슬래시/줄바꿈/따옴표 escape
+  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/\n/\\n/g;s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "command": "$(json_escape "$CHECK_COMMAND")",
+  "detail": "$(json_escape "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file": "$(json_escape "$TARGET_FILE")"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE_JSON")"
 
-# DB 저장용 JSON 출력
+# JSON 출력 직전 빈 줄(프로젝트 규칙)
 echo ""
 cat << EOF
 {
-    "item_code": "$ID",
-    "action_date": "$ACTION_DATE",
-    "is_success": $IS_SUCCESS,
-    "raw_evidence": "$RAW_EVIDENCE_ESCAPED"
+  "item_code": "$ID",
+  "status": "$STATUS",
+  "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+  "scan_date": "$SCAN_DATE"
 }
 EOF

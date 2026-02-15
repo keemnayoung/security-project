@@ -29,14 +29,18 @@ CHECK_COMMAND='
 for s in rsh rlogin rexec shell login exec; do
   [ -f "/etc/xinetd.d/$s" ] && echo "xinetd_file:$s" && grep -nEv "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1 || true;
 done;
-(command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -Ei "^(rsh|rlogin|rexec)\.(service|socket)[[:space:]]") || echo "systemd_units_not_found"
+(command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -Ei "^(rsh|rlogin|rexec|shell|login|exec)\.(service|socket)[[:space:]]") || echo "systemd_units_not_found";
+( [ -f /etc/hosts.equiv ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/hosts.equiv ) || echo "hosts_equiv_not_found_or_empty";
+( find /home -maxdepth 3 -type f -name .rhosts 2>/dev/null -print ) || echo "no_rhosts_found"
 '
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE="/etc/inetd.conf
 /etc/xinetd.d/(rsh,rlogin,rexec,shell,login,exec)
-systemd(rsh/rlogin/rexec)"
+systemd(rsh/rlogin/rexec/shell/login/exec)
+ /etc/hosts.equiv
+/home/*/.rhosts"
 
 ACTION_ERR_LOG=""
 
@@ -90,6 +94,24 @@ disable_systemd_unit_if_exists() {
   MODIFIED=1
 }
 
+# 신뢰 기반 파일 조치: /etc/hosts.equiv, /home/*/.rhosts (내용 무력화)
+neutralize_trust_file() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+
+  # 유효 라인이 없으면 건드리지 않음
+  if ! grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$f" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  cp -a "$f" "${f}.bak_${TIMESTAMP}" 2>/dev/null || append_err "$f 백업 실패"
+  # 주석/공백 제외 라인을 주석 처리하여 신뢰 기반 설정 무력화
+  # (이미 주석인 라인은 유지)
+  sed -i -e '/^[[:space:]]*#/b' -e '/^[[:space:]]*$/b' -e 's/^[[:space:]]*/# /' "$f" 2>/dev/null \
+    || append_err "$f 설정 주석 처리 실패"
+  MODIFIED=1
+}
+
 ########################################
 # 1) inetd: /etc/inetd.conf r계열 활성 라인 주석 처리
 ########################################
@@ -131,17 +153,28 @@ if [ "$XINETD_CHANGED" -eq 1 ]; then
 fi
 
 ########################################
-# 3) systemd: rsh/rlogin/rexec 유닛 비활성화(있을 때만)
+# 3) systemd: r 계열 유닛 비활성화(있을 때만)
+#    (필수 추가) shell/login/exec 유닛도 포함
 ########################################
-disable_systemd_unit_if_exists "rsh.service"
-disable_systemd_unit_if_exists "rsh.socket"
-disable_systemd_unit_if_exists "rlogin.service"
-disable_systemd_unit_if_exists "rlogin.socket"
-disable_systemd_unit_if_exists "rexec.service"
-disable_systemd_unit_if_exists "rexec.socket"
+for base in rsh rlogin rexec shell login exec; do
+  disable_systemd_unit_if_exists "${base}.service"
+  disable_systemd_unit_if_exists "${base}.socket"
+done
 
 ########################################
-# 4) 조치 후 검증 + detail(현재/조치 후 상태만)
+# 4) (필수 추가) 신뢰 기반 접속 설정 무력화
+########################################
+neutralize_trust_file "/etc/hosts.equiv"
+
+RHOSTS_FILES=$(find /home -maxdepth 3 -type f -name .rhosts 2>/dev/null | head -n 200)
+if [ -n "$RHOSTS_FILES" ]; then
+  while IFS= read -r rf; do
+    [ -n "$rf" ] && neutralize_trust_file "$rf"
+  done <<< "$RHOSTS_FILES"
+fi
+
+########################################
+# 5) 조치 후 검증 + detail(현재/조치 후 상태만)
 ########################################
 FAIL_FLAG=0
 
@@ -164,21 +197,51 @@ for s in "${R_SERVICES[@]}"; do
 done
 [ "$XINETD_BAD" -eq 1 ] && FAIL_FLAG=1
 
-# systemd enabled/active면 실패
+# systemd enabled/active면 실패 (shell/login/exec 포함)
 SYSTEMD_BAD=0
 if command -v systemctl >/dev/null 2>&1; then
-  for u in rsh.service rsh.socket rlogin.service rlogin.socket rexec.service rexec.socket; do
-    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled"; then
-        SYSTEMD_BAD=1
+  for base in rsh rlogin rexec shell login exec; do
+    for u in "${base}.service" "${base}.socket"; do
+      if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
+        if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled"; then
+          SYSTEMD_BAD=1
+        fi
+        if systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
+          SYSTEMD_BAD=1
+        fi
       fi
-      if systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
-        SYSTEMD_BAD=1
-      fi
-    fi
+    done
   done
 fi
 [ "$SYSTEMD_BAD" -eq 1 ] && FAIL_FLAG=1
+
+# (필수 추가) hosts.equiv / .rhosts 유효 설정 남아있으면 실패
+TRUST_BAD=0
+
+HOSTS_EQ_AFTER="hosts_equiv_not_found"
+if [ -f "/etc/hosts.equiv" ]; then
+  HOSTS_EQ_AFTER="$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/hosts.equiv 2>/dev/null | head -n 5)"
+  [ -z "$HOSTS_EQ_AFTER" ] && HOSTS_EQ_AFTER="no_effective_entries"
+fi
+[ "$HOSTS_EQ_AFTER" != "no_effective_entries" ] && [ "$HOSTS_EQ_AFTER" != "hosts_equiv_not_found" ] && TRUST_BAD=1
+
+RHOSTS_AFTER_SUMMARY=""
+RHOSTS_FILES2=$(find /home -maxdepth 3 -type f -name .rhosts 2>/dev/null | head -n 50)
+if [ -n "$RHOSTS_FILES2" ]; then
+  while IFS= read -r rf; do
+    eff="$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$rf" 2>/dev/null | head -n 1)"
+    if [ -n "$eff" ]; then
+      TRUST_BAD=1
+      RHOSTS_AFTER_SUMMARY="${RHOSTS_AFTER_SUMMARY}${rf}:effective_entry_present; "
+    else
+      RHOSTS_AFTER_SUMMARY="${RHOSTS_AFTER_SUMMARY}${rf}:no_effective_entries; "
+    fi
+  done <<< "$RHOSTS_FILES2"
+else
+  RHOSTS_AFTER_SUMMARY="no_rhosts_files"
+fi
+
+[ "$TRUST_BAD" -eq 1 ] && FAIL_FLAG=1
 
 # detail(현재/조치 후 상태만)
 append_detail "inetd_active_r_services(after)=$INETD_POST"
@@ -195,29 +258,34 @@ done
 append_detail "xinetd_disable_settings(after)=$XINETD_POST_SUMMARY"
 
 if command -v systemctl >/dev/null 2>&1; then
-  units="$(systemctl list-unit-files 2>/dev/null | grep -Ei '^(rsh|rlogin|rexec)\.(service|socket)[[:space:]]' || echo 'systemd_units_not_found')"
+  units="$(systemctl list-unit-files 2>/dev/null | grep -Ei '^(rsh|rlogin|rexec|shell|login|exec)\.(service|socket)[[:space:]]' || echo 'systemd_units_not_found')"
   append_detail "systemd_units(after)=$units"
-  for u in rsh.service rsh.socket rlogin.service rlogin.socket rexec.service rexec.socket; do
-    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      append_detail "${u}_is_enabled(after)=$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
-      append_detail "${u}_is_active(after)=$(systemctl is-active "$u" 2>/dev/null || echo 'unknown')"
-    fi
+  for base in rsh rlogin rexec shell login exec; do
+    for u in "${base}.service" "${base}.socket"; do
+      if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
+        append_detail "${u}_is_enabled(after)=$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
+        append_detail "${u}_is_active(after)=$(systemctl is-active "$u" 2>/dev/null || echo 'unknown')"
+      fi
+    done
   done
 else
   append_detail "systemctl_not_found"
 fi
 
+append_detail "hosts_equiv_effective_entries(after)=$HOSTS_EQ_AFTER"
+append_detail "rhosts_effective_entries(after)=$RHOSTS_AFTER_SUMMARY"
+
 # 최종 판정
 if [ "$FAIL_FLAG" -eq 0 ]; then
   IS_SUCCESS=1
   if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec 등)가 비활성화되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec, shell, login, exec)가 비활성화되도록 설정이 변경되고 신뢰 기반 설정이 무력화되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   else
-    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec 등)가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="r 계열 서비스(rsh, rlogin, rexec, shell, login, exec)가 이미 비활성화 상태로 유지되고 신뢰 기반 설정이 없어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   fi
 else
   IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 r 계열 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  REASON_LINE="조치를 수행했으나 r 계열 서비스 관련 설정이 여전히 활성화 상태이거나(또는 신뢰 기반 설정이 남아있어) 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
 fi
 
 if [ -n "$ACTION_ERR_LOG" ]; then

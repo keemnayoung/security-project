@@ -22,57 +22,66 @@ ID="U-62"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
-CHECK_COMMAND='(ls -l /etc/motd /etc/issue /etc/issue.net 2>/dev/null || true); (sed -n "1,10p" /etc/motd 2>/dev/null || echo "motd_not_found"); (sed -n "1,10p" /etc/issue 2>/dev/null || echo "issue_not_found"); (sed -n "1,10p" /etc/issue.net 2>/dev/null || echo "issue_net_not_found"); (grep -inE "^[[:space:]]*Banner[[:space:]]+" /etc/ssh/sshd_config 2>/dev/null || echo "sshd_banner_not_set"); (command -v systemctl >/dev/null 2>&1 && systemctl is-active sshd 2>/dev/null || true); (grep -inE "^[[:space:]]*O[[:space:]]+SmtpGreetingMessage" /etc/mail/sendmail.cf 2>/dev/null || echo "sendmail_greeting_not_set"); (grep -inE "^[[:space:]]*smtpd_banner[[:space:]]*=" /etc/postfix/main.cf 2>/dev/null || echo "postfix_banner_not_set"); (grep -inE "^[[:space:]]*ftpd_banner[[:space:]]*=" /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf 2>/dev/null || echo "vsftpd_banner_not_set"); (grep -inE "^[[:space:]]*DisplayLogin[[:space:]]+" /etc/proftpd/proftpd.conf /etc/proftpd.conf 2>/dev/null || echo "proftpd_displaylogin_not_set"); (grep -inE "^[[:space:]]*smtp_banner[[:space:]]*=" /etc/exim/exim.conf /etc/exim4/exim4.conf 2>/dev/null || echo "exim_banner_not_set"); (grep -inE "^[[:space:]]*version[[:space:]]+\".*\";" /etc/named.conf 2>/dev/null || echo "named_version_not_set")'
+TARGET_FILE="/etc/motd /etc/issue /etc/issue.net /etc/ssh/sshd_config (active 서비스 설정파일)"
+CHECK_COMMAND='
+(ls -l /etc/motd /etc/issue /etc/issue.net 2>/dev/null || true);
+(sed -n "1,10p" /etc/motd 2>/dev/null || echo "motd_not_found");
+(sed -n "1,10p" /etc/issue 2>/dev/null || echo "issue_not_found");
+(sed -n "1,10p" /etc/issue.net 2>/dev/null || echo "issue_net_not_found");
+(grep -inE "^[[:space:]]*Banner[[:space:]]+" /etc/ssh/sshd_config 2>/dev/null || echo "sshd_banner_not_set");
+(command -v systemctl >/dev/null 2>&1 && systemctl is-active sshd vsftpd proftpd postfix sendmail sm-mta exim exim4 named 2>/dev/null || true);
+(grep -inE "^[[:space:]]*O[[:space:]]+SmtpGreetingMessage" /etc/mail/sendmail.cf 2>/dev/null || echo "sendmail_greeting_not_set");
+(grep -inE "^[[:space:]]*smtpd_banner[[:space:]]*=" /etc/postfix/main.cf 2>/dev/null || echo "postfix_banner_not_set");
+(grep -inE "^[[:space:]]*ftpd_banner[[:space:]]*=" /etc/vsftpd.conf /etc/vsftpd/vsftpd.conf 2>/dev/null || echo "vsftpd_banner_not_set");
+(grep -inE "^[[:space:]]*DisplayLogin[[:space:]]+" /etc/proftpd/proftpd.conf /etc/proftpd.conf 2>/dev/null || echo "proftpd_displaylogin_not_set");
+(grep -inE "^[[:space:]]*smtp_banner[[:space:]]*=" /etc/exim/exim.conf /etc/exim4/exim4.conf 2>/dev/null || echo "exim_banner_not_set");
+(grep -inE "^[[:space:]]*version[[:space:]]+\".*\";" /etc/named.conf 2>/dev/null || echo "named_version_not_set")
+'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
-TARGET_FILE="/etc/motd /etc/issue /etc/issue.net /etc/ssh/sshd_config"
+ACTION_ERR_LOG=""
+
+append_detail(){ [ -n "${1:-}" ] && DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\n}$1"; }
+append_err(){ [ -n "${1:-}" ] && ACTION_ERR_LOG="${ACTION_ERR_LOG}${ACTION_ERR_LOG:+\n}$1"; }
+
+json_escape(){ echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; :a;N;$!ba;s/\n/\\n/g'; }
+
+svc_active(){ command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$1" 2>/dev/null; }
 
 # 경고 메시지(고정)
-WARNING_MSG="$(cat <<'EOF'
-***************************************************************
+WARNING_MSG='***************************************************************
 * WARNING: Unauthorized access to this system is prohibited.  *
 * All activities are monitored and logged.                    *
-***************************************************************
-EOF
-)"
+***************************************************************'
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
-}
-
-fail() {
-  IS_SUCCESS=0
-  [ -n "$1" ] && append_detail "$1"
-}
-
-ensure_file_owner_perm() {
-  local f="$1"
-  local owner="${2:-root:root}"
-  local perm="${3:-644}"
-  [ -e "$f" ] || return 0
-  chown "$owner" "$f" 2>/dev/null || true
-  chmod "$perm" "$f" 2>/dev/null || true
-}
-
-write_if_missing_or_empty() {
+ensure_file(){ # f
   local f="$1"
   if [ -f "$f" ]; then
-    local stripped
-    stripped="$(tr -d '[:space:]' < "$f" 2>/dev/null || true)"
-    if [ -z "$stripped" ]; then
-      printf "%s\n" "$WARNING_MSG" > "$f" 2>/dev/null || return 1
-    fi
+    local c; c="$(tr -d '[:space:]' < "$f" 2>/dev/null || true)"
+    [ -n "$c" ] || { printf "%s\n" "$WARNING_MSG" > "$f" 2>/dev/null || return 1; }
   else
-    # 파일이 없으면 생성 후 작성
     printf "%s\n" "$WARNING_MSG" > "$f" 2>/dev/null || return 1
   fi
-  ensure_file_owner_perm "$f" "root:root" "644"
+  chown root:root "$f" 2>/dev/null || true
+  chmod 644 "$f" 2>/dev/null || true
   return 0
+}
+
+set_kv_file(){ # file key regex_line new_line
+  local f="$1" key_re="$2" new_line="$3"
+  [ -f "$f" ] || return 1
+  if grep -Eq "$key_re" "$f" 2>/dev/null; then
+    sed -i -E "s/$key_re.*/$new_line/" "$f" 2>/dev/null || return 1
+  else
+    printf "\n%s\n" "$new_line" >> "$f" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
+fail_now(){
+  IS_SUCCESS=0
+  [ -n "${1:-}" ] && append_detail "$1"
 }
 
 # root 권한 확인
@@ -83,141 +92,125 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
 else
   IS_SUCCESS=1
 
-  # 1) /etc/motd, /etc/issue, /etc/issue.net (없거나 비어있으면만 작성)
+  # 1) 서버 로컬/원격(파일) 배너: 없거나 비어있으면 작성
   for f in /etc/motd /etc/issue /etc/issue.net; do
-    if write_if_missing_or_empty "$f"; then
+    if ensure_file "$f"; then
       append_detail "${f}(after)=warning_message_present"
     else
-      fail "${f}에 경고 메시지를 설정하지 못했습니다."
+      fail_now "${f}에 경고 메시지를 설정하지 못했습니다."
+      append_err "write_failed:$f"
     fi
   done
 
-  # 2) SSH Banner 설정(/etc/issue.net)
+  # 2) SSH Banner: sshd가 active일 때만 적용 + 재시작 실패 시 실패
   SSHD_CONF="/etc/ssh/sshd_config"
-  if [ -f "$SSHD_CONF" ]; then
-    # 기존 Banner(비주석) 라인 제거 후 단일 라인으로 정규화
-    if grep -Ev '^[[:space:]]*#' "$SSHD_CONF" 2>/dev/null | grep -qiE '^[[:space:]]*Banner[[:space:]]+'; then
-      sed -i -E '/^[[:space:]]*Banner[[:space:]]+/Id' "$SSHD_CONF" 2>/dev/null || fail "sshd_config의 기존 Banner 설정을 정리하지 못했습니다."
-    fi
-
-    # Banner 라인 추가
-    if ! grep -Ev '^[[:space:]]*#' "$SSHD_CONF" 2>/dev/null | grep -qiE '^[[:space:]]*Banner[[:space:]]+/etc/issue\.net([[:space:]]|$)'; then
-      printf "\nBanner /etc/issue.net\n" >> "$SSHD_CONF" 2>/dev/null || fail "sshd_config에 Banner /etc/issue.net을 추가하지 못했습니다."
-    fi
-
-    # 재시작(실패 시 실패 처리)
-    if command -v systemctl >/dev/null 2>&1; then
-      if systemctl restart sshd >/dev/null 2>&1; then
+  if svc_active sshd; then
+    if [ -f "$SSHD_CONF" ]; then
+      # 기존 Banner 라인 정리 후 단일 설정으로 정규화
+      sed -i -E '/^[[:space:]]*Banner[[:space:]]+/Id' "$SSHD_CONF" 2>/dev/null || true
+      printf "\nBanner /etc/issue.net\n" >> "$SSHD_CONF" 2>/dev/null || { fail_now "sshd_config에 Banner를 설정하지 못했습니다."; append_err "sshd_config_write_failed"; }
+      if command -v systemctl >/dev/null 2>&1 && systemctl restart sshd >/dev/null 2>&1; then
         append_detail "sshd_banner(after)=Banner /etc/issue.net"
         append_detail "sshd_restart(after)=success"
       else
-        fail "sshd 서비스를 재시작하지 못했습니다."
+        fail_now "sshd 서비스를 재시작하지 못했습니다."
         append_detail "sshd_restart(after)=failed"
+        append_err "sshd_restart_failed"
       fi
     else
-      append_detail "sshd_banner(after)=Banner /etc/issue.net"
-      append_detail "sshd_restart(after)=systemctl_not_found"
+      fail_now "sshd가 활성 상태이나 /etc/ssh/sshd_config 파일이 없어 조치가 완료되지 않았습니다."
+      append_err "sshd_config_not_found"
     fi
   else
-    append_detail "sshd_config(after)=not_found"
+    append_detail "sshd_active=NO(skip)"
   fi
 
-  # 3) (선택) 메일/FTP/DNS 배너(해당 서비스 설정 파일이 있을 때만, 없으면 건너뜀)
-  # - 정보 노출 최소화를 위해 '버전/호스트명'이 드러나지 않도록 보수적으로 설정
-
-  # Sendmail: SmtpGreetingMessage (있을 때만 추가)
-  if command -v sendmail >/dev/null 2>&1 && [ -f /etc/mail/sendmail.cf ]; then
-    if ! grep -Ev '^[[:space:]]*#' /etc/mail/sendmail.cf 2>/dev/null | grep -q 'SmtpGreetingMessage'; then
-      cp -a /etc/mail/sendmail.cf "/etc/mail/sendmail.cf.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-      echo 'O SmtpGreetingMessage=Mail Server Ready' >> /etc/mail/sendmail.cf 2>/dev/null || fail "sendmail.cf에 SmtpGreetingMessage를 추가하지 못했습니다."
-      if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart sendmail >/dev/null 2>&1 || fail "sendmail 서비스를 재시작하지 못했습니다."
-      fi
-    fi
-    GREET_LINE="$(grep -E '^[[:space:]]*O[[:space:]]+SmtpGreetingMessage=' /etc/mail/sendmail.cf 2>/dev/null | tail -n 1)"
-    [ -n "$GREET_LINE" ] && append_detail "sendmail_greeting(after)=$(echo "$GREET_LINE" | tr '\n' ' ')"
+  # 3) 선택 서비스(실제로 active일 때만) 배너/정보 최소화 설정
+  # postfix
+  if svc_active postfix && [ -f /etc/postfix/main.cf ]; then
+    set_kv_file /etc/postfix/main.cf '^[[:space:]]*smtpd_banner[[:space:]]*=' 'smtpd_banner = ESMTP' \
+      || { fail_now "postfix smtpd_banner 설정에 실패했습니다."; append_err "postfix_banner_set_failed"; }
+    command -v systemctl >/dev/null 2>&1 && systemctl restart postfix >/dev/null 2>&1 || true
+    P="$(grep -E '^[[:space:]]*smtpd_banner[[:space:]]*=' /etc/postfix/main.cf 2>/dev/null | tail -n 1)"
+    [ -n "$P" ] && append_detail "postfix_smtpd_banner(after)=${P}"
+  else
+    append_detail "postfix_active=NO(skip)"
   fi
 
-  # Postfix: smtpd_banner (있을 때만 추가/정규화)
-  if command -v postfix >/dev/null 2>&1 && [ -f /etc/postfix/main.cf ]; then
-    if grep -Eq '^[[:space:]]*smtpd_banner[[:space:]]*=' /etc/postfix/main.cf 2>/dev/null; then
-      sed -i -E 's/^[[:space:]]*smtpd_banner[[:space:]]*=.*/smtpd_banner = ESMTP/' /etc/postfix/main.cf 2>/dev/null || true
+  # vsftpd
+  if svc_active vsftpd; then
+    VCONF=""; [ -f /etc/vsftpd.conf ] && VCONF=/etc/vsftpd.conf; [ -z "$VCONF" ] && [ -f /etc/vsftpd/vsftpd.conf ] && VCONF=/etc/vsftpd/vsftpd.conf
+    if [ -n "$VCONF" ]; then
+      set_kv_file "$VCONF" '^[[:space:]]*ftpd_banner[[:space:]]*=' 'ftpd_banner=Welcome' \
+        || { fail_now "vsftpd ftpd_banner 설정에 실패했습니다."; append_err "vsftpd_banner_set_failed"; }
+      command -v systemctl >/dev/null 2>&1 && systemctl restart vsftpd >/dev/null 2>&1 || true
+      V="$(grep -E '^[[:space:]]*ftpd_banner[[:space:]]*=' "$VCONF" 2>/dev/null | tail -n 1)"
+      [ -n "$V" ] && append_detail "vsftpd_banner(after)=${VCONF}: ${V}"
     else
-      echo 'smtpd_banner = ESMTP' >> /etc/postfix/main.cf 2>/dev/null || fail "postfix main.cf에 smtpd_banner를 추가하지 못했습니다."
+      append_detail "vsftpd_conf=NOT_FOUND(skip)"
     fi
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl restart postfix >/dev/null 2>&1 || true
-    fi
-    POSTFIX_BANNER="$(grep -E '^[[:space:]]*smtpd_banner[[:space:]]*=' /etc/postfix/main.cf 2>/dev/null | tail -n 1)"
-    [ -n "$POSTFIX_BANNER" ] && append_detail "postfix_smtpd_banner(after)=$(echo "$POSTFIX_BANNER" | tr '\n' ' ')"
+  else
+    append_detail "vsftpd_active=NO(skip)"
   fi
 
-  # vsftpd: ftpd_banner (있을 때만 추가)
-  VSFTPD_CONF=""
-  [ -f /etc/vsftpd.conf ] && VSFTPD_CONF="/etc/vsftpd.conf"
-  [ -z "$VSFTPD_CONF" ] && [ -f /etc/vsftpd/vsftpd.conf ] && VSFTPD_CONF="/etc/vsftpd/vsftpd.conf"
-  if command -v vsftpd >/dev/null 2>&1 && [ -n "$VSFTPD_CONF" ]; then
-    if ! grep -Ev '^[[:space:]]*#' "$VSFTPD_CONF" 2>/dev/null | grep -qE '^[[:space:]]*ftpd_banner[[:space:]]*='; then
-      echo 'ftpd_banner=Welcome' >> "$VSFTPD_CONF" 2>/dev/null || fail "vsftpd 설정에 ftpd_banner를 추가하지 못했습니다."
-      if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart vsftpd >/dev/null 2>&1 || true
-      fi
-    fi
-    VSB="$(grep -E '^[[:space:]]*ftpd_banner[[:space:]]*=' "$VSFTPD_CONF" 2>/dev/null | tail -n 1)"
-    [ -n "$VSB" ] && append_detail "vsftpd_banner(after)=$(echo "$VSB" | tr '\n' ' ')"
-  fi
-
-  # proftpd: DisplayLogin (있을 때만 추가)
-  PROFTPD_CONF=""
-  [ -f /etc/proftpd/proftpd.conf ] && PROFTPD_CONF="/etc/proftpd/proftpd.conf"
-  [ -z "$PROFTPD_CONF" ] && [ -f /etc/proftpd.conf ] && PROFTPD_CONF="/etc/proftpd.conf"
-  if command -v proftpd >/dev/null 2>&1 && [ -n "$PROFTPD_CONF" ]; then
-    if ! grep -Ev '^[[:space:]]*#' "$PROFTPD_CONF" 2>/dev/null | grep -qiE '^[[:space:]]*DisplayLogin[[:space:]]+'; then
+  # proftpd
+  if svc_active proftpd; then
+    PCONF=""; [ -f /etc/proftpd/proftpd.conf ] && PCONF=/etc/proftpd/proftpd.conf; [ -z "$PCONF" ] && [ -f /etc/proftpd.conf ] && PCONF=/etc/proftpd.conf
+    if [ -n "$PCONF" ]; then
       mkdir -p /etc/proftpd 2>/dev/null || true
-      printf "%s\n" "$WARNING_MSG" > /etc/proftpd/welcome.msg 2>/dev/null || fail "proftpd welcome.msg를 생성하지 못했습니다."
-      echo "DisplayLogin /etc/proftpd/welcome.msg" >> "$PROFTPD_CONF" 2>/dev/null || fail "proftpd 설정에 DisplayLogin을 추가하지 못했습니다."
-      if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart proftpd >/dev/null 2>&1 || true
-      fi
-    fi
-    PDL="$(grep -iE '^[[:space:]]*DisplayLogin[[:space:]]+' "$PROFTPD_CONF" 2>/dev/null | tail -n 1)"
-    [ -n "$PDL" ] && append_detail "proftpd_displaylogin(after)=$(echo "$PDL" | tr '\n' ' ')"
-  fi
-
-  # Exim: smtp_banner (있을 때만 추가/정규화)
-  EXIM_CONF=""
-  [ -f /etc/exim/exim.conf ] && EXIM_CONF="/etc/exim/exim.conf"
-  [ -z "$EXIM_CONF" ] && [ -f /etc/exim4/exim4.conf ] && EXIM_CONF="/etc/exim4/exim4.conf"
-  if (command -v exim >/dev/null 2>&1 || command -v exim4 >/dev/null 2>&1) && [ -n "$EXIM_CONF" ]; then
-    if grep -Eq '^[[:space:]]*smtp_banner[[:space:]]*=' "$EXIM_CONF" 2>/dev/null; then
-      sed -i -E 's/^[[:space:]]*smtp_banner[[:space:]]*=.*/smtp_banner = ESMTP/' "$EXIM_CONF" 2>/dev/null || true
+      printf "%s\n" "$WARNING_MSG" > /etc/proftpd/welcome.msg 2>/dev/null || { fail_now "proftpd welcome.msg 생성에 실패했습니다."; append_err "proftpd_msg_write_failed"; }
+      grep -qiE '^[[:space:]]*DisplayLogin[[:space:]]+' "$PCONF" 2>/dev/null \
+        || printf "\nDisplayLogin /etc/proftpd/welcome.msg\n" >> "$PCONF" 2>/dev/null || true
+      command -v systemctl >/dev/null 2>&1 && systemctl restart proftpd >/dev/null 2>&1 || true
+      D="$(grep -iE '^[[:space:]]*DisplayLogin[[:space:]]+' "$PCONF" 2>/dev/null | tail -n 1)"
+      [ -n "$D" ] && append_detail "proftpd_displaylogin(after)=${PCONF}: ${D}"
     else
-      echo 'smtp_banner = ESMTP' >> "$EXIM_CONF" 2>/dev/null || fail "exim 설정에 smtp_banner를 추가하지 못했습니다."
+      append_detail "proftpd_conf=NOT_FOUND(skip)"
     fi
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl restart exim >/dev/null 2>&1 || systemctl restart exim4 >/dev/null 2>&1 || true
-    fi
-    EXB="$(grep -E '^[[:space:]]*smtp_banner[[:space:]]*=' "$EXIM_CONF" 2>/dev/null | tail -n 1)"
-    [ -n "$EXB" ] && append_detail "exim_smtp_banner(after)=$(echo "$EXB" | tr '\n' ' ')"
+  else
+    append_detail "proftpd_active=NO(skip)"
   fi
 
-  # DNS(BIND): version 숨김(options 블록에 없을 때만 추가)
-  if (command -v named >/dev/null 2>&1 || command -v named-checkconf >/dev/null 2>&1) && [ -f /etc/named.conf ]; then
-    if grep -qE '^[[:space:]]*options[[:space:]]*\{' /etc/named.conf 2>/dev/null; then
-      if ! grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /etc/named.conf 2>/dev/null | grep -qE '^[[:space:]]*version[[:space:]]+"[^"]*";'; then
-        cp -a /etc/named.conf "/etc/named.conf.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-        # options { 바로 다음 줄에 삽입
-        sed -i -E '/^[[:space:]]*options[[:space:]]*\{/{n; s/^/    version "not currently available";\n/; }' /etc/named.conf 2>/dev/null || true
-        if command -v systemctl >/dev/null 2>&1; then
-          systemctl restart named >/dev/null 2>&1 || true
-        fi
-      fi
-      NVER="$(grep -E '^[[:space:]]*version[[:space:]]+"[^"]*";' /etc/named.conf 2>/dev/null | tail -n 1)"
-      [ -n "$NVER" ] && append_detail "named_version(after)=$(echo "$NVER" | tr '\n' ' ')"
-    fi
+  # sendmail
+  if (svc_active sendmail || svc_active sm-mta) && [ -f /etc/mail/sendmail.cf ]; then
+    grep -Ev '^[[:space:]]*#' /etc/mail/sendmail.cf 2>/dev/null | grep -q 'SmtpGreetingMessage' \
+      || printf "\nO SmtpGreetingMessage=Mail Server Ready\n" >> /etc/mail/sendmail.cf 2>/dev/null || true
+    command -v systemctl >/dev/null 2>&1 && (systemctl restart sendmail >/dev/null 2>&1 || systemctl restart sm-mta >/dev/null 2>&1 || true)
+    G="$(grep -E '^[[:space:]]*O[[:space:]]+SmtpGreetingMessage=' /etc/mail/sendmail.cf 2>/dev/null | tail -n 1)"
+    [ -n "$G" ] && append_detail "sendmail_greeting(after)=${G}"
+  else
+    append_detail "sendmail_active=NO(skip)"
   fi
 
-  # 최종 REASON_LINE
+  # exim
+  if (svc_active exim || svc_active exim4); then
+    ECONF=""; [ -f /etc/exim/exim.conf ] && ECONF=/etc/exim/exim.conf; [ -z "$ECONF" ] && [ -f /etc/exim4/exim4.conf ] && ECONF=/etc/exim4/exim4.conf
+    if [ -n "$ECONF" ]; then
+      set_kv_file "$ECONF" '^[[:space:]]*smtp_banner[[:space:]]*=' 'smtp_banner = ESMTP' \
+        || { fail_now "exim smtp_banner 설정에 실패했습니다."; append_err "exim_banner_set_failed"; }
+      command -v systemctl >/dev/null 2>&1 && (systemctl restart exim >/dev/null 2>&1 || systemctl restart exim4 >/dev/null 2>&1 || true)
+      E="$(grep -E '^[[:space:]]*smtp_banner[[:space:]]*=' "$ECONF" 2>/dev/null | tail -n 1)"
+      [ -n "$E" ] && append_detail "exim_smtp_banner(after)=${ECONF}: ${E}"
+    else
+      append_detail "exim_conf=NOT_FOUND(skip)"
+    fi
+  else
+    append_detail "exim_active=NO(skip)"
+  fi
+
+  # named
+  if svc_active named && [ -f /etc/named.conf ]; then
+    if ! grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /etc/named.conf 2>/dev/null | grep -qE '^[[:space:]]*version[[:space:]]+"[^"]*";'; then
+      grep -qE '^[[:space:]]*options[[:space:]]*\{' /etc/named.conf 2>/dev/null \
+        && sed -i -E '/^[[:space:]]*options[[:space:]]*\{/{n; s/^/    version "not currently available";\n/; }' /etc/named.conf 2>/dev/null || true
+      command -v systemctl >/dev/null 2>&1 && systemctl restart named >/dev/null 2>&1 || true
+    fi
+    N="$(grep -E '^[[:space:]]*version[[:space:]]+"[^"]*";' /etc/named.conf 2>/dev/null | tail -n 1)"
+    [ -n "$N" ] && append_detail "named_version(after)=${N}" || append_detail "named_version(after)=NOT_SET_OR_OPTIONS_BLOCK_MISSING"
+  else
+    append_detail "named_active=NO(skip)"
+  fi
+
   if [ "$IS_SUCCESS" -eq 1 ]; then
     REASON_LINE="로그인 경고 메시지(서버/SSH 등)가 설정되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   else
@@ -225,7 +218,8 @@ else
   fi
 fi
 
-# raw_evidence 구성(이전 설정 미포함: 현재/조치 후 상태만 detail에 기록)
+[ -n "$DETAIL_CONTENT" ] || DETAIL_CONTENT="none"
+
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -236,10 +230,7 @@ $DETAIL_CONTENT",
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE")"
 
 echo ""
 cat << EOF

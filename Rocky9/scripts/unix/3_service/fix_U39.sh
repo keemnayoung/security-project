@@ -25,8 +25,8 @@ IS_SUCCESS=0
 
 CHECK_COMMAND='
 (command -v systemctl >/dev/null 2>&1 && (
-  systemctl list-unit-files 2>/dev/null | grep -Ei "^(nfs-server|nfs|rpcbind|rpc-statd|rpc-idmapd|nfs-mountd|nfs-idmapd)\.service[[:space:]]" || echo "nfs_related_unit_files_not_found";
-  for u in nfs-server.service nfs.service rpcbind.service rpc-statd.service rpc-idmapd.service nfs-mountd.service nfs-idmapd.service; do
+  systemctl list-unit-files 2>/dev/null | grep -Ei "^(nfs-server|nfs|rpcbind|rpc-statd|rpc-idmapd|nfs-mountd|nfs-idmapd|rpcbind)\.(service|socket)[[:space:]]" || echo "nfs_related_unit_files_not_found";
+  for u in nfs-server.service nfs.service rpcbind.service rpcbind.socket rpc-statd.service rpc-idmapd.service nfs-mountd.service nfs-idmapd.service; do
     systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
   done
 )) || echo "systemctl_not_found"
@@ -83,10 +83,12 @@ if ! command -v systemctl >/dev/null 2>&1; then
   DETAIL_CONTENT="systemctl_not_found"
 else
   # 대표 유닛 목록(환경별 차이를 고려해 존재하는 것만 처리)
+  # (필수 보완) rpcbind.socket 포함
   UNITS=(
     "nfs-server.service"
     "nfs.service"
     "rpcbind.service"
+    "rpcbind.socket"
     "rpc-statd.service"
     "rpc-idmapd.service"
     "nfs-mountd.service"
@@ -106,9 +108,11 @@ else
       ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
       append_detail "${u}(after) enabled=$en active=$ac"
 
-      # enabled 또는 active면 실패(보수적)
-      echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
-      echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+      # enabled이면 실패(보수적)
+      echo "$en" | grep -qiE "^enabled|enabled-runtime$" && FAIL_FLAG=1
+
+      # (필수 보완) active 뿐 아니라 listening(소켓), running 등도 활성으로 간주
+      echo "$ac" | grep -qiE "^(active|running|listening)$" && FAIL_FLAG=1
     fi
   done
 
@@ -125,11 +129,17 @@ else
   fi
 fi
 
+if [ -n "$DETAIL_CONTENT" ]; then
+  : # keep
+else
+  DETAIL_CONTENT="none"
+fi
+
 if [ -n "$ACTION_ERR_LOG" ]; then
   DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성 (after 상태만 포함)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

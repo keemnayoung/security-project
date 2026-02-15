@@ -22,60 +22,60 @@ ID="U-63"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
-CHECK_COMMAND="stat -c '%U %a %n' /etc/sudoers 2>/dev/null"
+TARGET_FILE="/etc/sudoers"
+CHECK_COMMAND="stat -c '%U %G %a %n' /etc/sudoers 2>/dev/null || echo 'sudoers_not_found_or_stat_failed'"
+
 REASON_LINE=""
 DETAIL_CONTENT=""
-TARGET_FILE="/etc/sudoers"
+ACTION_ERR_LOG=""
 
-# 유틸: JSON escape
+append_err(){ [ -z "${1:-}" ] && return 0; ACTION_ERR_LOG="${ACTION_ERR_LOG}${ACTION_ERR_LOG:+\n}$1"; }
+
 json_escape() {
-  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g'
+  echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; :a;N;$!ba;s/\n/\\n/g'
 }
 
-# 로직(사용자 제공 스크립트 기반)
-ACTION_RESULT="SUCCESS"
-ACTION_LOG=""
-
-if [ -f "$TARGET_FILE" ]; then
-  # 현재 상태 확인
-  OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)"
-  PERMS="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)"
-
-  # 소유자 변경
-  if [ "$OWNER" != "root" ]; then
-    chown root "$TARGET_FILE" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG 소유자를 root로 변경했습니다."
-  fi
-
-  # 권한 변경
-  if [ -n "$PERMS" ] && [ "$PERMS" -gt 640 ]; then
-    chmod 640 "$TARGET_FILE" 2>/dev/null
-    ACTION_LOG="$ACTION_LOG 권한을 640으로 변경했습니다."
-  fi
-
-  # 변경 후 상태 확인(현재(after)만)
-  AFTER_OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null)"
-  AFTER_PERMS="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null)"
-  DETAIL_CONTENT="/etc/sudoers 현재 설정: owner=${AFTER_OWNER:-unknown}, perm=${AFTER_PERMS:-unknown}"
-
-else
-  ACTION_RESULT="FAIL"
-  ACTION_LOG="/etc/sudoers 파일이 존재하지 않습니다."
-fi
-
-# 결과 판단(사용자 제공 흐름 유지)
-if [ "$ACTION_RESULT" = "FAIL" ]; then
-  IS_SUCCESS=0
+# 조치 로직
+if [ ! -f "$TARGET_FILE" ]; then
   REASON_LINE="/etc/sudoers 파일이 존재하지 않아 조치가 완료되지 않았습니다."
-elif [ -n "$ACTION_LOG" ]; then
-  IS_SUCCESS=1
-  REASON_LINE="/etc/sudoers 파일의 소유자를 root로 변경하고 권한을 640으로 설정했습니다."
 else
-  IS_SUCCESS=1
-  REASON_LINE="/etc/sudoers 파일이 이미 적절한 권한으로 설정되어 있습니다."
+  OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null || true)"
+  PERM="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null || true)"
+
+  if [ -z "$OWNER" ] || [ -z "$PERM" ] || ! echo "$PERM" | grep -Eq '^[0-7]{3,4}$'; then
+    REASON_LINE="/etc/sudoers의 소유자/권한 정보를 수집하지 못해 조치가 완료되지 않았습니다."
+  else
+    # 1) 소유자 root로 통일(가이드)
+    if [ "$OWNER" != "root" ]; then
+      chown root "$TARGET_FILE" 2>/dev/null || append_err "chown_failed"
+    fi
+
+    # 2) 권한 640 이하로 조정(가이드)
+    if [ "$PERM" -gt 640 ]; then
+      chmod 640 "$TARGET_FILE" 2>/dev/null || append_err "chmod_failed"
+    fi
+
+    # 3) 조치 후 재수집(After only)
+    AFTER_OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
+    AFTER_GROUP="$(stat -c '%G' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
+    AFTER_PERM="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
+    DETAIL_CONTENT="/etc/sudoers 현재 설정: owner=${AFTER_OWNER}, group=${AFTER_GROUP}, perm=${AFTER_PERM}"
+
+    # 4) 최종 검증
+    if [ -n "$ACTION_ERR_LOG" ]; then
+      REASON_LINE="조치 수행 중 오류가 발생하여 조치가 완료되지 않았습니다."
+    elif [ "$AFTER_OWNER" = "root" ] && echo "$AFTER_PERM" | grep -Eq '^[0-7]{3,4}$' && [ "$AFTER_PERM" -le 640 ]; then
+      IS_SUCCESS=1
+      REASON_LINE="/etc/sudoers 파일의 소유자를 root로 설정하고 권한을 640 이하로 적용하여 조치가 완료되었습니다."
+    else
+      REASON_LINE="/etc/sudoers 파일의 소유자/권한이 기준에 부합하지 않아 조치가 완료되지 않았습니다."
+    fi
+  fi
 fi
 
-# raw_evidence 구성(command/detail/target_file) + escape
+[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="N/A"
+
+# raw_evidence (command/detail/target_file) + escape
 RAW_EVIDENCE_JSON=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -88,9 +88,9 @@ EOF
 
 RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE_JSON")"
 
-# 최종 출력 (프로젝트 표준: echo "" 후 scan 결과 JSON)
+# 최종 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
   "item_code": "$ID",
   "action_date": "$ACTION_DATE",

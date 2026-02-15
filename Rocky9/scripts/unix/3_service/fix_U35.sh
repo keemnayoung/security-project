@@ -27,18 +27,18 @@ CHECK_COMMAND='
 ( [ -f /etc/vsftpd.conf ] && grep -nEv "^[[:space:]]*#" /etc/vsftpd.conf 2>/dev/null | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=" ) \
   || ( [ -f /etc/vsftpd/vsftpd.conf ] && grep -nEv "^[[:space:]]*#" /etc/vsftpd/vsftpd.conf 2>/dev/null | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=" ) \
   || echo "vsftpd_conf_not_found_or_no_setting";
-( [ -f /etc/proftpd.conf ] && sed -n "/<Anonymous/,/<\/Anonymous>/p" /etc/proftpd.conf 2>/dev/null | grep -nEv "^[[:space:]]*#" | head -n 5 ) \
-  || ( [ -f /etc/proftpd/proftpd.conf ] && sed -n "/<Anonymous/,/<\/Anonymous>/p" /etc/proftpd/proftpd.conf 2>/dev/null | grep -nEv "^[[:space:]]*#" | head -n 5 ) \
+( [ -f /etc/proftpd.conf ] && ( sed -n "/<Anonymous/,/<\/Anonymous>/p" /etc/proftpd.conf 2>/dev/null | grep -nEv "^[[:space:]]*#" | head -n 5; grep -nEv "^[[:space:]]*#" /etc/proftpd.conf 2>/dev/null | grep -niE "^[[:space:]]*(User|UserAlias)[[:space:]]+" | head -n 5 ) ) \
+  || ( [ -f /etc/proftpd/proftpd.conf ] && ( sed -n "/<Anonymous/,/<\/Anonymous>/p" /etc/proftpd/proftpd.conf 2>/dev/null | grep -nEv "^[[:space:]]*#" | head -n 5; grep -nEv "^[[:space:]]*#" /etc/proftpd/proftpd.conf 2>/dev/null | grep -niE "^[[:space:]]*(User|UserAlias)[[:space:]]+" | head -n 5 ) ) \
   || echo "proftpd_conf_not_found_or_no_active_anonymous";
 ( [ -f /etc/exports ] && grep -nEv "^[[:space:]]*#" /etc/exports 2>/dev/null | grep -nE "(anonuid|anongid)" ) || echo "exports_no_anonuid_anongid";
-( [ -f /etc/samba/smb.conf ] && grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -niE "guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes" ) || echo "samba_no_guest_ok_yes"
+( [ -f /etc/samba/smb.conf ] && grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -niE "guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes([[:space:]]|$)" ) || echo "samba_no_guest_ok_yes"
 '
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE="/etc/passwd
 /etc/vsftpd.conf (/etc/vsftpd/vsftpd.conf)
-etc/proftpd.conf (/etc/proftpd/proftpd.conf)
+/etc/proftpd.conf (/etc/proftpd/proftpd.conf)
 /etc/exports
 /etc/samba/smb.conf"
 
@@ -118,8 +118,9 @@ fi
 if [ -n "$VSFTPD_CONF" ]; then
   cp -a "$VSFTPD_CONF" "${VSFTPD_CONF}.bak_${TIMESTAMP}" 2>/dev/null || append_err "vsftpd 설정 백업 실패"
 
-  if grep -Ev "^[[:space:]]*#" "$VSFTPD_CONF" 2>/dev/null | grep -qiE "^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES([[:space:]]|$)"; then
-    sed -i 's/^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES[[:space:]]*$/anonymous_enable=NO/I' "$VSFTPD_CONF" 2>/dev/null \
+  # YES면 NO로 변경
+  if grep -nEv "^[[:space:]]*#" "$VSFTPD_CONF" 2>/dev/null | grep -qiE "^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES([[:space:]]|$)"; then
+    sed -i 's/^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES([[:space:]]|$)/anonymous_enable=NO/I' "$VSFTPD_CONF" 2>/dev/null \
       || append_err "vsftpd anonymous_enable=NO 변경 실패"
     MODIFIED=1
     restart_svc_if_exists vsftpd
@@ -134,14 +135,30 @@ if [ -n "$VSFTPD_CONF" ]; then
 fi
 
 # ---------------------------
-# 3) proftpd: <Anonymous> 블록 주석 처리(설정 파일이 있을 때만)
+# 3) proftpd: <Anonymous> 블록 + User/UserAlias 주석 처리(설정 파일이 있을 때만)
 # ---------------------------
 if [ -n "$PROFTPD_CONF" ]; then
-  ANON_ACTIVE="$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -v '^[[:space:]]*#' | head -n 1)"
+  NEED_BAK=0
+
+  # <Anonymous> 블록 활성 여부(주석 제외)
+  ANON_ACTIVE="$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -vE '^[[:space:]]*#' | sed '/^[[:space:]]*$/d' | head -n 1)"
   if [ -n "$ANON_ACTIVE" ]; then
-    cp -a "$PROFTPD_CONF" "${PROFTPD_CONF}.bak_${TIMESTAMP}" 2>/dev/null || append_err "proftpd 설정 백업 실패"
-    sed -i '/<Anonymous/,/<\/Anonymous>/s/^/#/' "$PROFTPD_CONF" 2>/dev/null || append_err "proftpd Anonymous 블록 주석 처리 실패"
+    NEED_BAK=1
+    sed -i '/<Anonymous/,/<\/Anonymous>/s/^[[:space:]]*/#&/' "$PROFTPD_CONF" 2>/dev/null || append_err "proftpd <Anonymous> 블록 주석 처리 실패"
     MODIFIED=1
+  fi
+
+  # (가이드 반영) User/UserAlias 활성 여부(주석 제외)
+  USER_ALIAS_ACTIVE="$(grep -nEv '^[[:space:]]*#' "$PROFTPD_CONF" 2>/dev/null | grep -qiE '^[[:space:]]*(User|UserAlias)[[:space:]]+' && echo "yes" || true)"
+  if [ -n "$USER_ALIAS_ACTIVE" ]; then
+    NEED_BAK=1
+    # 해당 라인만 주석 처리(라인 시작 공백 유지)
+    sed -i '/^[[:space:]]*\(User\|UserAlias\)[[:space:]]\+/s/^[[:space:]]*/#&/I' "$PROFTPD_CONF" 2>/dev/null || append_err "proftpd User/UserAlias 주석 처리 실패"
+    MODIFIED=1
+  fi
+
+  if [ "$NEED_BAK" -eq 1 ]; then
+    cp -a "$PROFTPD_CONF" "${PROFTPD_CONF}.bak_${TIMESTAMP}" 2>/dev/null || append_err "proftpd 설정 백업 실패"
     restart_svc_if_exists proftpd
   fi
 fi
@@ -150,10 +167,15 @@ fi
 # 4) NFS: anonuid/anongid 옵션 제거 후 exportfs -ra(파일이 있을 때만)
 # ---------------------------
 if [ -f "/etc/exports" ]; then
-  if grep -v "^#" /etc/exports 2>/dev/null | grep -qE "(anonuid|anongid)"; then
+  if grep -Ev "^[[:space:]]*#" /etc/exports 2>/dev/null | grep -qE "(anonuid|anongid)"; then
     cp -a /etc/exports "/etc/exports.bak_${TIMESTAMP}" 2>/dev/null || append_err "exports 백업 실패"
-    sed -i 's/,anonuid=[0-9]*//g; s/,anongid=[0-9]*//g; s/anonuid=[0-9]*,//g; s/anongid=[0-9]*,//g' /etc/exports 2>/dev/null \
-      || append_err "exports anonuid/anongid 제거 실패"
+    sed -i \
+      -e 's/,anonuid=[0-9]\+//g' \
+      -e 's/,anongid=[0-9]\+//g' \
+      -e 's/anonuid=[0-9]\+,//g' \
+      -e 's/anongid=[0-9]\+,//g' \
+      -e 's/(,/(/g; s/,,/,/g; s/,)/)/g' \
+      /etc/exports 2>/dev/null || append_err "exports anonuid/anongid 제거 실패"
     MODIFIED=1
     command -v exportfs >/dev/null 2>&1 && exportfs -ra 2>/dev/null || append_err "exportfs -ra 실패 또는 exportfs 없음"
   fi
@@ -163,9 +185,9 @@ fi
 # 5) Samba: guest ok = no 표준화(파일이 있을 때만)
 # ---------------------------
 if [ -f "/etc/samba/smb.conf" ]; then
-  if grep -v "^#" /etc/samba/smb.conf 2>/dev/null | grep -qiE "guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes"; then
+  if grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -qiE "guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes([[:space:]]|$)"; then
     cp -a /etc/samba/smb.conf "/etc/samba/smb.conf.bak_${TIMESTAMP}" 2>/dev/null || append_err "smb.conf 백업 실패"
-    sed -i 's/guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes/guest ok = no/gi' /etc/samba/smb.conf 2>/dev/null \
+    sed -i 's/^[[:space:]]*guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes([[:space:]]|$)/guest ok = no/I' /etc/samba/smb.conf 2>/dev/null \
       || append_err "smb.conf guest ok=no 변경 실패"
     MODIFIED=1
     if command -v smbcontrol >/dev/null 2>&1; then
@@ -189,10 +211,14 @@ if [ -n "$VSFTPD_CONF" ]; then
   [ -z "$AFTER_VSFTPD" ] && AFTER_VSFTPD="no_setting"
 fi
 
-AFTER_PROFTPD="not_found"
+AFTER_PROFTPD_ANON="not_found"
+AFTER_PROFTPD_USERALIAS="not_found"
 if [ -n "$PROFTPD_CONF" ]; then
-  AFTER_PROFTPD="$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -nEv '^[[:space:]]*#' | head -n 3 | paste -sd' | ' - 2>/dev/null)"
-  [ -z "$AFTER_PROFTPD" ] && AFTER_PROFTPD="no_active_anonymous_block"
+  AFTER_PROFTPD_ANON="$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -nEv '^[[:space:]]*#' | head -n 3 | paste -sd' | ' - 2>/dev/null)"
+  [ -z "$AFTER_PROFTPD_ANON" ] && AFTER_PROFTPD_ANON="no_active_anonymous_block"
+
+  AFTER_PROFTPD_USERALIAS="$(grep -nEv '^[[:space:]]*#' "$PROFTPD_CONF" 2>/dev/null | grep -niE '^[[:space:]]*(User|UserAlias)[[:space:]]+' | head -n 3 | paste -sd' | ' - 2>/dev/null)"
+  [ -z "$AFTER_PROFTPD_USERALIAS" ] && AFTER_PROFTPD_USERALIAS="no_user_or_useralias_active"
 fi
 
 AFTER_EXPORTS="not_found"
@@ -203,14 +229,15 @@ fi
 
 AFTER_SAMBA="not_found"
 if [ -f "/etc/samba/smb.conf" ]; then
-  AFTER_SAMBA="$(grep -nEv '^[[:space:]]*#' /etc/samba/smb.conf 2>/dev/null | grep -iE 'guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes' | head -n 3 | paste -sd' | ' - 2>/dev/null)"
+  AFTER_SAMBA="$(grep -nEv '^[[:space:]]*#' /etc/samba/smb.conf 2>/dev/null | grep -iE 'guest[[:space:]]*ok[[:space:]]*=[[:space:]]*yes([[:space:]]|$)' | head -n 3 | paste -sd' | ' - 2>/dev/null)"
   [ -z "$AFTER_SAMBA" ] && AFTER_SAMBA="no_guest_ok_yes"
 fi
 
 # detail(조치 후/현재 설정만)
 append_detail "ftp_accounts(after)=$AFTER_FTP_ACCTS"
 append_detail "vsftpd_anonymous_enable(after)=$AFTER_VSFTPD"
-append_detail "proftpd_anonymous_block(after)=$AFTER_PROFTPD"
+append_detail "proftpd_anonymous_block(after)=$AFTER_PROFTPD_ANON"
+append_detail "proftpd_user_or_useralias(after)=$AFTER_PROFTPD_USERALIAS"
 append_detail "exports_anonuid_anongid(after)=$AFTER_EXPORTS"
 append_detail "samba_guest_ok_yes(after)=$AFTER_SAMBA"
 
@@ -229,9 +256,10 @@ if [ -n "$VSFTPD_CONF" ]; then
   fi
 fi
 
-# proftpd: 활성 Anonymous 블록 없어야 함
+# proftpd: 활성 Anonymous 블록 없어야 함 + User/UserAlias 활성 없어야 함
 if [ -n "$PROFTPD_CONF" ]; then
-  [ "$AFTER_PROFTPD" != "no_active_anonymous_block" ] && FAIL_FLAG=1
+  [ "$AFTER_PROFTPD_ANON" != "no_active_anonymous_block" ] && FAIL_FLAG=1
+  [ "$AFTER_PROFTPD_USERALIAS" != "no_user_or_useralias_active" ] && FAIL_FLAG=1
 fi
 
 # exports: anonuid/anongid 없어야 함(파일 존재 시)
@@ -260,7 +288,7 @@ if [ -n "$ACTION_ERR_LOG" ]; then
   DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성 (after/current만 포함)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

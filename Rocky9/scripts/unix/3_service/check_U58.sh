@@ -19,75 +19,62 @@
 
 # [진단] U-58 불필요한 SNMP 서비스 구동 점검
 
+set -u
+
 # 기본 변수
 ID="U-58"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-REASON_LINE=""
-DETAIL_CONTENT=""
 TARGET_FILE="/usr/sbin/snmpd"
-CHECK_COMMAND='systemctl is-enabled snmpd; systemctl is-active snmpd; systemctl list-units --type=service | grep -n snmpd; pgrep -a -x snmpd; command -v snmpd'
+CHECK_COMMAND='systemctl is-active snmpd snmptrapd; systemctl is-enabled snmpd snmptrapd; systemctl list-units --type=service | grep -nE "(snmpd|snmptrapd)"; pgrep -a -x snmpd; pgrep -a -x snmptrapd; command -v snmpd; command -v snmptrapd'
 
-VULNERABLE=0
-DETAIL_LINES=""
+# 점검 대상(불필요 SNMP 서비스 범위)
+UNITS=("snmpd" "snmptrapd")
+PROCS=("snmpd" "snmptrapd")
 
-append_detail() {
-  local line="$1"
-  [ -z "$line" ] && return 0
-  if [ -z "$DETAIL_LINES" ]; then
-    DETAIL_LINES="$line"
-  else
-    DETAIL_LINES="${DETAIL_LINES}\n$line"
-  fi
-}
+DETAIL_CONTENT=""
+ACTIVE_HIT=0
+ENABLED_HIT=0
+PROC_HIT=0
 
-# 1) 서비스/프로세스 활성화 여부 확인 (Rocky 9/10: systemd 기준)
-SNMP_ACTIVE="N"
-SNMP_ENABLED="N"
-SNMP_PROC="N"
+# systemd 상태 수집
+for u in "${UNITS[@]}"; do
+  a="$(systemctl is-active "$u" 2>/dev/null || echo "unknown")"
+  e="$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")"
+  DETAIL_CONTENT="${DETAIL_CONTENT}[systemd] ${u}: active=${a}, enabled=${e}\n"
 
-# systemctl is-active
-if systemctl is-active --quiet snmpd 2>/dev/null; then
-  SNMP_ACTIVE="Y"
-fi
-
-# systemctl is-enabled
-if systemctl is-enabled --quiet snmpd 2>/dev/null; then
-  SNMP_ENABLED="Y"
-fi
+  # active/enabled가 정확히 잡히는 경우만 취약 판단에 반영(unknown은 미설치/미로드 가능)
+  [ "$a" = "active" ] && ACTIVE_HIT=1
+  [ "$e" = "enabled" ] && ENABLED_HIT=1
+done
 
 # 프로세스 확인(보조)
-if pgrep -x snmpd >/dev/null 2>&1; then
-  SNMP_PROC="Y"
-fi
+for p in "${PROCS[@]}"; do
+  if pgrep -x "$p" >/dev/null 2>&1; then
+    PROC_HIT=1
+    DETAIL_CONTENT="${DETAIL_CONTENT}[process] ${p}: running=Y\n"
+  else
+    DETAIL_CONTENT="${DETAIL_CONTENT}[process] ${p}: running=N\n"
+  fi
+done
 
-append_detail "[systemd] snmpd_active=$SNMP_ACTIVE snmpd_enabled=$SNMP_ENABLED"
-append_detail "[process] snmpd_running=$SNMP_PROC"
+# 바이너리 경로(참고 증적)
+SNMPD_BIN="$(command -v snmpd 2>/dev/null || true)"
+SNMPTRAPD_BIN="$(command -v snmptrapd 2>/dev/null || true)"
+[ -n "$SNMPD_BIN" ] && TARGET_FILE="$SNMPD_BIN"
+DETAIL_CONTENT="${DETAIL_CONTENT}[binary] snmpd_path=${SNMPD_BIN:-NOT_FOUND}, snmptrapd_path=${SNMPTRAPD_BIN:-NOT_FOUND}"
 
-# 2) 바이너리 경로(참고 증적)
-if command -v snmpd >/dev/null 2>&1; then
-  SNMP_BIN="$(command -v snmpd)"
-  [ -n "$SNMP_BIN" ] && TARGET_FILE="$SNMP_BIN"
-  append_detail "[binary] snmpd_path=$SNMP_BIN"
-else
-  append_detail "[binary] snmpd_command=NOT_FOUND"
-fi
-
-# 3) 최종 판정(업무상 필요 여부는 자동판단 불가 → 활성화면 취약으로 처리)
-if [ "$SNMP_ACTIVE" = "Y" ] || [ "$SNMP_ENABLED" = "Y" ] || [ "$SNMP_PROC" = "Y" ]; then
+# 최종 판정
+if [ $ACTIVE_HIT -eq 1 ] || [ $ENABLED_HIT -eq 1 ] || [ $PROC_HIT -eq 1 ]; then
   STATUS="FAIL"
-  VULNERABLE=1
-  REASON_LINE="SNMP 서비스(snmpd)가 활성화되어 있어 불필요한 경우 시스템 정보가 노출될 수 있으므로 취약합니다. 운영·모니터링 목적 등으로 실제 사용 여부를 확인한 뒤, 불필요하면 서비스를 중지 및 비활성화해야 합니다."
+  REASON_LINE="systemd에서 snmpd/snmptrapd 서비스가 active 또는 enabled(또는 프로세스 실행) 상태로 확인되어 취약합니다. 조치: 불필요 시 'systemctl stop snmpd snmptrapd' 후 'systemctl disable snmpd snmptrapd'로 중지 및 비활성화하세요."
 else
   STATUS="PASS"
-  REASON_LINE="SNMP 서비스(snmpd)가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  REASON_LINE="systemd에서 snmpd/snmptrapd 서비스가 비활성(inactive)이고 비활성화(disabled)되어 있어 이 항목에 대한 보안 위협이 없습니다."
 fi
 
-DETAIL_CONTENT="$DETAIL_LINES"
-[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
-
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+# raw_evidence 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -97,9 +84,9 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+# JSON 저장을 위한 escape 처리 (백슬래시/따옴표/줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
+  | sed 's/\\/\\\\/g; s/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
 # scan_history 저장용 JSON 출력

@@ -23,127 +23,163 @@ ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
 TARGET_FILE="/etc/exports"
-CHECK_COMMAND="stat -c '%U %G %a %n' /etc/exports 2>/dev/null; grep -nEv '^[[:space:]]*#|^[[:space:]]*$' /etc/exports 2>/dev/null | head -n 50"
+CHECK_COMMAND='
+( command -v systemctl >/dev/null 2>&1 && (
+  systemctl is-active nfs-server 2>/dev/null || true;
+  systemctl is-enabled nfs-server 2>/dev/null || true;
+  systemctl is-active rpcbind 2>/dev/null || true;
+  systemctl is-enabled rpcbind 2>/dev/null || true;
+) ) || echo "systemctl_not_found";
+stat -c "%U %G %a %n" /etc/exports 2>/dev/null;
+grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports 2>/dev/null | head -n 50
+'
+CHECK_COMMAND="$(echo "$CHECK_COMMAND" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 ACTION_ERR_LOG=""
-MODIFIED=0
 FAIL_FLAG=0
+MODIFIED=0
 
-# (필수) root 권한 권장 안내(실패 원인 명확화용)
-if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 chown/chmod/exportfs 조치가 실패할 수 있습니다."
-fi
+add_err()   { ACTION_ERR_LOG="${ACTION_ERR_LOG}${ACTION_ERR_LOG:+\\n}$1"; }
+add_detail(){ DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\\n}$1"; }
 
-append_err() {
-  if [ -n "$ACTION_ERR_LOG" ]; then
-    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
+# root 권장 안내
+[ "$(id -u)" -ne 0 ] && add_err "(주의) root 권한이 아니면 조치가 실패할 수 있습니다."
+
+# 서비스 상태 읽기
+svc_state() {
+  if command -v systemctl >/dev/null 2>&1; then
+    NFS_A="$(systemctl is-active nfs-server 2>/dev/null | tr -d '[:space:]')"
+    NFS_E="$(systemctl is-enabled nfs-server 2>/dev/null | tr -d '[:space:]')"
+    RPC_A="$(systemctl is-active rpcbind 2>/dev/null | tr -d '[:space:]')"
+    RPC_E="$(systemctl is-enabled rpcbind 2>/dev/null | tr -d '[:space:]')"
   else
-    ACTION_ERR_LOG="$1"
+    NFS_A="unknown"; NFS_E="unknown"; RPC_A="unknown"; RPC_E="unknown"
   fi
 }
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
+stop_disable() {
+  command -v systemctl >/dev/null 2>&1 || { add_err "systemctl 없음: 서비스 조치 불가"; return; }
+  systemctl stop nfs-server 2>/dev/null || add_err "stop nfs-server 실패"
+  systemctl disable nfs-server 2>/dev/null || add_err "disable nfs-server 실패"
+  systemctl stop rpcbind 2>/dev/null || add_err "stop rpcbind 실패"
+  systemctl disable rpcbind 2>/dev/null || add_err "disable rpcbind 실패"
+  MODIFIED=1
 }
 
-# exports 내 와일드카드(*) 허용 여부(활성 라인 기준)
-has_wildcard_share() {
-  [ -f "$TARGET_FILE" ] || return 1
-  # 예: /path *(rw,...) 또는 /path  *(...) 등 다양한 공백 케이스 방어
-  grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$TARGET_FILE" 2>/dev/null | grep -qE '(^|[[:space:]])\*([[:space:]]|\(|$)'
+active_lines() {
+  grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$TARGET_FILE" 2>/dev/null || true
 }
 
-# ---------------------------
-# 조치 프로세스
-# ---------------------------
+has_star()      { active_lines | grep -qE '(^|[[:space:]])\*([[:space:]]|\(|$)'; }
+has_nrs()       { active_lines | grep -qiE 'no_root_squash'; }
+has_only_path() { active_lines | awk '{l=$0; sub(/^[0-9]+:/,"",l); gsub(/^[ \t]+|[ \t]+$/,"",l); n=split(l,a,/[ \t]+/); if(n==1){exit 0}} END{exit 1}'; }
+
+svc_state
+
+# 1) exports 없으면: NFS 미사용으로 보고 서비스 stop/disable(필수)
 if [ ! -f "$TARGET_FILE" ]; then
-  IS_SUCCESS=1
-  REASON_LINE="NFS exports 파일(/etc/exports)이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="exports_file=not_found"
+  stop_disable
+  svc_state
+  add_detail "services(after) nfs-server(active=$NFS_A enabled=$NFS_E) rpcbind(active=$RPC_A enabled=$RPC_E)"
+  add_detail "exports(after)=not_found"
+
+  if command -v systemctl >/dev/null 2>&1 && { [ "$NFS_A" = "active" ] || [ "$NFS_E" = "enabled" ] || [ "$RPC_A" = "active" ] || [ "$RPC_E" = "enabled" ]; }; then
+    IS_SUCCESS=0
+    REASON_LINE="/etc/exports가 없는데 NFS 서비스가 활성(또는 enable) 상태가 남아 있어 조치가 완료되지 않았습니다. NFS 미사용 시 서비스 중지/비활성화가 필요합니다."
+  else
+    IS_SUCCESS=1
+    REASON_LINE="/etc/exports가 없어 NFS 미사용 상태이며, NFS 서비스가 중지/비활성화되어 조치가 완료되었습니다."
+  fi
+
 else
-  # stat 수집 실패 방어(필수)
-  OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
-  GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
-  PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+  # stat 실패 방어(필수)
+  OWNER="$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)"
+  GROUP="$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)"
+  PERM="$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)"
 
   if [ -z "$OWNER" ] || [ -z "$GROUP" ] || [ -z "$PERM" ]; then
     IS_SUCCESS=0
-    REASON_LINE="/etc/exports 파일의 소유자/그룹/권한 정보를 수집하지 못해 조치 수행 및 검증이 불가능하므로 조치가 완료되지 않았습니다."
-    DETAIL_CONTENT="owner=${OWNER:-unknown}\ngroup=${GROUP:-unknown}\nperm=${PERM:-unknown}"
+    REASON_LINE="/etc/exports 소유자/그룹/권한 정보를 수집하지 못해 조치가 완료되지 않았습니다."
+    add_detail "exports(after) owner=${OWNER:-unknown} group=${GROUP:-unknown} perm=${PERM:-unknown}"
   else
-    # 1) 소유자/그룹 root:root 표준화
-    if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
-      chown root:root "$TARGET_FILE" 2>/dev/null || append_err "chown root:root 실패"
-      MODIFIED=1
-    fi
+    # exports 유효 라인이 비어있으면 미사용: 서비스 stop/disable(필수)
+    LINES="$(active_lines)"
+    if [ -z "$LINES" ]; then
+      stop_disable
+      # 파일은 표준화
+      [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ] && { chown root:root "$TARGET_FILE" 2>/dev/null || add_err "chown 실패"; MODIFIED=1; }
+      [ "$PERM" != "644" ] && { chmod 644 "$TARGET_FILE" 2>/dev/null || add_err "chmod 실패"; MODIFIED=1; }
 
-    # 2) 권한 644 표준화
-    if [ "$PERM" != "644" ]; then
-      chmod 644 "$TARGET_FILE" 2>/dev/null || append_err "chmod 644 실패"
-      MODIFIED=1
-    fi
+      svc_state
+      AOWNER="$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)"
+      AGROUP="$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)"
+      APERM="$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)"
 
-    # 3) everyone(*) 공유는 자동 변경 대신 FAIL + 수동 조치 권고(안전)
-    if has_wildcard_share; then
-      FAIL_FLAG=1
-      append_err "exports 파일에서 everyone(*) 공유 설정이 확인되었습니다."
-    fi
+      add_detail "services(after) nfs-server(active=$NFS_A enabled=$NFS_E) rpcbind(active=$RPC_A enabled=$RPC_E)"
+      add_detail "exports(after) owner=$AOWNER group=$AGROUP perm=$APERM"
+      add_detail "exports_active_lines(after)=no_active_exports_lines"
 
-    # 4) 설정 반영(exportfs -ra) (명령 있을 때만)
-    if command -v exportfs >/dev/null 2>&1; then
-      exportfs -ra 2>/dev/null || append_err "exportfs -ra 실행 실패"
-    else
-      append_err "exportfs 명령을 사용할 수 없어 설정 반영을 수행하지 못했습니다."
-    fi
-
-    # 조치 후/현재 상태 수집(현재 설정만 evidence에 포함)
-    AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
-    AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
-    AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
-
-    # 현재 exports 주요 라인(요약)
-    ACTIVE_LINES="$(grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$TARGET_FILE" 2>/dev/null | head -n 10)"
-    [ -z "$ACTIVE_LINES" ] && ACTIVE_LINES="no_active_exports_lines"
-
-    WILDCARD_STATUS="not_found"
-    if has_wildcard_share; then
-      WILDCARD_STATUS="wildcard_share_exists"
-    else
-      WILDCARD_STATUS="no_wildcard_share"
-    fi
-
-    append_detail "exports(after) owner=$AFTER_OWNER group=$AFTER_GROUP perm=$AFTER_PERM"
-    append_detail "wildcard_share_check(after)=$WILDCARD_STATUS"
-    append_detail "exports_active_lines(after)=$ACTIVE_LINES"
-
-    # 최종 검증
-    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ "$AFTER_PERM" = "644" ] && [ "$FAIL_FLAG" -eq 0 ]; then
-      IS_SUCCESS=1
-      if [ "$MODIFIED" -eq 1 ]; then
-        REASON_LINE="/etc/exports 파일의 소유자/그룹이 root로 설정되고 권한이 644로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+      if command -v systemctl >/dev/null 2>&1 && { [ "$NFS_A" = "active" ] || [ "$NFS_E" = "enabled" ] || [ "$RPC_A" = "active" ] || [ "$RPC_E" = "enabled" ]; }; then
+        IS_SUCCESS=0
+        REASON_LINE="NFS 미사용 상태로 보이나 서비스가 활성(또는 enable) 상태가 남아 있어 조치가 완료되지 않았습니다."
+      elif [ "$AOWNER" = "root" ] && [ "$AGROUP" = "root" ] && [ "$APERM" = "644" ]; then
+        IS_SUCCESS=1
+        REASON_LINE="유효한 공유 설정이 없어 NFS 미사용 상태이며, 서비스 중지/비활성화 및 /etc/exports 권한 표준화가 완료되어 조치가 완료되었습니다."
       else
-        REASON_LINE="/etc/exports 파일의 소유자/그룹이 root이고 권한이 644로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+        IS_SUCCESS=0
+        REASON_LINE="/etc/exports 권한 표준화가 기준을 충족하지 못해 조치가 완료되지 않았습니다."
       fi
+
     else
-      IS_SUCCESS=0
-      if [ "$FAIL_FLAG" -eq 1 ]; then
-        REASON_LINE="조치를 수행했으나 /etc/exports 파일에 everyone(*) 공유 설정이 남아 있어 수동으로 허용 IP 또는 네트워크 대역(예: 192.168.1.0/24)으로 제한해야 조치가 완료됩니다."
+      # 사용 중: 파일 권한 표준화(필수)
+      if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
+        chown root:root "$TARGET_FILE" 2>/dev/null || add_err "chown 실패"
+        MODIFIED=1
+      fi
+      if [ "$PERM" != "644" ]; then
+        chmod 644 "$TARGET_FILE" 2>/dev/null || add_err "chmod 실패"
+        MODIFIED=1
+      fi
+
+      # 위험 옵션은 자동수정 금지 → FAIL(필수)
+      has_star      && { FAIL_FLAG=1; add_err "everyone(*) 공유 설정 존재"; }
+      has_nrs       && { FAIL_FLAG=1; add_err "no_root_squash 옵션 존재"; }
+      has_only_path && { FAIL_FLAG=1; add_err "허용 호스트/옵션 미지정 라인 존재"; }
+
+      # 반영(exportfs -ra)
+      if command -v exportfs >/dev/null 2>&1; then
+        exportfs -ra 2>/dev/null || add_err "exportfs -ra 실패"
       else
-        REASON_LINE="조치를 수행했으나 /etc/exports 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+        add_err "exportfs 없음: 설정 반영 불가"
+      fi
+
+      # 조치 이후 값만 evidence로 수집
+      AOWNER="$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)"
+      AGROUP="$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)"
+      APERM="$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)"
+      SAMPLE="$(active_lines | head -n 10)"; [ -z "$SAMPLE" ] && SAMPLE="no_active_exports_lines"
+
+      add_detail "exports(after) owner=$AOWNER group=$AGROUP perm=$APERM"
+      add_detail "wildcard_share_check(after)=$(has_star && echo wildcard_share_exists || echo no_wildcard_share)"
+      add_detail "no_root_squash_check(after)=$(has_nrs && echo no_root_squash_exists || echo no_no_root_squash)"
+      add_detail "host_spec_check(after)=$(has_only_path && echo only_path_line_exists || echo no_only_path_line)"
+      add_detail "exports_active_lines(after)=$SAMPLE"
+
+      if [ "$AOWNER" = "root" ] && [ "$AGROUP" = "root" ] && [ "$APERM" = "644" ] && [ "$FAIL_FLAG" -eq 0 ]; then
+        IS_SUCCESS=1
+        REASON_LINE="조치 이후 /etc/exports의 소유자/그룹(root) 및 권한(644)이 기준을 충족하고 위험 설정이 없어 조치가 완료되었습니다."
+      else
+        IS_SUCCESS=0
+        REASON_LINE="조치를 수행했으나 /etc/exports의 접근 통제 설정이 기준을 충족하지 못해 조치가 완료되지 않았습니다. everyone(*) 제거, 허용 호스트/대역 지정, no_root_squash 제거 후 exportfs -ra 적용이 필요합니다."
       fi
     fi
   fi
 fi
 
-if [ -n "$ACTION_ERR_LOG" ]; then
-  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
-fi
+# 에러 로그를 detail 뒤에 합치기(조치 이후 값만 포함)
+[ -n "$ACTION_ERR_LOG" ] && add_detail "$ACTION_ERR_LOG"
 
 # raw_evidence 구성
 RAW_EVIDENCE=$(cat <<EOF

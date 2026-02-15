@@ -19,6 +19,8 @@
 
 # [진단] U-52 Telnet 서비스 비활성화
 
+set -u
+
 # 기본 변수
 ID="U-52"
 STATUS="PASS"
@@ -27,112 +29,87 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE=""
-CHECK_COMMAND='grep -nE "^[[:space:]]*telnet" /etc/inetd.conf; grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no" /etc/xinetd.d/telnet; systemctl list-units --type=socket | grep -i telnet; systemctl list-units --type=service | grep -i telnet; systemctl is-active sshd'
+CHECK_COMMAND='
+( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/inetd.conf | grep -nE "^[[:space:]]*telnet([[:space:]]|$)" ) || echo "inetd_telnet_not_enabled_or_file_missing";
+( [ -f /etc/xinetd.d/telnet ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/xinetd.d/telnet | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*(no|yes)\b" ) || echo "xinetd_telnet_disable_directive_not_found_or_file_missing";
+systemctl is-enabled telnet.socket 2>/dev/null || echo "telnet.socket_not_enabled_or_not_found";
+systemctl is-active telnet.socket 2>/dev/null || echo "telnet.socket_not_active_or_not_found";
+systemctl is-enabled telnet.service 2>/dev/null || echo "telnet.service_not_enabled_or_not_found";
+systemctl is-active telnet.service 2>/dev/null || echo "telnet.service_not_active_or_not_found";
+systemctl is-active sshd 2>/dev/null || echo "sshd_not_active"
+'
 
 VULNERABLE=0
 DETAIL_LINES=""
 
-append_detail() {
-  local line="$1"
-  [ -z "$line" ] && return 0
-  if [ -z "$DETAIL_LINES" ]; then
-    DETAIL_LINES="$line"
-  else
-    DETAIL_LINES="${DETAIL_LINES}\n$line"
-  fi
-}
+add_detail(){ [ -n "${1:-}" ] && DETAIL_LINES="${DETAIL_LINES}${DETAIL_LINES:+\n}$1"; }
+add_target(){ [ -n "${1:-}" ] && TARGET_FILE="${TARGET_FILE}${TARGET_FILE:+, }$1"; }
 
-add_target_file() {
-  local f="$1"
-  [ -z "$f" ] && return 0
-  if [ -z "$TARGET_FILE" ]; then
-    TARGET_FILE="$f"
-  else
-    TARGET_FILE="${TARGET_FILE}, $f"
-  fi
-}
-
-# -----------------------------
-# 1) inetd.conf 내 telnet 활성화 여부
-# -----------------------------
-INETD_FILE="/etc/inetd.conf"
-if [ -f "$INETD_FILE" ]; then
-  add_target_file "$INETD_FILE"
-  if grep -v '^[[:space:]]*#' "$INETD_FILE" 2>/dev/null | grep -qE '^[[:space:]]*telnet\b'; then
+# 1) inetd
+INETD="/etc/inetd.conf"
+if [ -f "$INETD" ]; then
+  add_target "$INETD"
+  if grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$INETD" 2>/dev/null | grep -qE '^[[:space:]]*telnet([[:space:]]|$)'; then
     VULNERABLE=1
-    append_detail "[inetd] telnet entry=ENABLED in $INETD_FILE"
+    add_detail "[inetd] /etc/inetd.conf 에서 telnet 서비스 라인이 주석 처리되지 않아 활성화 상태입니다."
   else
-    append_detail "[inetd] telnet entry=NOT_FOUND(or commented) in $INETD_FILE"
+    add_detail "[inetd] /etc/inetd.conf 에서 telnet 서비스 라인이 없거나 주석 처리되어 비활성화 상태입니다."
   fi
 else
-  append_detail "[inetd] $INETD_FILE=NOT_FOUND"
+  add_detail "[inetd] /etc/inetd.conf 파일이 없어 inetd 기반 telnet 활성화 징후가 없습니다."
 fi
 
-# -----------------------------
-# 2) xinetd 설정(/etc/xinetd.d/telnet) 내 disable=no 여부
-# -----------------------------
-XINETD_TELNET="/etc/xinetd.d/telnet"
-if [ -f "$XINETD_TELNET" ]; then
-  add_target_file "$XINETD_TELNET"
-  if grep -vi '^[[:space:]]*#' "$XINETD_TELNET" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b'; then
+# 2) xinetd
+XINETD="/etc/xinetd.d/telnet"
+if [ -f "$XINETD" ]; then
+  add_target "$XINETD"
+  # disable=no -> enabled, disable=yes -> disabled, 그 외/미기재 -> 취약(명확히 비활성화 아님)
+  if grep -nEvi '^[[:space:]]*#|^[[:space:]]*$' "$XINETD" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b'; then
     VULNERABLE=1
-    append_detail "[xinetd] disable=no -> telnet ENABLED in $XINETD_TELNET"
+    add_detail "[xinetd] /etc/xinetd.d/telnet 에서 disable=no 로 설정되어 telnet 이 활성화 상태입니다."
+  elif grep -nEvi '^[[:space:]]*#|^[[:space:]]*$' "$XINETD" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*yes\b'; then
+    add_detail "[xinetd] /etc/xinetd.d/telnet 에서 disable=yes 로 설정되어 telnet 이 비활성화 상태입니다."
   else
-    append_detail "[xinetd] disable=no NOT_FOUND -> telnet likely disabled in $XINETD_TELNET"
+    VULNERABLE=1
+    add_detail "[xinetd] /etc/xinetd.d/telnet 에서 disable 설정이 명확하지 않아 telnet 이 활성화될 수 있어 취약합니다."
   fi
 else
-  append_detail "[xinetd] $XINETD_TELNET=NOT_FOUND"
+  add_detail "[xinetd] /etc/xinetd.d/telnet 파일이 없어 xinetd 기반 telnet 활성화 징후가 없습니다."
 fi
 
-# -----------------------------
-# 3) systemd telnet socket/service 활성화 여부
-# -----------------------------
-TELNET_SOCKET_LIST="$(systemctl list-units --type=socket 2>/dev/null | grep -i telnet || true)"
-TELNET_SERVICE_LIST="$(systemctl list-units --type=service 2>/dev/null | grep -i telnet || true)"
+# 3) systemd (active + enabled)
+SYS_FIND=0
+for u in telnet.socket telnet.service; do
+  EN=$(systemctl is-enabled "$u" 2>/dev/null || true)
+  AC=$(systemctl is-active  "$u" 2>/dev/null || true)
 
-if [ -n "$TELNET_SOCKET_LIST" ]; then
-  VULNERABLE=1
-  append_detail "[systemd] telnet socket=FOUND | $(echo "$TELNET_SOCKET_LIST" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+  if [ "$EN" = "enabled" ] || [ "$AC" = "active" ]; then
+    VULNERABLE=1
+    SYS_FIND=1
+    add_detail "[systemd] $u 상태가 enabled/active 중 하나에 해당하여 telnet 이 활성화 상태입니다. (enabled=$EN, active=$AC)"
+  fi
+done
+[ $SYS_FIND -eq 0 ] && add_detail "[systemd] telnet.socket/telnet.service 가 enabled 또는 active 상태가 아니어서 비활성화 상태입니다."
+
+# 4) SSH (참고)
+if systemctl is-active --quiet sshd 2>/dev/null; then
+  add_detail "[ssh] sshd 가 실행 중입니다(원격 접속은 SSH 사용 권장)."
 else
-  append_detail "[systemd] telnet socket=NOT_FOUND"
+  add_detail "[ssh] sshd 가 실행 중이 아닙니다(원격 접속 정책에 따라 확인 필요)."
 fi
 
-if [ -n "$TELNET_SERVICE_LIST" ]; then
-  VULNERABLE=1
-  append_detail "[systemd] telnet service=FOUND | $(echo "$TELNET_SERVICE_LIST" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
-else
-  append_detail "[systemd] telnet service=NOT_FOUND"
-fi
-
-# -----------------------------
-# 4) SSH 서비스 실행 여부(보조 정보: PASS/FAIL 판정에는 영향 주지 않음)
-# -----------------------------
-SSHD_ACTIVE="N"
-systemctl is-active --quiet sshd 2>/dev/null && SSHD_ACTIVE="Y"
-if [ "$SSHD_ACTIVE" = "Y" ]; then
-  append_detail "[ssh] sshd_active=Y"
-else
-  append_detail "[ssh] sshd_active=N (verify remote access policy)"
-fi
-
-# -----------------------------
-# 5) 최종 판정/문구(U-15~U-16 톤)
-# -----------------------------
+# 5) 최종 판정 + 요구 문구
 if [ $VULNERABLE -eq 1 ]; then
   STATUS="FAIL"
-  REASON_LINE="Telnet 서비스가 활성화되어 있어 취약합니다. Telnet은 통신 내용이 평문으로 전송되어 계정 정보 및 접속 정보가 노출될 수 있으므로 서비스를 중지 및 비활성화하고, 원격 접속은 SSH로 전환해야 합니다."
+  REASON_LINE="Telnet이 어디서 어떻게 설정되어 있어 취약합니다. (inetd/xinetd/systemd 중 하나 이상에서 telnet 활성 징후 확인) 조치: /etc/inetd.conf의 telnet 라인을 주석/삭제, /etc/xinetd.d/telnet 은 disable=yes 로 설정 후 xinetd 재시작, systemd 는 telnet.socket(또는 service) stop 및 disable 하고, 원격 접속은 SSH로 전환하세요."
 else
   STATUS="PASS"
-  REASON_LINE="Telnet 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  REASON_LINE="Telnet이 어디서 어떻게 설정되어 있어 이 항목에 대한 보안 위협이 없습니다. (inetd/xinetd/systemd에서 telnet 비활성화 상태 확인)"
 fi
 
-DETAIL_CONTENT="$DETAIL_LINES"
-[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+DETAIL_CONTENT="${DETAIL_LINES:-none}"
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/inetd.conf, /etc/xinetd.d/telnet, systemd(telnet.socket/service)"
 
-# target_file 기본값 보정
-[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/inetd.conf, /etc/xinetd.d/telnet, systemd units"
-
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -142,14 +119,13 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
+# escape (backslash/quote/newline)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
+  | sed 's/\\/\\\\/g; s/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# scan_history 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "status": "$STATUS",

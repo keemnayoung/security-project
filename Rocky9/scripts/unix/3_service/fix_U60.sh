@@ -17,30 +17,32 @@
 
 # [보완] U-60 SNMP Community String 복잡성 설정
 
+set -u
+
 # 기본 변수
 ID="U-60"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
-CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active snmpd 2>/dev/null || echo "systemctl_or_snmpd_not_found"); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (ls -l /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || true); (grep -inE "^[[:space:]]*(rocommunity|rwcommunity|com2sec)[[:space:]]+" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "community_directives_not_found"); (grep -inE "^[[:space:]]*(rocommunity|rwcommunity|com2sec).*(public|private)\\b" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "weak_public_private_not_found")'
+CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active snmpd 2>/dev/null || echo "systemctl_or_snmpd_not_found"); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (ls -l /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf /var/lib/net-snmp/snmpd.conf 2>/dev/null || true); (grep -inE "^[[:space:]]*(rocommunity|rwcommunity|com2sec|createUser)\b" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf /var/lib/net-snmp/snmpd.conf 2>/dev/null || echo "snmp_directives_not_found")'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
-TARGET_FILE="/etc/snmp/snmpd.conf"
+TARGET_FILE=""
 
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
-}
+append_detail(){ DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\n}$1"; }
 
-has_non_comment_match() {
-  local file="$1"
-  local pattern="$2"
-  [ -f "$file" ] || return 1
-  grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$file" 2>/dev/null | grep -qE "$pattern"
+# 토큰 마스킹(현재 설정 노출 최소화)
+mask_token(){ local s="$1" n="${#s}"; [ "$n" -le 3 ] && echo "***" || echo "${s:0:2}***${s: -2}"; }
+
+# 가이드 취약 기준: public/private OR (len<8) OR (alnum-only && len<10)
+is_weak(){
+  local s="${1:-}" low
+  low="$(echo "$s" | tr '[:upper:]' '[:lower:]')"
+  [[ "$low" =~ ^(public|private)$ ]] && return 0
+  [ "${#s}" -lt 8 ] && return 0
+  echo "$s" | grep -qE '^[A-Za-z0-9]+$' && [ "${#s}" -lt 10 ] && return 0
+  return 1
 }
 
 # root 권한 확인
@@ -49,90 +51,110 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   REASON_LINE="root 권한이 아니어서 SNMP 설정 점검/조치를 수행할 수 없어 조치가 완료되지 않았습니다."
   DETAIL_CONTENT="sudo로 실행해야 합니다."
 else
-  HAS_SYSTEMCTL=0
-  command -v systemctl >/dev/null 2>&1 && HAS_SYSTEMCTL=1
-
-  SNMP_ACTIVE=0
-  SNMP_PROC=0
-
-  if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
-    systemctl is-active snmpd >/dev/null 2>&1 && SNMP_ACTIVE=1
+  # SNMP 실행 여부(서비스/프로세스 중 하나라도 보이면 '사용 중'으로 간주)
+  ACTIVE="unknown"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet snmpd 2>/dev/null && ACTIVE="active" || ACTIVE="inactive"
   fi
-  pgrep -x snmpd >/dev/null 2>&1 && SNMP_PROC=1
+  pgrep -x snmpd >/dev/null 2>&1 && PROC="running" || PROC="not_running"
+  append_detail "snmpd_service_active(after)=$ACTIVE"
+  append_detail "snmpd_process(after)=$PROC"
 
-  # 설정 파일 후보 결정
-  CONF_A="/etc/snmp/snmpd.conf"
-  CONF_B="/usr/share/snmp/snmpd.conf"
-  CONF=""
-
-  if [ -f "$CONF_A" ]; then
-    CONF="$CONF_A"
-  elif [ -f "$CONF_B" ]; then
-    CONF="$CONF_B"
-  fi
-
-  # SNMP 미사용 → 조치 대상 없음(비활성 상태 유지가 목표)
-  if [ "$SNMP_ACTIVE" -eq 0 ] && [ "$SNMP_PROC" -eq 0 ]; then
+  if [ "$ACTIVE" != "active" ] && [ "$PROC" != "running" ]; then
     IS_SUCCESS=1
     REASON_LINE="SNMP(snmpd) 서비스가 비활성화되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    append_detail "snmpd_service_active(after)=inactive_or_not_running"
-    append_detail "snmpd_process(after)=not_running"
-    append_detail "snmp_conf_checked=not_applicable"
+    append_detail "snmp_conf_checked(after)=not_applicable"
+    TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf, /var/lib/net-snmp/snmpd.conf"
   else
-    # SNMP 사용 중인데 설정 파일이 없으면 실패
-    if [ -z "$CONF" ]; then
+    # 점검 대상 파일(존재하는 것만)
+    FILES=()
+    for f in /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf /var/lib/net-snmp/snmpd.conf; do
+      [ -f "$f" ] && FILES+=("$f")
+    done
+
+    if [ "${#FILES[@]}" -eq 0 ]; then
       IS_SUCCESS=0
-      REASON_LINE="SNMP(snmpd) 서비스가 실행 중이나 snmpd.conf 파일을 찾지 못해 조치가 완료되지 않았습니다."
-      append_detail "snmpd_service_active(after)=$([ "$SNMP_ACTIVE" -eq 1 ] && echo active || echo inactive)"
-      append_detail "snmpd_process(after)=$([ "$SNMP_PROC" -eq 1 ] && echo running || echo not_running)"
+      REASON_LINE="SNMP(snmpd) 서비스가 실행 중이나 설정 파일을 찾지 못해 조치가 완료되지 않았습니다."
       append_detail "snmp_conf_file(after)=not_found"
+      TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf, /var/lib/net-snmp/snmpd.conf"
     else
-      TARGET_FILE="$CONF"
+      TARGET_FILE="$(printf "%s, " "${FILES[@]}")"; TARGET_FILE="${TARGET_FILE%, }"
 
-      # (현재 설정만 기록) community 관련 지시자 존재 여부
-      COMMUNITY_PRESENT=0
-      has_non_comment_match "$CONF" '^[[:space:]]*(rocommunity|rwcommunity|com2sec)[[:space:]]+' && COMMUNITY_PRESENT=1
-
-      # 취약 community(public/private) 탐지
       WEAK_FOUND=0
-      has_non_comment_match "$CONF" '^[[:space:]]*com2sec[[:space:]].*(public|private)\b' && WEAK_FOUND=1
-      has_non_comment_match "$CONF" '^[[:space:]]*(rocommunity|rwcommunity)[[:space:]].*(public|private)\b' && WEAK_FOUND=1
+      FOUND_V12=0
+      FOUND_V3=0
 
-      append_detail "snmp_conf_file(after)=$CONF"
-      append_detail "community_directives_present(after)=$([ "$COMMUNITY_PRESENT" -eq 1 ] && echo yes || echo no)"
-      append_detail "weak_public_private_found(after)=$([ "$WEAK_FOUND" -eq 1 ] && echo yes || echo no)"
+      for conf in "${FILES[@]}"; do
+        # 주석/공백 제외 후 관심 지시자만
+        LINES="$(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$conf" 2>/dev/null | grep -E '^[[:space:]]*(com2sec|rocommunity|rwcommunity|createUser)\b' || true)"
+        [ -z "$LINES" ] && append_detail "snmp_conf($conf)(after)=no_relevant_directives" && continue
+        append_detail "snmp_conf($conf)(after)=relevant_directives_found"
 
-      if [ "$HAS_SYSTEMCTL" -eq 1 ]; then
-        systemctl is-active snmpd >/dev/null 2>&1 && append_detail "snmpd_service_active(after)=active" || append_detail "snmpd_service_active(after)=inactive"
+        while IFS= read -r line; do
+          key="$(echo "$line" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+
+          # v1/v2c community
+          if [[ "$key" =~ ^(com2sec|rocommunity|rwcommunity)$ ]]; then
+            FOUND_V12=1
+            [ "$key" = "com2sec" ] && tok="$(echo "$line" | awk '{print $4}')" || tok="$(echo "$line" | awk '{print $2}')"
+            [ -z "${tok:-}" ] && append_detail "parse($conf)(after)=$key token=NOT_PARSED" && continue
+            if is_weak "$tok"; then
+              WEAK_FOUND=1
+              append_detail "check($conf)(after)=$key token=WEAK($(mask_token "$tok"))"
+            else
+              append_detail "check($conf)(after)=$key token=OK($(mask_token "$tok"))"
+            fi
+
+          # v3 createUser (authpass/privpass)
+          elif [ "$key" = "createuser" ]; then
+            FOUND_V3=1
+            authpass="$(echo "$line" | awk '{print $4}')"
+            privpass="$(echo "$line" | awk '{print $6}')"
+
+            if [ -n "${authpass:-}" ]; then
+              if is_weak "$authpass"; then
+                WEAK_FOUND=1
+                append_detail "check($conf)(after)=createUser authpass=WEAK($(mask_token "$authpass"))"
+              else
+                append_detail "check($conf)(after)=createUser authpass=OK($(mask_token "$authpass"))"
+              fi
+            else
+              append_detail "parse($conf)(after)=createUser authpass=NOT_FOUND"
+            fi
+
+            if [ -n "${privpass:-}" ]; then
+              if is_weak "$privpass"; then
+                WEAK_FOUND=1
+                append_detail "check($conf)(after)=createUser privpass=WEAK($(mask_token "$privpass"))"
+              else
+                append_detail "check($conf)(after)=createUser privpass=OK($(mask_token "$privpass"))"
+              fi
+            fi
+          fi
+        done <<< "$LINES"
+      done
+
+      if [ "$FOUND_V12" -eq 0 ] && [ "$FOUND_V3" -eq 0 ]; then
+        IS_SUCCESS=0
+        REASON_LINE="SNMP(snmpd) 서비스가 실행 중이나 Community String 또는 SNMPv3(createUser) 설정을 확인할 수 없어 조치가 완료되지 않았습니다."
+        append_detail "manual_guide(after)=snmpd.conf 및 /var/lib/net-snmp/snmpd.conf에서 설정(include 포함) 경로를 확인 후, 인증정보가 기준을 충족하도록 설정하고 snmpd 재시작"
+      elif [ "$WEAK_FOUND" -eq 1 ]; then
+        IS_SUCCESS=0
+        REASON_LINE="SNMP 인증정보(Community String 또는 SNMPv3 인증 비밀번호)가 단순/기본값으로 확인되어 조치가 완료되지 않았습니다. 정책에 맞게 수동 변경이 필요합니다."
+        append_detail "manual_guide(after)=public/private 제거, (영문+숫자 10자 이상) 또는 (영문/숫자/특수문자 포함 8자 이상)으로 변경 후 systemctl restart snmpd"
       else
-        append_detail "snmpd_service_active(after)=systemctl_not_found"
-      fi
-      pgrep -x snmpd >/dev/null 2>&1 && append_detail "snmpd_process(after)=running" || append_detail "snmpd_process(after)=not_running"
-
-      if [ "$COMMUNITY_PRESENT" -eq 0 ]; then
-        # v1/v2 community 기반 설정 자체가 없으면(또는 v3만 쓰는 케이스) 이 항목 관점에서는 양호로 처리
         IS_SUCCESS=1
-        REASON_LINE="SNMP Community String 설정이 발견되지 않아(또는 SNMPv3 기반 구성으로 추정되어) 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        append_detail "note(after)=rocommunity/rwcommunity/com2sec 설정이 없어 community string 기반 접근이 확인되지 않았습니다."
-      else
-        if [ "$WEAK_FOUND" -eq 1 ]; then
-          IS_SUCCESS=0
-          REASON_LINE="SNMP 서비스가 사용 중이며 취약한 Community String(public/private)이 확인되어 조치가 완료되지 않았습니다. 정책에 맞는 복잡한 문자열로 수동 변경이 필요합니다."
-          append_detail "manual_guide(after)=snmpd.conf의 rocommunity/rwcommunity/com2sec에서 public/private를 제거하고 복잡한 문자열로 변경(예: 영문+숫자 10자 이상 또는 영문+숫자+특수문자 8자 이상) 후 systemctl restart snmpd"
-        else
-          IS_SUCCESS=1
-          REASON_LINE="SNMP Community String이 취약값(public/private)으로 설정되어 있지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        fi
+        REASON_LINE="SNMP 인증정보(Community String 또는 SNMPv3 인증 비밀번호)가 복잡성 기준을 충족하도록 설정되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
       fi
     fi
   fi
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성 (조치 후/현재 상태만)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE\n${DETAIL_CONTENT:-none}",
   "target_file": "$TARGET_FILE"
 }
 EOF

@@ -17,6 +17,8 @@
 
 # [보완] U-54 암호화되지 않는 FTP 서비스 비활성화
 
+set -u
+
 # 기본 변수
 ID="U-54"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -24,212 +26,146 @@ IS_SUCCESS=0
 
 CHECK_COMMAND='
 ( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | grep -nE "^[[:space:]]*ftp([[:space:]]|$)" || echo "inetd_ftp_not_found_or_commented" );
-( [ -d /etc/xinetd.d ] && for f in /etc/xinetd.d/*; do
-    [ -f "$f" ] || continue
-    bn="$(basename "$f")"
-    echo "$bn" | grep -qiE "^(ftp|vsftp|vsftpd|proftp|proftpd)$" || continue
-    echo "xinetd_conf:$f"
-    grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1
-  done ) || echo "xinetd_dir_not_found";
+( [ -d /etc/xinetd.d ] && grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b" /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp 2>/dev/null || echo "xinetd_disable_no_not_found" );
 ( command -v systemctl >/dev/null 2>&1 && (
-    systemctl list-unit-files 2>/dev/null | grep -iE "^(vsftpd|proftpd|ftpd|ftp)\.service[[:space:]]" || echo "ftp_related_units_not_found";
-    systemctl is-active vsftpd.service 2>/dev/null || true;
-    systemctl is-active proftpd.service 2>/dev/null || true;
-    systemctl is-active ftpd.service 2>/dev/null || true
+    systemctl list-unit-files 2>/dev/null | grep -Ei "^(vsftpd|proftpd|pure-ftpd)\.service" || echo "ftp_units_not_found";
+    systemctl is-active vsftpd proftpd pure-ftpd 2>/dev/null || true;
+    systemctl is-enabled vsftpd proftpd pure-ftpd 2>/dev/null || true
   ) ) || echo "systemctl_not_found"
 '
 
 REASON_LINE=""
 DETAIL_CONTENT=""
-TARGET_FILE="N/A"
+TARGET_FILE="/etc/inetd.conf, /etc/xinetd.d/{ftp,proftp,vsftp}, systemd:{vsftpd,proftpd,pure-ftpd}.service"
 ACTION_ERR_LOG=""
 
-MODIFIED=0
+add_detail(){ [ -n "${1:-}" ] && DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\n}$1"; }
+add_err(){ [ -n "${1:-}" ] && ACTION_ERR_LOG="${ACTION_ERR_LOG}${ACTION_ERR_LOG:+\n}$1"; }
 
-append_err() {
-  if [ -n "$ACTION_ERR_LOG" ]; then
-    ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
-  else
-    ACTION_ERR_LOG="$1"
-  fi
-}
-
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
-}
-
-# (필수) root 권한 권장 안내(실패 원인 명확화용)
-if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 설정 파일 수정 및 서비스 중지/비활성화가 실패할 수 있습니다."
-fi
-
-restart_if_exists() {
-  local svc="$1"
-  command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qiE "^${svc}\.service[[:space:]]" || return 0
-  systemctl restart "${svc}.service" >/dev/null 2>&1 || return 1
-  return 0
-}
-
-disable_unit_if_exists() {
-  local unit="$1"
-  command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
-  systemctl stop "$unit" >/dev/null 2>&1 || true
-  systemctl disable "$unit" >/dev/null 2>&1 || true
-  systemctl mask "$unit" >/dev/null 2>&1 || true
-  return 0
-}
-
-backup_file() {
+backup_if_file(){
   local f="$1"
-  [ -f "$f" ] || return 1
+  [ -f "$f" ] || return 0
   cp -a "$f" "${f}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || return 1
   return 0
 }
 
-########################################
-# 조치 프로세스
-########################################
+# ---- 조치 시작 ----
 if [ "$(id -u)" -ne 0 ]; then
-  IS_SUCCESS=0
-  REASON_LINE="root 권한이 아니어서 암호화되지 않는 FTP 서비스 비활성화를 적용할 수 없어 조치를 중단합니다."
+  REASON_LINE="root 권한이 아니어서 암호화되지 않은 FTP 서비스 비활성화를 적용할 수 없어 조치를 중단합니다."
+  add_err "(주의) root 권한이 아니면 설정 파일 수정 및 서비스 중지/비활성화가 실패할 수 있습니다."
 else
-  # 1) [inetd] /etc/inetd.conf에서 ftp 활성 라인 주석 처리
-  if [ -f "/etc/inetd.conf" ]; then
-    if grep -Ev "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*ftp([[:space:]]|$)"; then
-      backup_file "/etc/inetd.conf" || append_err "/etc/inetd.conf 백업 실패"
-      sed -i 's/^\([[:space:]]*ftp\)/#\1/g' /etc/inetd.conf 2>/dev/null || append_err "/etc/inetd.conf ftp 주석 처리 실패"
-      MODIFIED=1
-      append_detail "inetd_ftp(after)=commented"
-      if ! restart_if_exists inetd; then
-        append_err "inetd 재시작 실패"
+  # 1) inetd: /etc/inetd.conf ftp 라인 주석 처리
+  if [ -f /etc/inetd.conf ]; then
+    if grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -qE '^[[:space:]]*ftp([[:space:]]|$)'; then
+      backup_if_file /etc/inetd.conf || add_err "/etc/inetd.conf 백업 실패"
+      sed -i 's/^[[:space:]]*ftp/# ftp/' /etc/inetd.conf 2>/dev/null || add_err "/etc/inetd.conf ftp 주석 처리 실패"
+      add_detail "[after][inetd] /etc/inetd.conf 에서 ftp 서비스 라인을 주석 처리했습니다."
+      if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -qi '^inetd\.service'; then
+        systemctl restart inetd >/dev/null 2>&1 || add_err "inetd 재시작 실패"
       fi
     else
-      append_detail "inetd_ftp(after)=not_active"
+      add_detail "[after][inetd] /etc/inetd.conf 에서 ftp 서비스가 주석 처리(또는 미설정) 상태입니다."
     fi
   else
-    append_detail "inetd_conf(after)=not_found"
+    add_detail "[after][inetd] /etc/inetd.conf 파일이 없어 inetd 기반 FTP 설정이 확인되지 않습니다."
   fi
 
-  # 2) [xinetd] /etc/xinetd.d/* 중 ftp 계열 disable=yes 설정
-  XINETD_CHANGED=0
-  if [ -d "/etc/xinetd.d" ]; then
-    for conf in /etc/xinetd.d/*; do
-      [ -f "$conf" ] || continue
-      bn="$(basename "$conf")"
-      echo "$bn" | grep -qiE "^(ftp|vsftp|vsftpd|proftp|proftpd)$" || continue
-
-      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-        backup_file "$conf" || append_err "$conf 백업 실패"
-        sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' "$conf" 2>/dev/null \
-          || append_err "$conf disable=yes 변경 실패"
-        MODIFIED=1
-        XINETD_CHANGED=1
-        append_detail "xinetd_${bn}_disable(after)=yes"
+  # 2) xinetd: /etc/xinetd.d/{ftp,proftp,vsftp} disable=yes 표준화
+  if [ -d /etc/xinetd.d ]; then
+    XCH=0
+    for f in /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp; do
+      [ -f "$f" ] || continue
+      if grep -vi '^[[:space:]]*#' "$f" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b'; then
+        backup_if_file "$f" || add_err "$f 백업 실패"
+        sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]\b/\1yes/' "$f" 2>/dev/null || add_err "$f disable=yes 변경 실패"
+        add_detail "[after][xinetd] $f 에서 disable=yes 로 변경했습니다."
+        XCH=1
       else
-        AFTER_DISABLE="$(grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
-        [ -z "$AFTER_DISABLE" ] && AFTER_DISABLE="disable_line_not_found"
-        append_detail "xinetd_${bn}_disable(after)=$AFTER_DISABLE"
+        add_detail "[after][xinetd] $f 에서 disable=no 설정이 없어 비활성화 상태로 판단됩니다."
       fi
     done
-
-    if [ "$XINETD_CHANGED" -eq 1 ]; then
-      if ! restart_if_exists xinetd; then
-        append_err "xinetd 재시작 실패"
-      fi
-    else
-      append_detail "xinetd_ftp(after)=no_change_or_not_found"
+    if [ "$XCH" -eq 1 ] && command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -qi '^xinetd\.service'; then
+      systemctl restart xinetd >/dev/null 2>&1 || add_err "xinetd 재시작 실패"
     fi
   else
-    append_detail "xinetd_dir(after)=not_found"
+    add_detail "[after][xinetd] /etc/xinetd.d 디렉터리가 없어 xinetd 기반 FTP 설정이 확인되지 않습니다."
   fi
 
-  # 3) [systemd] FTP 관련 서비스 stop/disable/mask
+  # 3) systemd: FTP 데몬 stop/disable/mask (enabled까지 차단)
   if command -v systemctl >/dev/null 2>&1; then
-    # 존재하는 unit만 대상으로 처리(오탐 방지)
-    for unit in vsftpd.service proftpd.service ftpd.service ftp.service; do
-      if systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]"; then
-        disable_unit_if_exists "$unit"
-        MODIFIED=1
-        append_detail "systemd_${unit}(after)=disabled"
+    for s in vsftpd proftpd pure-ftpd; do
+      if systemctl list-unit-files 2>/dev/null | grep -qE "^${s}\.service"; then
+        systemctl stop "$s" >/dev/null 2>&1 || true
+        systemctl disable "$s" >/dev/null 2>&1 || true
+        systemctl mask "$s" >/dev/null 2>&1 || true
+        add_detail "[after][systemd] ${s}.service 를 stop/disable/mask 처리했습니다."
       fi
     done
   else
-    append_detail "systemd(after)=not_available"
+    add_detail "[after][systemd] systemctl 을 사용할 수 없어 systemd 서비스 조치를 적용하지 못했습니다."
   fi
 
-  ########################################
-  # 검증(조치 후 상태만)
-  ########################################
+  # ---- 조치 후 검증(현재/after 상태만) ----
   FTP_ACTIVE=0
 
-  # inetd ftp 활성 라인 존재 여부
-  if [ -f "/etc/inetd.conf" ]; then
-    if grep -Ev "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*ftp([[:space:]]|$)"; then
-      FTP_ACTIVE=1
-    fi
+  # inetd
+  if [ -f /etc/inetd.conf ] && grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -qE '^[[:space:]]*ftp([[:space:]]|$)'; then
+    FTP_ACTIVE=1
+    add_detail "[verify][inetd] /etc/inetd.conf 에서 ftp 서비스가 여전히 활성 상태입니다."
+  else
+    add_detail "[verify][inetd] /etc/inetd.conf 에서 ftp 서비스가 비활성(주석/미설정) 상태입니다."
   fi
 
-  # xinetd ftp 계열 disable=no 여부
-  if [ -d "/etc/xinetd.d" ]; then
-    for conf in /etc/xinetd.d/*; do
-      [ -f "$conf" ] || continue
-      bn="$(basename "$conf")"
-      echo "$bn" | grep -qiE "^(ftp|vsftp|vsftpd|proftp|proftpd)$" || continue
-      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-        FTP_ACTIVE=1
+  # xinetd
+  if [ -d /etc/xinetd.d ] && grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b' /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp 2>/dev/null; then
+    FTP_ACTIVE=1
+    add_detail "[verify][xinetd] /etc/xinetd.d/* 에서 disable=no 설정이 확인되어 활성 상태입니다."
+  else
+    add_detail "[verify][xinetd] /etc/xinetd.d/* 에서 disable=no 설정이 없어 비활성 상태입니다."
+  fi
+
+  # systemd (active 또는 enabled면 취약)
+  if command -v systemctl >/dev/null 2>&1; then
+    for s in vsftpd proftpd pure-ftpd; do
+      if systemctl list-unit-files 2>/dev/null | grep -qE "^${s}\.service"; then
+        systemctl is-active --quiet "$s" 2>/dev/null && { FTP_ACTIVE=1; add_detail "[verify][systemd] ${s}.service 가 active 상태입니다."; } \
+                                                || add_detail "[verify][systemd] ${s}.service 는 active 상태가 아닙니다."
+        systemctl is-enabled --quiet "$s" 2>/dev/null && { FTP_ACTIVE=1; add_detail "[verify][systemd] ${s}.service 가 enabled(자동시작) 상태입니다."; } \
+                                                 || add_detail "[verify][systemd] ${s}.service 는 enabled 상태가 아닙니다."
       fi
     done
-  fi
-
-  # systemd 활성 여부
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl is-active vsftpd.service >/dev/null 2>&1 && FTP_ACTIVE=1
-    systemctl is-active proftpd.service >/dev/null 2>&1 && FTP_ACTIVE=1
-    systemctl is-active ftpd.service >/dev/null 2>&1 && FTP_ACTIVE=1
-    systemctl is-active ftp.service >/dev/null 2>&1 && FTP_ACTIVE=1
   fi
 
   if [ "$FTP_ACTIVE" -eq 0 ]; then
     IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ]; then
-      REASON_LINE="암호화되지 않는 FTP 서비스가 비활성화되도록 설정이 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      REASON_LINE="암호화되지 않는 FTP 서비스가 이미 비활성화된 상태로 확인되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
+    REASON_LINE="암호화되지 않은 FTP 서비스가 비활성화되도록 설정이 적용되어 조치가 완료되었습니다."
   else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 FTP 서비스가 일부 경로에서 여전히 활성화 상태로 확인되어 조치가 완료되지 않았습니다."
+    REASON_LINE="조치를 수행했으나 FTP 서비스가 일부 경로에서 여전히 활성/자동시작 상태로 확인되어 조치가 완료되지 않았습니다."
   fi
 fi
 
-if [ -n "$ACTION_ERR_LOG" ]; then
-  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
-fi
+# detail에 에러 로그 병합(문장/after만)
+[ -n "$ACTION_ERR_LOG" ] && add_detail "$ACTION_ERR_LOG"
+[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 
-# raw_evidence 구성
+# raw_evidence 구성(command/detail/target_file)  ※ before 미포함
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+# escape(백슬래시/따옴표/줄바꿈)
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
 # DB 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "action_date": "$ACTION_DATE",

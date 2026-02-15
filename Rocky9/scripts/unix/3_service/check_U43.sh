@@ -19,56 +19,87 @@
 
 # [진단] U-43 NIS, NIS+ 점검
 
-# 기본 변수
+# 1. 항목 정보 정의
 ID="U-43"
+CATEGORY="서비스 관리"
+TITLE="NIS, NIS+ 점검"
+IMPORTANCE="상"
+TARGET_FILE="N/A"
+
+# 2. 진단 로직
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="N/A"
-CHECK_COMMAND='systemctl list-units --type=service 2>/dev/null | grep -E "ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated|yppasswdd|ypupdated" || echo "no_nis_related_services"'
+# 가이드 기준 점검 대상(서비스 유닛)
+NIS_UNIT_REGEX='^(ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated)\.service$'
+NIS_UNITS=("ypserv.service" "ypbind.service" "ypxfrd.service" "rpc.yppasswdd.service" "rpc.ypupdated.service")
 
-DETAIL_CONTENT=""
+CHECK_COMMAND="systemctl list-units --type=service | grep -E 'ypserv|ypbind|ypxfrd|rpc.yppasswdd|rpc.ypupdated'; systemctl is-active/is-enabled <unit>"
+
 REASON_LINE=""
+DETAIL_CONTENT=""
 
+ACTIVE_FOUND=""
+ENABLED_FOUND=""
+FOUND_ANY=0
 
-# NIS/NIS+ 관련 서비스 감지
-# (Rocky Linux 계열에서는 보통 ypserv/ypbind 중심. 환경에 따라 rpc.yppasswdd 등 존재 가능)
-NIS_SERVICES=$(systemctl list-units --type=service 2>/dev/null \
-  | grep -E "ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated|yppasswdd|ypupdated" \
-  | awk '{print $1}' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]$//')
-
-if [ -n "$NIS_SERVICES" ]; then
-  STATUS="FAIL"
-  REASON_LINE="NIS/NIS+ 관련 서비스가 활성화되어 있으면 인증/계정 정보가 네트워크로 노출될 수 있어 취약합니다. 실제 사용 여부(레거시 의존성)를 확인한 뒤 불필요하면 중지/비활성화가 필요합니다."
-  DETAIL_CONTENT="active_services=${NIS_SERVICES}"
+# systemctl 사용 가능 여부(대상: Rocky Linux 9/10은 일반적으로 systemd)
+if ! command -v systemctl >/dev/null 2>&1; then
+  STATUS="ERROR"
+  REASON_LINE="systemctl 명령을 사용할 수 없어 NIS 관련 서비스 활성화 여부를 점검하지 못했습니다."
+  DETAIL_CONTENT="(점검 불가) systemctl 미존재"
 else
-  STATUS="PASS"
-  REASON_LINE="NIS/NIS+ 관련 서비스가 활성화된 정황이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="no_nis_service_active"
+  # [1] 현재 실행(활성) 상태 점검: list-units는 주로 active 대상
+  ACTIVE_LIST="$(systemctl list-units --type=service 2>/dev/null | awk '{print $1}' | grep -E 'ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated' | tr '\n' ' ')"
+  if [ -n "$ACTIVE_LIST" ]; then
+    ACTIVE_FOUND="$ACTIVE_LIST"
+    FOUND_ANY=1
+  fi
+
+  # [2] enabled(부팅 시 자동 시작) 상태 점검: 지금은 꺼져 있어도 enabled면 관리 필요
+  for unit in "${NIS_UNITS[@]}"; do
+    # 유닛이 존재할 때만 enabled 여부 확인(없으면 "disabled"/"not-found" 등)
+    en_state="$(systemctl is-enabled "$unit" 2>/dev/null | tr -d '\r')"
+    if [ "$en_state" = "enabled" ]; then
+      ENABLED_FOUND+="${unit} "
+      FOUND_ANY=1
+    fi
+  done
+
+  if [ "$FOUND_ANY" -eq 1 ]; then
+    STATUS="FAIL"
+    REASON_LINE="systemctl에서 NIS 관련 서비스가 활성(active) 또는 부팅 시 자동 시작(enabled)으로 설정되어 있어 취약합니다."
+    DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(판정 결과) active: ${ACTIVE_FOUND:-없음}\n(판정 결과) enabled: ${ENABLED_FOUND:-없음}\n(간단 조치) 불필요 시 'systemctl stop <서비스> && systemctl disable <서비스>'로 비활성화 후 재점검 (예: systemctl stop ypserv ypbind; systemctl disable ypserv ypbind)."
+  else
+    STATUS="PASS"
+    REASON_LINE="systemctl에서 NIS 관련 서비스가 active 또는 enabled로 설정되어 있지 않아 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(판정 결과) active/enabled 모두 없음"
+  fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
-RAW_EVIDENCE=$(cat <<EOF
+escape_json_str() {
+  # 백슬래시 -> \\ , 줄바꿈 -> \n , 따옴표 -> \"
+  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/\n/\\n/g;s/"/\\"/g'
+}
+
+RAW_EVIDENCE_JSON="$(cat <<EOF
 {
-  "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "command":"$(escape_json_str "$CHECK_COMMAND")",
+  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "target_file":"$(escape_json_str "$TARGET_FILE")"
 }
 EOF
-)
+)"
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
 
-# scan_history 저장용 JSON 출력
+# JSON 출력 직전 빈 줄(프로젝트 규칙)
 echo ""
-cat << EOF
+cat <<EOF
 {
-    "item_code": "$ID",
-    "status": "$STATUS",
-    "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
-    "scan_date": "$SCAN_DATE"
+  "item_code": "$ID",
+  "status": "$STATUS",
+  "raw_evidence": "$RAW_EVIDENCE_ESCAPED",
+  "scan_date": "$SCAN_DATE"
 }
 EOF

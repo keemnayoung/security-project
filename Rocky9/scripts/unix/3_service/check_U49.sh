@@ -31,9 +31,8 @@ REQUIRED_VERSION="9.20.18"
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE="/usr/sbin/named"
-CHECK_COMMAND='systemctl is-active named; systemctl list-units --type=service | grep -E "^(named|named-chroot)\.service"; named -v; command -v named; rpm -q bind bind-chroot; dnf -q info bind 2>/dev/null'
+CHECK_COMMAND='systemctl is-active named; systemctl is-active named-chroot; systemctl list-unit-files | grep -E "^(named|named-chroot)\.service"; named -v; command -v named; rpm -q bind bind-chroot; (command -v dnf && dnf -q check-update "bind*" || command -v yum && yum -q check-update "bind*") 2>/dev/null'
 
-VULNERABLE=0
 FOUND_ANY=0
 DETAIL_LINES=""
 
@@ -68,10 +67,8 @@ ver_is_ge() {
   if [ "$cur" = "$req" ]; then
     return 0
   elif [ "$first" = "$cur" ]; then
-    # cur < req
     return 1
   else
-    # cur > req
     return 0
   fi
 }
@@ -80,15 +77,18 @@ ver_is_ge() {
 # 1) DNS 서비스(named) 활성화 여부 확인
 # -----------------------------
 DNS_ACTIVE="N"
+ACTIVE_UNIT="none"
+
 if systemctl is-active --quiet named 2>/dev/null; then
   DNS_ACTIVE="Y"
+  ACTIVE_UNIT="named.service"
 elif systemctl is-active --quiet named-chroot 2>/dev/null; then
   DNS_ACTIVE="Y"
+  ACTIVE_UNIT="named-chroot.service"
 fi
 
-# list-units에서도 확인(참고용)
-UNIT_LIST_HIT="N"
-systemctl list-units --type=service 2>/dev/null | grep -qE '^(named|named-chroot)\.service' && UNIT_LIST_HIT="Y"
+UNIT_FILE_HIT="N"
+systemctl list-unit-files 2>/dev/null | grep -qE '^(named|named-chroot)\.service' && UNIT_FILE_HIT="Y"
 
 # -----------------------------
 # 2) named 버전/경로/패키지 정보 수집
@@ -113,51 +113,84 @@ if command -v named >/dev/null 2>&1; then
   append_detail "[bind] required_version=$REQUIRED_VERSION"
   append_detail "[bind] rpm=$BIND_RPM"
 else
-  # named 명령이 없으면 DNS(BIND) 자체가 없다고 판단(서비스도 보통 없음)
   append_detail "[bind] named_command=NOT_FOUND"
 fi
 
 # -----------------------------
-# 3) 판정 로직 (U-15~U-16 톤)
+# 3) 최신 패치 적용 여부(업데이트 대기) 확인  ★필수 보강
 # -----------------------------
-if [ "$DNS_ACTIVE" = "N" ] && [ $FOUND_ANY -eq 0 ]; then
-  # 서비스 비활성 + 바이너리도 없음 => 대상 없음에 가까움(양호 처리)
-  STATUS="PASS"
-  REASON_LINE="DNS 서비스(named)가 설치되어 있지 않거나 실행되지 않아 점검 대상이 없습니다."
-  DETAIL_CONTENT="none"
-else
-  # 서비스 상태/정보 상세 기록
-  append_detail "[service] named_active=$DNS_ACTIVE (unit_list_hit=$UNIT_LIST_HIT)"
+UPDATE_PENDING="unknown"
+UPDATE_LINES=""
 
-  if [ "$DNS_ACTIVE" = "Y" ]; then
-    # 실행 중이면 버전 확인 필수
-    if [ $FOUND_ANY -eq 0 ] || [ -z "$DNS_VER_RAW" ] || [ "$DNS_VER_RAW" = "unknown" ]; then
-      STATUS="FAIL"
-      VULNERABLE=1
-      REASON_LINE="DNS 서비스가 실행 중이나 버전을 확인할 수 없어 취약합니다. 보안 패치 적용 여부를 확인하기 위해 BIND 버전을 점검하고 최신 보안 업데이트를 적용해야 합니다."
+if [ $FOUND_ANY -eq 1 ]; then
+  if command -v dnf >/dev/null 2>&1; then
+    UPDATE_LINES="$(dnf -q check-update "bind*" 2>/dev/null | head -n 30)"
+    rc=$?
+    if [ $rc -eq 100 ]; then
+      UPDATE_PENDING="yes"
+    elif [ $rc -eq 0 ]; then
+      UPDATE_PENDING="no"
     else
-      ver_is_ge "$DNS_VER_RAW" "$REQUIRED_VERSION"
-      rc=$?
-      if [ $rc -eq 1 ]; then
-        STATUS="FAIL"
-        VULNERABLE=1
-        REASON_LINE="DNS 서비스 버전이 기준에 미달하여 취약합니다. 최신 보안 패치를 적용하고 서비스를 재시작하는 등 패치 관리 정책을 수립하여 주기적으로 적용해야 합니다."
-        append_detail "[result] version_check=LOW (current=$(extract_ver "$DNS_VER_RAW") < required=$REQUIRED_VERSION)"
-      elif [ $rc -eq 2 ]; then
-        STATUS="FAIL"
-        VULNERABLE=1
-        REASON_LINE="DNS 서비스가 실행 중이나 버전 형식을 정상적으로 확인할 수 없어 취약으로 판단합니다. 현재 버전을 확인한 뒤 최신 보안 업데이트 적용 여부를 점검해야 합니다."
-        append_detail "[result] version_check=UNKNOWN (parse_failed)"
-      else
-        STATUS="PASS"
-        REASON_LINE="DNS 서비스 버전이 기준 이상으로 확인되어 이 항목에 대한 보안 위협이 없습니다."
-        append_detail "[result] version_check=OK (current=$(extract_ver "$DNS_VER_RAW") >= required=$REQUIRED_VERSION)"
-      fi
+      UPDATE_PENDING="unknown"
+    fi
+  elif command -v yum >/dev/null 2>&1; then
+    UPDATE_LINES="$(yum -q check-update "bind*" 2>/dev/null | head -n 30)"
+    rc=$?
+    if [ $rc -eq 100 ]; then
+      UPDATE_PENDING="yes"
+    elif [ $rc -eq 0 ]; then
+      UPDATE_PENDING="no"
+    else
+      UPDATE_PENDING="unknown"
     fi
   else
-    # 비활성 상태면 양호(단, 설치는 되어 있을 수 있음)
-    STATUS="PASS"
-    REASON_LINE="DNS 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+    UPDATE_PENDING="unknown"
+  fi
+
+  append_detail "[patch] update_pending=$UPDATE_PENDING"
+  [ -n "$UPDATE_LINES" ] && append_detail "[patch] check_update_head=$(echo "$UPDATE_LINES" | tr '\n' ';' | sed 's/[[:space:]]\+/ /g' | sed 's/;/ | /g')"
+fi
+
+# -----------------------------
+# 4) 판정 로직 (요청 문구 반영)
+# -----------------------------
+if [ "$DNS_ACTIVE" = "N" ] && [ $FOUND_ANY -eq 0 ]; then
+  STATUS="PASS"
+  REASON_LINE="DNS 서비스(BIND/named)가 설치되어 있지 않거나 systemd에서 활성화되어 있지 않아 점검 대상이 없으며, 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="none"
+else
+  append_detail "[service] named_active=$DNS_ACTIVE (active_unit=$ACTIVE_UNIT, unit_file_hit=$UNIT_FILE_HIT)"
+
+  # 업데이트가 대기 중이면(=패치 미적용 가능성) 취약 처리(필수 보강)
+  if [ "$UPDATE_PENDING" = "yes" ]; then
+    STATUS="FAIL"
+    REASON_LINE="패키지 관리자(dnf/yum) 기준 bind 업데이트가 남아 있어 최신 보안 패치가 적용되지 않은 상태로 취약합니다. 조치: (DNS 사용 시) dnf/yum update bind\\* 적용 후 $ACTIVE_UNIT 재시작, (DNS 미사용 시) named 서비스 stop/disable로 비활성화하세요."
+  else
+    if [ "$DNS_ACTIVE" = "Y" ]; then
+      if [ $FOUND_ANY -eq 0 ] || [ -z "$DNS_VER_RAW" ] || [ "$DNS_VER_RAW" = "unknown" ]; then
+        STATUS="FAIL"
+        REASON_LINE="$ACTIVE_UNIT 가 실행 중이나 named 버전을 확인할 수 없어 취약합니다. 조치: named -v 로 버전 확인 후 최신 보안 패치(dnf/yum update bind\\*) 적용 및 서비스 재시작을 수행하세요."
+      else
+        ver_is_ge "$DNS_VER_RAW" "$REQUIRED_VERSION"
+        rc=$?
+        if [ $rc -eq 1 ]; then
+          STATUS="FAIL"
+          REASON_LINE="$ACTIVE_UNIT 가 실행 중이며 BIND 버전이 $(extract_ver "$DNS_VER_RAW") 로 기준($REQUIRED_VERSION) 미만이라 취약합니다. 조치: dnf/yum update bind\\* 적용 후 $ACTIVE_UNIT 재시작(또는 DNS 미사용 시 stop/disable)하세요."
+          append_detail "[result] version_check=LOW (current=$(extract_ver "$DNS_VER_RAW") < required=$REQUIRED_VERSION)"
+        elif [ $rc -eq 2 ]; then
+          STATUS="FAIL"
+          REASON_LINE="$ACTIVE_UNIT 가 실행 중이나 버전 형식을 정상적으로 확인할 수 없어 취약합니다. 조치: 현재 버전 확인 후 최신 보안 패치(dnf/yum update bind\\*) 적용 및 서비스 재시작을 수행하세요."
+          append_detail "[result] version_check=UNKNOWN (parse_failed)"
+        else
+          STATUS="PASS"
+          REASON_LINE="$ACTIVE_UNIT 에서 BIND 버전이 $(extract_ver "$DNS_VER_RAW") 로 기준($REQUIRED_VERSION) 이상이며 최신 업데이트 대기 항목이 없어, 이 항목에 대한 보안 위협이 없습니다."
+          append_detail "[result] version_check=OK (current=$(extract_ver "$DNS_VER_RAW") >= required=$REQUIRED_VERSION)"
+        fi
+      fi
+    else
+      STATUS="PASS"
+      REASON_LINE="systemd에서 named 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+    fi
   fi
 
   DETAIL_CONTENT="$DETAIL_LINES"

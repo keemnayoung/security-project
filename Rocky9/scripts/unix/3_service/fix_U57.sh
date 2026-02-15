@@ -17,254 +17,222 @@
 
 # [보완] U-57 Ftpusers 파일 설정
 
+set -u
+
 # 기본 변수
 ID="U-57"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
 
-CHECK_COMMAND='( [ -f /etc/ftpusers ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/ftpusers | head -n 200 || echo "ftpusers_not_found" ); ( [ -f /etc/vsftpd.conf ] && grep -nE "^[[:space:]]*(userlist_enable|userlist_deny)[[:space:]]*=" /etc/vsftpd.conf 2>/dev/null || true ); ( [ -f /etc/vsftpd/vsftpd.conf ] && grep -nE "^[[:space:]]*(userlist_enable|userlist_deny)[[:space:]]*=" /etc/vsftpd/vsftpd.conf 2>/dev/null || true ); ( [ -f /etc/proftpd/proftpd.conf ] && grep -nE "^[[:space:]]*(UseFtpUsers|RootLogin)[[:space:]]+" /etc/proftpd/proftpd.conf 2>/dev/null || true ); (ls -l /etc/ftpusers /etc/ftpd/ftpusers /etc/vsftpd.user_list /etc/vsftpd/user_list /etc/vsftpd.ftpusers 2>/dev/null || true )'
+CHECK_COMMAND='( [ -f /etc/ftpusers ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/ftpusers | head -n 200 || echo "ftpusers_not_found" ); ( [ -f /etc/vsftpd.conf ] && grep -nE "^[[:space:]]*(userlist_enable|userlist_deny|userlist_file)[[:space:]]*=" /etc/vsftpd.conf 2>/dev/null || true ); ( [ -f /etc/vsftpd/vsftpd.conf ] && grep -nE "^[[:space:]]*(userlist_enable|userlist_deny|userlist_file)[[:space:]]*=" /etc/vsftpd/vsftpd.conf 2>/dev/null || true ); ( [ -f /etc/proftpd/proftpd.conf ] && grep -nE "^[[:space:]]*(UseFtpUsers|RootLogin)[[:space:]]+" /etc/proftpd/proftpd.conf 2>/dev/null || true ); ( [ -f /etc/proftpd.conf ] && grep -nE "^[[:space:]]*(UseFtpUsers|RootLogin)[[:space:]]+" /etc/proftpd.conf 2>/dev/null || true ); (ls -l /etc/ftpusers /etc/ftpd/ftpusers /etc/vsftpd.user_list /etc/vsftpd/user_list /etc/vsftpd.ftpusers /etc/vsftpd/ftpusers 2>/dev/null || true )'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
-TARGET_FILE="/etc/ftpusers"
+TARGET_FILE=""
+ACTION_ERR_LOG=""
 
-MODIFIED=0
-ERR_LOG=""
-
-append_detail() {
-  if [ -n "$DETAIL_CONTENT" ]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n$1"
-  else
-    DETAIL_CONTENT="$1"
-  fi
+add_detail(){ [ -n "${1:-}" ] && DETAIL_CONTENT="${DETAIL_CONTENT}${DETAIL_CONTENT:+\\n}$1"; }
+add_err(){ [ -n "${1:-}" ] && ACTION_ERR_LOG="${ACTION_ERR_LOG}${ACTION_ERR_LOG:+\\n}$1"; }
+add_file(){
+  local f="${1:-}"; [ -z "$f" ] && return 0
+  case ",$TARGET_FILE," in *,"$f",*) :;; *) TARGET_FILE="${TARGET_FILE}${TARGET_FILE:+, }$f";; esac
 }
 
-append_err() {
-  if [ -n "$ERR_LOG" ]; then
-    ERR_LOG="${ERR_LOG}\n$1"
+# 주석/공백 제외 root 라인 존재
+has_root(){ [ -f "$1" ] && grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$1" 2>/dev/null | grep -qEx '[[:space:]]*root[[:space:]]*'; }
+
+ensure_file(){ [ -f "$1" ] || { touch "$1" 2>/dev/null || return 1; }; return 0; }
+
+# blacklist: root 없으면 추가(또는 #root 해제)
+ensure_root_present(){
+  local f="$1"; ensure_file "$f" || return 1
+  if has_root "$f"; then return 0; fi
+  if grep -qE '^[[:space:]]*#root[[:space:]]*$' "$f" 2>/dev/null; then
+    sed -i -E 's/^[[:space:]]*#root[[:space:]]*$/root/' "$f" 2>/dev/null || return 1
   else
-    ERR_LOG="$1"
-  fi
-}
-
-# (Blacklist) root 차단 추가
-block_root_blacklist() {
-  local file="$1"
-  [ -z "$file" ] && return 1
-
-  if [ ! -f "$file" ]; then
-    touch "$file" 2>/dev/null || return 1
-  fi
-
-  # 주석/공백 제외하고 root가 없으면 추가(또는 #root 주석 해제)
-  if ! grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$file" 2>/dev/null | grep -qx "root"; then
-    if grep -qE '^[[:space:]]*#root[[:space:]]*$' "$file" 2>/dev/null; then
-      sed -i -E 's/^[[:space:]]*#root[[:space:]]*$/root/' "$file" 2>/dev/null || return 1
-      MODIFIED=1
-      return 0
-    else
-      echo "root" >> "$file" 2>/dev/null || return 1
-      MODIFIED=1
-      return 0
-    fi
+    echo "root" >> "$f" 2>/dev/null || return 1
   fi
   return 0
 }
 
-# (Whitelist) root 허용 제거
-remove_root_whitelist() {
-  local file="$1"
-  [ -z "$file" ] && return 1
-  [ -f "$file" ] || { touch "$file" 2>/dev/null || return 1; }
-
-  if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$file" 2>/dev/null | grep -qx "root"; then
-    sed -i -E '/^[[:space:]]*root[[:space:]]*$/d' "$file" 2>/dev/null || return 1
-    MODIFIED=1
+# whitelist: root 있으면 제거
+ensure_root_absent(){
+  local f="$1"; ensure_file "$f" || return 1
+  if has_root "$f"; then
+    sed -i -E '/^[[:space:]]*root[[:space:]]*$/d' "$f" 2>/dev/null || return 1
   fi
   return 0
 }
 
-get_vsftpd_conf() {
-  if [ -f "/etc/vsftpd.conf" ]; then
-    echo "/etc/vsftpd.conf"
-  elif [ -f "/etc/vsftpd/vsftpd.conf" ]; then
-    echo "/etc/vsftpd/vsftpd.conf"
-  else
-    echo ""
+# vsftpd/proftpd 설정값: 마지막 유효 라인
+conf_kv(){
+  local conf="$1" key="$2"
+  grep -iE "^[[:space:]]*${key}[[:space:]]*=" "$conf" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n1 \
+    | sed -E 's/.*=[[:space:]]*//; s/[[:space:]]*$//' | tr -d '\r'
+}
+upper(){ echo "${1:-}" | tr '[:lower:]' '[:upper:]'; }
+
+need_root(){
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    REASON_LINE="root 권한이 아니어서 조치를 적용할 수 없어 조치가 완료되지 않았습니다. 중단합니다."
+    DETAIL_CONTENT="sudo로 실행해야 합니다."
+    return 1
   fi
+  return 0
 }
 
-# root 권한 확인
-if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  IS_SUCCESS=0
-  REASON_LINE="root 권한이 아니어서 ftpusers(root 접속 제한) 설정을 적용할 수 없어 조치를 중단합니다."
-  DETAIL_CONTENT="sudo로 실행해야 합니다."
-else
-  # === vsftpd 분기 ===
-  VSFTPD_CONF="$(get_vsftpd_conf)"
-  if command -v vsftpd >/dev/null 2>&1 || [ -n "$VSFTPD_CONF" ] || (command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -qiE '^vsftpd\.service'); then
-    if [ -n "$VSFTPD_CONF" ] && [ -f "$VSFTPD_CONF" ]; then
-      # userlist_enable / userlist_deny 값(마지막 설정 우선)
-      USERLIST_ENABLE="$(grep -Ei '^[[:space:]]*userlist_enable[[:space:]]*=' "$VSFTPD_CONF" 2>/dev/null | tail -n 1 | awk -F= '{print tolower($2)}' | tr -d '[:space:]')"
-      USERLIST_DENY="$(grep -Ei '^[[:space:]]*userlist_deny[[:space:]]*=' "$VSFTPD_CONF" 2>/dev/null | tail -n 1 | awk -F= '{print tolower($2)}' | tr -d '[:space:]')"
-      [ -z "$USERLIST_ENABLE" ] && USERLIST_ENABLE="no"
-      [ -z "$USERLIST_DENY" ] && USERLIST_DENY="yes"
+restart_if_exist(){
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
+  systemctl restart "$unit" >/dev/null 2>&1 || add_err "${unit} 재시작 실패"
+}
 
-      # 대상 리스트 파일 결정
-      if [ "$USERLIST_ENABLE" = "yes" ]; then
-        # userlist_enable=YES 인 경우 user_list류
-        if [ -f "/etc/vsftpd.user_list" ]; then
-          LIST_FILE="/etc/vsftpd.user_list"
-        elif [ -f "/etc/vsftpd/user_list" ]; then
-          LIST_FILE="/etc/vsftpd/user_list"
-        else
-          LIST_FILE="/etc/vsftpd.user_list"
-        fi
+need_root || goto_finalize=1
+goto_finalize=${goto_finalize:-0}
 
-        TARGET_FILE="$LIST_FILE"
-        if [ "$USERLIST_DENY" = "no" ]; then
-          # Whitelist: root가 있으면 제거
-          remove_root_whitelist "$LIST_FILE" || append_err "vsftpd whitelist에서 root 제거 실패($LIST_FILE)"
-        else
-          # Blacklist: root 추가/주석해제
-          block_root_blacklist "$LIST_FILE" || append_err "vsftpd blacklist에 root 추가 실패($LIST_FILE)"
-        fi
+VS_CONF=""
+[ -f /etc/vsftpd.conf ] && VS_CONF="/etc/vsftpd.conf"
+[ -z "$VS_CONF" ] && [ -f /etc/vsftpd/vsftpd.conf ] && VS_CONF="/etc/vsftpd/vsftpd.conf"
 
-        append_detail "vsftpd_conf(after)=$VSFTPD_CONF"
-        append_detail "vsftpd_userlist_enable(after)=$USERLIST_ENABLE"
-        append_detail "vsftpd_userlist_deny(after)=$USERLIST_DENY"
-        # 파일 내 root 존재 여부(After)
-        if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$LIST_FILE" 2>/dev/null | grep -qx "root"; then
-          append_detail "vsftpd_list_root(after)=present"
+PF_CONF=""
+[ -f /etc/proftpd/proftpd.conf ] && PF_CONF="/etc/proftpd/proftpd.conf"
+[ -z "$PF_CONF" ] && [ -f /etc/proftpd.conf ] && PF_CONF="/etc/proftpd.conf"
+
+# -------------------------
+# 조치 수행
+# -------------------------
+if [ "$goto_finalize" -eq 0 ]; then
+  # 1) vsftpd
+  if command -v vsftpd >/dev/null 2>&1 || [ -n "$VS_CONF" ]; then
+    if [ -n "$VS_CONF" ] && [ -f "$VS_CONF" ]; then
+      add_file "$VS_CONF"
+      ULE="$(conf_kv "$VS_CONF" userlist_enable)"; ULD="$(conf_kv "$VS_CONF" userlist_deny)"; ULF="$(conf_kv "$VS_CONF" userlist_file)"
+      ULE="$(upper "${ULE:-NO}")"; ULD="$(upper "${ULD:-YES}")"
+
+      if [ "$ULE" = "YES" ]; then
+        LIST="${ULF:-/etc/vsftpd.user_list}"
+        [ -z "${ULF:-}" ] && [ -f /etc/vsftpd/user_list ] && LIST="/etc/vsftpd/user_list"
+        add_file "$LIST"
+        if [ "$ULD" = "NO" ]; then
+          ensure_root_absent "$LIST" || add_err "vsftpd whitelist(root 제거) 실패: $LIST"
         else
-          append_detail "vsftpd_list_root(after)=absent"
+          ensure_root_present "$LIST" || add_err "vsftpd blacklist(root 추가) 실패: $LIST"
         fi
       else
-        # userlist_enable != YES 인 경우 ftpusers류로 root 차단
-        if [ -f "/etc/vsftpd.ftpusers" ]; then
-          LIST_FILE="/etc/vsftpd.ftpusers"
-        else
-          LIST_FILE="/etc/ftpusers"
-        fi
-
-        TARGET_FILE="$LIST_FILE"
-        block_root_blacklist "$LIST_FILE" || append_err "ftpusers(blacklist) root 추가 실패($LIST_FILE)"
-        append_detail "vsftpd_conf(after)=$VSFTPD_CONF"
-        append_detail "vsftpd_userlist_enable(after)=$USERLIST_ENABLE"
-        # 파일 내 root 존재 여부(After)
-        if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$LIST_FILE" 2>/dev/null | grep -qx "root"; then
-          append_detail "ftpusers_root(after)=present"
-        else
-          append_detail "ftpusers_root(after)=absent"
-        fi
+        FU="/etc/vsftpd.ftpusers"; [ ! -f "$FU" ] && FU="/etc/vsftpd/ftpusers"; [ ! -f "$FU" ] && FU="/etc/ftpusers"
+        add_file "$FU"
+        ensure_root_present "$FU" || add_err "vsftpd ftpusers(root 추가) 실패: $FU"
       fi
-
-      # 재시작(있을 때만 시도, 실패는 오류로 기록)
-      if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart vsftpd >/dev/null 2>&1 || append_err "vsftpd 재시작 실패"
-      fi
+      restart_if_exist "vsftpd.service"
     else
-      append_err "vsftpd가 감지되었으나 설정 파일을 찾지 못했습니다."
+      add_err "vsftpd가 감지되었으나 설정 파일을 찾지 못했습니다."
     fi
   fi
 
-  # === proftpd 분기 ===
-  if command -v proftpd >/dev/null 2>&1 || [ -f "/etc/proftpd/proftpd.conf" ] || [ -f "/etc/proftpd.conf" ] || (command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -qiE '^proftpd\.service'); then
-    PROFTPD_CONF=""
-    [ -f "/etc/proftpd/proftpd.conf" ] && PROFTPD_CONF="/etc/proftpd/proftpd.conf"
-    [ -z "$PROFTPD_CONF" ] && [ -f "/etc/proftpd.conf" ] && PROFTPD_CONF="/etc/proftpd.conf"
-
-    if [ -n "$PROFTPD_CONF" ] && [ -f "$PROFTPD_CONF" ]; then
-      # UseFtpUsers off 이면 ftpusers를 안 쓰는 케이스 → RootLogin off 권장
-      if grep -qiE '^[[:space:]]*UseFtpUsers[[:space:]]+off([[:space:]]|$)' "$PROFTPD_CONF" 2>/dev/null; then
-        if ! grep -qiE '^[[:space:]]*RootLogin[[:space:]]+off([[:space:]]|$)' "$PROFTPD_CONF" 2>/dev/null; then
-          echo "RootLogin off" >> "$PROFTPD_CONF" 2>/dev/null || append_err "proftpd RootLogin off 추가 실패($PROFTPD_CONF)"
-          MODIFIED=1
+  # 2) proftpd
+  if command -v proftpd >/dev/null 2>&1 || [ -n "$PF_CONF" ]; then
+    if [ -n "$PF_CONF" ] && [ -f "$PF_CONF" ]; then
+      add_file "$PF_CONF"
+      if grep -qiE '^[[:space:]]*UseFtpUsers[[:space:]]+off([[:space:]]|$)' "$PF_CONF" 2>/dev/null; then
+        if ! grep -qiE '^[[:space:]]*RootLogin[[:space:]]+off([[:space:]]|$)' "$PF_CONF" 2>/dev/null; then
+          echo "RootLogin off" >> "$PF_CONF" 2>/dev/null || add_err "proftpd RootLogin off 추가 실패: $PF_CONF"
         fi
-        TARGET_FILE="$PROFTPD_CONF"
-        append_detail "proftpd_conf(after)=$PROFTPD_CONF"
-        cur_rl="$(grep -Ei '^[[:space:]]*RootLogin[[:space:]]+' "$PROFTPD_CONF" 2>/dev/null | tail -n 1)"
-        [ -n "$cur_rl" ] && append_detail "proftpd_rootlogin(after)=$cur_rl"
       else
-        # ftpusers 기반 차단
-        TARGET_FILE="/etc/ftpusers"
-        block_root_blacklist "/etc/ftpusers" || append_err "proftpd 환경에서 /etc/ftpusers root 차단 실패"
-        if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /etc/ftpusers 2>/dev/null | grep -qx "root"; then
-          append_detail "ftpusers_root(after)=present"
-        else
-          append_detail "ftpusers_root(after)=absent"
+        FU="/etc/ftpusers"; add_file "$FU"
+        ensure_root_present "$FU" || add_err "proftpd ftpusers(root 추가) 실패: $FU"
+        if [ -f /etc/ftpd/ftpusers ]; then
+          add_file "/etc/ftpd/ftpusers"
+          ensure_root_present "/etc/ftpd/ftpusers" || add_err "ftpd/ftpusers(root 추가) 실패: /etc/ftpd/ftpusers"
         fi
       fi
+      restart_if_exist "proftpd.service"
+    else
+      add_err "proftpd가 감지되었으나 설정 파일을 찾지 못했습니다."
+    fi
+  fi
 
-      if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart proftpd >/dev/null 2>&1 || true
+  # 3) 일반 ftpusers(존재 시 보강)
+  if [ -f /etc/ftpusers ]; then
+    add_file "/etc/ftpusers"
+    ensure_root_present "/etc/ftpusers" || add_err "/etc/ftpusers(root 추가) 실패"
+  fi
+  if [ -f /etc/ftpd/ftpusers ]; then
+    add_file "/etc/ftpd/ftpusers"
+    ensure_root_present "/etc/ftpd/ftpusers" || add_err "/etc/ftpd/ftpusers(root 추가) 실패"
+  fi
+
+  # -------------------------
+  # 조치 후 검증(After만 기록)
+  # -------------------------
+  OK=1
+  if [ -n "$VS_CONF" ] && [ -f "$VS_CONF" ]; then
+    ULE="$(upper "$(conf_kv "$VS_CONF" userlist_enable)")"; ULD="$(upper "$(conf_kv "$VS_CONF" userlist_deny)")"; ULF="$(conf_kv "$VS_CONF" userlist_file)"
+    ULE="${ULE:-NO}"; ULD="${ULD:-YES}"
+    add_detail "vsftpd_conf(after)=$VS_CONF"
+    add_detail "vsftpd_userlist_enable(after)=$ULE"
+    add_detail "vsftpd_userlist_deny(after)=$ULD"
+    if [ "$ULE" = "YES" ]; then
+      LIST="${ULF:-/etc/vsftpd.user_list}"
+      [ -z "${ULF:-}" ] && [ -f /etc/vsftpd/user_list ] && LIST="/etc/vsftpd/user_list"
+      add_detail "vsftpd_list_file(after)=$LIST"
+      if [ "$ULD" = "NO" ]; then
+        has_root "$LIST" && OK=0
+        add_detail "vsftpd_list_root(after)=$(has_root "$LIST" && echo present || echo absent)"
+      else
+        has_root "$LIST" || OK=0
+        add_detail "vsftpd_list_root(after)=$(has_root "$LIST" && echo present || echo absent)"
       fi
     else
-      append_err "proftpd가 감지되었으나 설정 파일을 찾지 못했습니다."
+      FU="/etc/vsftpd.ftpusers"; [ ! -f "$FU" ] && FU="/etc/vsftpd/ftpusers"; [ ! -f "$FU" ] && FU="/etc/ftpusers"
+      add_detail "vsftpd_ftpusers_file(after)=$FU"
+      has_root "$FU" || OK=0
+      add_detail "vsftpd_ftpusers_root(after)=$(has_root "$FU" && echo present || echo absent)"
     fi
   fi
 
-  # === 일반 FTP(ftpusers 파일들) ===
-  if [ -f "/etc/ftpusers" ]; then
-    TARGET_FILE="/etc/ftpusers"
-    block_root_blacklist "/etc/ftpusers" || append_err "/etc/ftpusers root 차단 적용 실패"
-    if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /etc/ftpusers 2>/dev/null | grep -qx "root"; then
-      append_detail "ftpusers_root(after)=present"
+  if [ -n "$PF_CONF" ] && [ -f "$PF_CONF" ]; then
+    add_detail "proftpd_conf(after)=$PF_CONF"
+    if grep -qiE '^[[:space:]]*UseFtpUsers[[:space:]]+off([[:space:]]|$)' "$PF_CONF" 2>/dev/null; then
+      RL="$(grep -Ei '^[[:space:]]*RootLogin[[:space:]]+' "$PF_CONF" 2>/dev/null | grep -v '^[[:space:]]*#' | tail -n1)"
+      echo "$RL" | grep -qi 'off' || OK=0
+      add_detail "proftpd_rootlogin(after)=${RL:-RootLogin not_set}"
     else
-      append_detail "ftpusers_root(after)=absent"
+      FU="/etc/ftpusers"
+      add_detail "proftpd_ftpusers_file(after)=$FU"
+      has_root "$FU" || OK=0
+      add_detail "proftpd_ftpusers_root(after)=$(has_root "$FU" && echo present || echo absent)"
     fi
   fi
 
-  if [ -f "/etc/ftpd/ftpusers" ]; then
-    TARGET_FILE="/etc/ftpd/ftpusers"
-    block_root_blacklist "/etc/ftpd/ftpusers" || append_err "/etc/ftpd/ftpusers root 차단 적용 실패"
-    if grep -Ev '^[[:space:]]*#|^[[:space:]]*$' /etc/ftpd/ftpusers 2>/dev/null | grep -qx "root"; then
-      append_detail "ftpd_ftpusers_root(after)=present"
-    else
-      append_detail "ftpd_ftpusers_root(after)=absent"
-    fi
-  fi
+  if [ -n "$ACTION_ERR_LOG" ]; then OK=0; add_detail "action_error(after)=$ACTION_ERR_LOG"; fi
 
-  # === 최종 판정 ===
-  if [ -n "$ERR_LOG" ]; then
+  if [ "$OK" -eq 1 ]; then
+    IS_SUCCESS=1
+    REASON_LINE="FTP 서비스의 root 접속 제한 설정이 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+  else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 일부 설정 적용 또는 검증에 실패해 조치가 완료되지 않았습니다."
-    append_detail "$ERR_LOG"
-  else
-    # 핵심 검증: (대상 파일이 존재하는 경우) root가 금지 목록에 들어가 있거나(root present) / 화이트리스트에서 제거(root absent) 상태면 OK
-    # 여기서는 DETAIL_CONTENT에 after 상태를 기록했으므로, 최소 하나라도 root 제한이 반영되면 성공으로 본다.
-    if echo "$DETAIL_CONTENT" | grep -qE '(root\(after\)=present|root\(after\)=absent|_root\(after\)=present|_root\(after\)=absent)'; then
-      IS_SUCCESS=1
-      if [ "$MODIFIED" -eq 1 ]; then
-        REASON_LINE="FTP 서비스의 root 접속 제한 설정이 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      else
-        REASON_LINE="FTP 서비스의 root 접속 제한 설정이 이미 적용되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      fi
-    else
-      IS_SUCCESS=0
-      REASON_LINE="조치를 수행했으나 root 접속 제한 설정이 확인되지 않아 조치가 완료되지 않았습니다."
-    fi
+    REASON_LINE="조치를 수행했으나 root 접속 제한 설정이 일부 확인되지 않아 조치가 완료되지 않았습니다."
   fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재(조치 후) 설정값)
+# target_file 기본값 보정
+[ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/ftpusers, /etc/ftpd/ftpusers, /etc/vsftpd.user_list, /etc/vsftpd/user_list, /etc/vsftpd.ftpusers, /etc/vsftpd/ftpusers, /etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf, /etc/proftpd/proftpd.conf, /etc/proftpd.conf"
+
+# raw_evidence(After만)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE\n${DETAIL_CONTENT:-none}",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "action_date": "$ACTION_DATE",

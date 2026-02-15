@@ -19,6 +19,8 @@
 
 # [진단] U-55 FTP 계정 shell 제한
 
+set -u
+
 # 기본 변수
 ID="U-55"
 STATUS="PASS"
@@ -26,53 +28,49 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 PASSWD_FILE="/etc/passwd"
 TARGET_FILE="$PASSWD_FILE"
-CHECK_COMMAND='[ -f /etc/passwd ] && grep -nE "^ftp:" /etc/passwd || echo "ftp_account_not_found"'
+CHECK_COMMAND="awk -F: '\$1==\"ftp\"{print NR\"|\"\$7\"|\"\$0; exit}' $PASSWD_FILE"
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 
-VULNERABLE=0
-FTP_LINE=""
+FTP_REC=""
+FTP_LINENO=""
 FTP_SHELL=""
-SHELL_OK=0
+FTP_ENTRY=""
 
-# 파일 존재 여부
+json_escape() {
+  # 따옴표/역슬래시/줄바꿈 escape
+  echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; :a;N;$!ba;s/\n/\\n/g'
+}
+
+# 1) /etc/passwd 존재 확인
 if [ ! -f "$PASSWD_FILE" ]; then
   STATUS="FAIL"
-  REASON_LINE="/etc/passwd 파일이 존재하지 않아 계정 정보 확인 및 접근 통제가 보장되지 않으므로 취약합니다. /etc/passwd 파일을 복구한 뒤 ftp 계정의 로그인 쉘 제한 여부를 점검해야 합니다."
+  REASON_LINE="/etc/passwd 파일이 존재하지 않아 계정 확인이 불가하므로 취약합니다. /etc/passwd를 복구한 뒤 ftp 계정의 로그인 쉘 제한 여부를 점검해야 합니다."
   DETAIL_CONTENT="file_not_found"
 else
-  # ftp 계정 라인 수집(첫 1개만)
-  FTP_LINE="$(grep -nE '^ftp:' "$PASSWD_FILE" 2>/dev/null | head -n1)"
+  # 2) ftp 계정 1건 확인 (lineNo|shell|full_entry)
+  FTP_REC="$(awk -F: '$1=="ftp"{print NR"|" $7 "|" $0; exit}' "$PASSWD_FILE" 2>/dev/null)"
 
-  if [ -z "$FTP_LINE" ]; then
+  if [ -z "$FTP_REC" ]; then
     STATUS="PASS"
-    REASON_LINE="ftp 계정이 존재하지 않아 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="/etc/passwd에 ftp 기본 계정이 존재하지 않아 이 항목에 대한 보안 위협이 없습니다."
     DETAIL_CONTENT="ftp_account=not_found"
   else
-    # 7번째 필드(로그인 쉘) 추출
-    # 라인 형식: lineNo:ftp:x:...
-    FTP_SHELL="$(echo "$FTP_LINE" | cut -d: -f8 2>/dev/null)"
+    IFS='|' read -r FTP_LINENO FTP_SHELL FTP_ENTRY <<< "$FTP_REC"
 
     case "$FTP_SHELL" in
       "/bin/false"|"/sbin/nologin"|"/usr/sbin/nologin")
-        SHELL_OK=1
+        STATUS="PASS"
+        REASON_LINE="/etc/passwd의 ftp 계정 로그인 쉘이 '$FTP_SHELL'(으)로 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
         ;;
       *)
-        SHELL_OK=0
+        STATUS="FAIL"
+        REASON_LINE="/etc/passwd의 ftp 계정 로그인 쉘이 '$FTP_SHELL'(으)로 설정되어 있어 취약합니다. 조치: usermod -s /sbin/nologin ftp (또는 /bin/false)로 로그인 쉘을 제한하세요."
         ;;
     esac
 
-    if [ "$SHELL_OK" -eq 1 ]; then
-      STATUS="PASS"
-      REASON_LINE="ftp 계정의 로그인 쉘이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      STATUS="FAIL"
-      VULNERABLE=1
-      REASON_LINE="ftp 계정의 로그인 쉘이 제한되지 않아 불필요한 로그인 접근이 가능하므로 취약합니다. ftp 계정의 쉘을 /sbin/nologin 또는 /bin/false 등 로그인 불가 쉘로 설정해야 합니다."
-    fi
-
-    DETAIL_CONTENT="ftp_entry=$FTP_LINE (ftp_shell=$FTP_SHELL shell_ok=$SHELL_OK)"
+    DETAIL_CONTENT="ftp_entry(line=$FTP_LINENO)=$FTP_ENTRY"
   fi
 fi
 
@@ -80,20 +78,18 @@ fi
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE")"
 
 # scan_history 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "status": "$STATUS",

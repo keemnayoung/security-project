@@ -26,8 +26,16 @@ TARGET_FILE="/etc/inetd.conf
 /etc/xinetd.d/*
 systemd(rpc related services)"
 
-# NOTE: rpc 관련 서비스는 환경에 따라 필수(NFS 등)일 수 있으므로,
-# 무분별한 전체 중지는 위험. 대표적으로 불필요로 분류되는 항목 위주로 존재할 때만 조치.
+# 가이드 기반 불필요 RPC 서비스(핵심 목록)
+# ※ 환경에 따라 존재하지 않을 수 있음(존재할 때만 조치/검증)
+UNNEEDED_RPC_SERVICES=(
+  "rpc.cmsd" "rpc.ttdbserverd" "sadmind" "rusersd" "walld" "sprayd" "rstatd"
+  "rpc.nisd" "rexd" "rpc.pcnfsd" "rpc.statd" "rpc.ypupdated" "rpc.rquotad"
+  "kcms_server" "cachefsd"
+)
+
+# systemd에서 현실적으로 자주 매칭되는 RPC 유닛 후보(환경 의존/NFS 등 필요할 수 있음)
+# NOTE: 무분별한 전체 중지는 위험. "불필요로 분류되는 것 + 존재할 때만" 조치.
 RPC_UNITS_CANDIDATES=(
   "rpcbind.service"
   "rpcbind.socket"
@@ -39,21 +47,26 @@ RPC_UNITS_CANDIDATES=(
 )
 
 CHECK_COMMAND='
-( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nE "^[[:space:]]*rpc([[:space:]]|$)" ) || echo "inetd_no_active_rpc_lines";
+# inetd(after)
+( [ -f /etc/inetd.conf ] && echo "## inetd(after)" && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | egrep -n "^[[:space:]]*(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" | head -n 50 ) || echo "inetd_no_active_unneeded_rpc_lines_or_not_found";
+# xinetd(after)
 if [ -d /etc/xinetd.d ]; then
+  echo "## xinetd(after)"
   for f in /etc/xinetd.d/*; do
     [ -f "$f" ] || continue
-    ( echo "$f" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$f" 2>/dev/null ) || continue
-    echo "xinetd_rpc_file:$f"
-    grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1
+    egrep -qi "^[[:space:]]*service[[:space:]]+(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" "$f" 2>/dev/null || continue
+    echo "xinetd_file:$f"
+    grep -nEi "^[[:space:]]*service[[:space:]]+|^[[:space:]]*disable[[:space:]]*=" "$f" 2>/dev/null | head -n 30
   done
 else
   echo "xinetd_dir_not_found"
 fi;
+# systemd(after)
 (command -v systemctl >/dev/null 2>&1 && (
-  systemctl list-unit-files 2>/dev/null | grep -Ei "^rpc.*\.(service|socket)[[:space:]]" | head -n 50 || echo "no_rpc_unit_files";
+  echo "## systemd(after)"
   for u in rpcbind.service rpcbind.socket rpc-statd.service rpc-statd-notify.service rpc-gssd.service rpc-svcgssd.service rpc-idmapd.service; do
-    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
+    systemctl list-unit-files 2>/dev/null | awk "{print \$1}" | grep -qx "$u" || continue
+    echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
   done
 )) || echo "systemctl_not_found"
 '
@@ -63,11 +76,6 @@ DETAIL_CONTENT=""
 ACTION_ERR_LOG=""
 MODIFIED=0
 FAIL_FLAG=0
-
-# (필수) root 권한 권장 안내(실패 원인 명확화용)
-if [ "$(id -u)" -ne 0 ]; then
-  ACTION_ERR_LOG="(주의) root 권한이 아니면 sed/systemctl 조치가 실패할 수 있습니다."
-fi
 
 append_err() {
   if [ -n "$ACTION_ERR_LOG" ]; then
@@ -87,20 +95,20 @@ append_detail() {
 
 restart_inetd_if_exists() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qE "^inetd\.service" || return 0
+  systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "inetd.service" || return 0
   systemctl restart inetd 2>/dev/null || append_err "systemctl restart inetd 실패"
 }
 
 restart_xinetd_if_exists() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qE "^xinetd\.service" || return 0
+  systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "xinetd.service" || return 0
   systemctl restart xinetd 2>/dev/null || append_err "systemctl restart xinetd 실패"
 }
 
 disable_systemd_unit_if_exists() {
   local unit="$1"
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl list-unit-files 2>/dev/null | grep -qiE "^${unit}[[:space:]]" || return 0
+  systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "$unit" || return 0
 
   systemctl stop "$unit" 2>/dev/null || append_err "systemctl stop ${unit} 실패"
   systemctl disable "$unit" 2>/dev/null || append_err "systemctl disable ${unit} 실패"
@@ -108,31 +116,79 @@ disable_systemd_unit_if_exists() {
   MODIFIED=1
 }
 
+# (필수) root 권한 체크: 조치 실패 원인 명확화
+if [ "$(id -u)" -ne 0 ]; then
+  FAIL_FLAG=1
+  REASON_LINE="root 권한이 아니어서 서비스 설정 변경(sed/systemctl 등)을 수행할 수 없어 조치가 완료되지 않았습니다."
+  append_detail "현재 실행 UID=$(id -u) (root 권한으로 재실행이 필요합니다.)"
+else
+
 ########################################
-# 1) inetd: /etc/inetd.conf 내 rpc 시작 라인 주석 처리(활성 라인만)
+# 1) inetd: /etc/inetd.conf 내 '가이드 불필요 서비스' 활성 라인만 주석 처리
 ########################################
 if [ -f "/etc/inetd.conf" ]; then
-  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*rpc([[:space:]]|$)"; then
-    cp -a /etc/inetd.conf "/etc/inetd.conf.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "inetd.conf 백업 실패"
-    sed -i 's/^\([[:space:]]*rpc\)/#\1/g' /etc/inetd.conf 2>/dev/null || append_err "inetd.conf rpc 라인 주석 처리 실패"
-    MODIFIED=1
-    restart_inetd_if_exists
-  fi
+  INETD_NEED_RESTART=0
+  for svc in "${UNNEEDED_RPC_SERVICES[@]}"; do
+    if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*${svc}([[:space:]]|$)"; then
+      cp -a /etc/inetd.conf "/etc/inetd.conf.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "inetd.conf 백업 실패"
+      # 해당 서비스 시작 라인만 주석 처리
+      sed -i -E "s/^([[:space:]]*)(${svc})([[:space:]]|$)/\1#\2\3/" /etc/inetd.conf 2>/dev/null || append_err "inetd.conf ${svc} 라인 주석 처리 실패"
+      MODIFIED=1
+      INETD_NEED_RESTART=1
+    fi
+  done
+  [ "$INETD_NEED_RESTART" -eq 1 ] && restart_inetd_if_exists
 fi
 
 ########################################
-# 2) xinetd: /etc/xinetd.d 내 rpc 관련 파일 disable=no -> disable=yes
+# 2) xinetd: /etc/xinetd.d 내 '가이드 불필요 서비스' 블록을 disable=yes로 고정
+#    - disable=no면 yes로 변경
+#    - disable 항목이 없으면 해당 서비스 블록에 disable=yes 삽입(필수 보강)
 ########################################
 XINETD_CHANGED=0
 if [ -d "/etc/xinetd.d" ]; then
   for conf in /etc/xinetd.d/*; do
     [ -f "$conf" ] || continue
-    # 파일명에 rpc 포함 또는 service 라인에 rpc 포함(보수적)
-    if echo "$conf" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$conf" 2>/dev/null; then
-      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-        cp -a "$conf" "${conf}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "$(basename "$conf") 백업 실패"
-        sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' "$conf" 2>/dev/null \
-          || append_err "$(basename "$conf") disable=yes 변경 실패"
+
+    # 해당 파일이 가이드 불필요 서비스 중 하나를 정의하는지 확인
+    MATCHED_SVC=""
+    for svc in "${UNNEEDED_RPC_SERVICES[@]}"; do
+      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*service[[:space:]]+${svc}([[:space:]]|$)"; then
+        MATCHED_SVC="$svc"
+        break
+      fi
+    done
+    [ -z "$MATCHED_SVC" ] && continue
+
+    cp -a "$conf" "${conf}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || append_err "$(basename "$conf") 백업 실패"
+
+    # 2-1) disable=no -> yes
+    if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+      sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' "$conf" 2>/dev/null \
+        || append_err "$(basename "$conf") disable=yes 변경 실패"
+      XINETD_CHANGED=1
+      MODIFIED=1
+    else
+      # 2-2) disable 항목이 아예 없으면 해당 service 블록 안에 disable=yes 삽입
+      #      (블록 단위 최소 삽입: service <svc> ... { ... } 내 '}' 직전에 추가)
+      if ! grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*="; then
+        awk -v SVC="$MATCHED_SVC" '
+          BEGIN{inblk=0; has_disable=0}
+          {
+            line=$0
+            if (line ~ /^[[:space:]]*service[[:space:]]+/) {
+              inblk = (tolower(line) ~ ("^[[:space:]]*service[[:space:]]+" tolower(SVC) "([[:space:]]|$)")) ? 1 : 0
+              has_disable=0
+            }
+            if (inblk==1 && tolower(line) ~ /^[[:space:]]*disable[[:space:]]*=/) { has_disable=1 }
+            if (inblk==1 && line ~ /^[[:space:]]*}[[:space:]]*$/) {
+              if (has_disable==0) { print "    disable = yes" }
+              inblk=0
+            }
+            print line
+          }
+        ' "$conf" > "${conf}.tmp_u42" 2>/dev/null && mv -f "${conf}.tmp_u42" "$conf" 2>/dev/null \
+          || append_err "$(basename "$conf") disable=yes 삽입 실패"
         XINETD_CHANGED=1
         MODIFIED=1
       fi
@@ -140,66 +196,70 @@ if [ -d "/etc/xinetd.d" ]; then
   done
 fi
 
-if [ "$XINETD_CHANGED" -eq 1 ]; then
-  restart_xinetd_if_exists
-fi
+[ "$XINETD_CHANGED" -eq 1 ] && restart_xinetd_if_exists
 
 ########################################
 # 3) systemd: 대표 RPC 유닛 stop/disable/mask(존재할 때만)
-#    ※ rpcbind는 NFS 등에 필요할 수 있어, 불필요한 경우에만 적용 권고.
+#    ※ rpcbind 등은 NFS 등에 필요할 수 있으므로, 운영 환경에서는 의존성 확인 필요.
 ########################################
 for u in "${RPC_UNITS_CANDIDATES[@]}"; do
   disable_systemd_unit_if_exists "$u"
 done
 
+fi # root check else
+
 ########################################
-# 4) 조치 후 검증 + detail(현재/조치 후 상태만)
+# 4) 조치 후 검증 + detail(조치 후/현재 상태만)
 ########################################
-# inetd 활성 rpc 라인 남아있으면 실패
+# 4-1) inetd: 불필요 서비스 라인 남아있으면 실패
 INETD_POST="inetd_conf_not_found"
 if [ -f "/etc/inetd.conf" ]; then
-  INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*rpc([[:space:]]|$)' | head -n 5)"
-  [ -z "$INETD_POST" ] && INETD_POST="no_active_rpc_lines"
+  INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | egrep -n "^[[:space:]]*(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" | head -n 10)"
+  [ -z "$INETD_POST" ] && INETD_POST="no_active_unneeded_rpc_lines"
 fi
-[ "$INETD_POST" != "no_active_rpc_lines" ] && FAIL_FLAG=1
-append_detail "inetd_active_rpc_lines(after)=$INETD_POST"
+[ "$INETD_POST" != "no_active_unneeded_rpc_lines" ] && [ "$INETD_POST" != "inetd_conf_not_found" ] && FAIL_FLAG=1
+append_detail "inetd_unneeded_rpc_lines(after)=$INETD_POST"
 
-# xinetd rpc 파일 중 disable=no 남아있으면 실패(존재하는 것만)
+# 4-2) xinetd: 불필요 서비스 블록에서 disable=no 남아있으면 실패 / disable 미설정이면 실패로 간주(명시 권장)
 XINETD_BAD=0
 XINETD_POST_SUMMARY=""
 if [ -d "/etc/xinetd.d" ]; then
   for conf in /etc/xinetd.d/*; do
     [ -f "$conf" ] || continue
-    if echo "$conf" | grep -qi "rpc" || grep -qiE "^[[:space:]]*service[[:space:]]+.*rpc" "$conf" 2>/dev/null; then
-      line="$(grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
-      [ -z "$line" ] && line="disable_setting_not_found"
-      XINETD_POST_SUMMARY="${XINETD_POST_SUMMARY}$(basename "$conf"):${line}; "
-      if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
-        XINETD_BAD=1
-      fi
+    # 대상 서비스인지 확인
+    egrep -qi "^[[:space:]]*service[[:space:]]+(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" "$conf" 2>/dev/null || continue
+
+    dis_line="$(grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
+    [ -z "$dis_line" ] && dis_line="disable_setting_not_found"
+    XINETD_POST_SUMMARY="${XINETD_POST_SUMMARY}$(basename "$conf"):${dis_line}; "
+
+    if grep -Ev "^[[:space:]]*#" "$conf" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+      XINETD_BAD=1
+    fi
+    # disable 항목이 없으면(명시 미흡)도 위험으로 보고 실패 처리(가이드의 disable=yes 권고 반영)
+    if echo "$dis_line" | grep -qi "disable_setting_not_found"; then
+      XINETD_BAD=1
     fi
   done
 else
   XINETD_POST_SUMMARY="xinetd_dir_not_found"
 fi
-[ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_rpc_related_xinetd_files"
-append_detail "xinetd_rpc_disable_settings(after)=$XINETD_POST_SUMMARY"
+[ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_unneeded_rpc_xinetd_files"
+append_detail "xinetd_unneeded_rpc_disable_settings(after)=$XINETD_POST_SUMMARY"
 [ "$XINETD_BAD" -eq 1 ] && FAIL_FLAG=1
 
-# systemd enabled/active면 실패
+# 4-3) systemd: 존재하는 후보 유닛만 enabled/active면 실패(조건부 검증)
 if command -v systemctl >/dev/null 2>&1; then
   for u in "${RPC_UNITS_CANDIDATES[@]}"; do
-    if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-      en="$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
-      ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
-      append_detail "${u}(after) enabled=$en active=$ac"
-      echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
-      echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
-    fi
+    systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "$u" || continue
+    en="$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
+    ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
+    append_detail "${u}(after) enabled=$en active=$ac"
+    echo "$en" | grep -qiE "^enabled$" && FAIL_FLAG=1
+    echo "$ac" | grep -qiE "^active$" && FAIL_FLAG=1
   done
 else
-  append_detail "systemctl_not_found"
-  FAIL_FLAG=1
+  append_detail "systemctl_not_found (systemd 기반 조치/검증은 수행하지 않았습니다.)"
 fi
 
 # 최종 판정
@@ -208,13 +268,14 @@ if [ "$FAIL_FLAG" -eq 0 ]; then
   if [ "$MODIFIED" -eq 1 ]; then
     REASON_LINE="불필요한 RPC 서비스가 비활성화되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   else
-    REASON_LINE="RPC 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="불필요한 RPC 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
   fi
 else
   IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 RPC 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  [ -z "$REASON_LINE" ] && REASON_LINE="조치를 수행했으나 불필요한 RPC 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
 fi
 
+# 에러 로그는 detail에만 추가(이전 설정은 포함하지 않음)
 if [ -n "$ACTION_ERR_LOG" ]; then
   DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
 fi
