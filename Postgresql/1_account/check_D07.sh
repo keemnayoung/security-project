@@ -41,7 +41,7 @@ if [ "$STATUS" = "PASS" ]; then
   DETAIL_CONTENT="PostgreSQL 프로세스가 root 계정으로 실행되지 않습니다."
 else
   REASON_LINE="D-07 취약: ${EVIDENCE}"
-  DETAIL_CONTENT="PostgreSQL 서비스는 root 권한이 아닌 전용 계정(postgres)으로 실행되도록 구성해야 합니다. 실행 계정 변경 후 서비스 재기동으로 적용 여부를 확인하십시오."
+  DETAIL_CONTENT="PostgreSQL 서비스는 root 권한이 아닌 전용 계정(postgres)으로 실행되도록 구성해야 합니다. 실행 계정 변경 후 시스템 재기동 명령어 sudo systemctl reload postgresql; 로 적용 여부를 확인하십시오."
 fi
 
 escape_json_str() {

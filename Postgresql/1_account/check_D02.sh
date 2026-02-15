@@ -65,7 +65,7 @@ elif [ -z "$CANDIDATES" ]; then
 else
   STATUS="FAIL"
   EVIDENCE="불필요 계정 후보: $(echo "$CANDIDATES" | tr '\n' ',' | sed 's/,$//')"
-  GUIDE_MSG="위 후보 계정들을 DROP ROLE 또는 ALTER ROLE <계정명> NOLOGIN으로 조치하겠습니다."
+  GUIDE_MSG="위 후보 계정들을 DROP ROLE <계정명>; 또는 ALTER ROLE <계정명> NOLOGIN;으로 조치해야합니다."
 fi
 
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"

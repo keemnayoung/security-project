@@ -80,7 +80,7 @@ elif [ -z "$EXTRA_ADMINS" ]; then
 else
   STATUS="FAIL"
   EVIDENCE="허용 목록 외 SUPERUSER 계정: $(echo "$EXTRA_ADMINS" | tr '\n' ',' | sed 's/,$//')"
-  GUIDE_MSG="불필요 계정에 대해 ALTER ROLE <계정명> NOSUPERUSER ... 로 관리자 권한을 회수하십시오."
+  GUIDE_MSG="불필요 계정에 대해 ALTER ROLE <계정명> NOSUPERUSER; ALTER ROLE <계정명> NOCREATEROLE; ALTER ROLE <계정명> NOCREATEDB; ALTER ROLE <계정명> NOREPLICATION; ALTER ROLE <계정명> NOBYPASSRLS; 로 관리자 권한을 회수하십시오."
 fi
 
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
