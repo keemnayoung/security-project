@@ -15,7 +15,6 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
 ID="U-22"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -36,17 +35,13 @@ if [ -f "$TARGET_FILE" ]; then
   GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
   PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-  # stat 실패/값 누락 시: 조치 불가로 판단(필수 보강)
+  # stat 실패/값 누락 시: 조치 불가로 판단
   if [ -z "$OWNER" ] || [ -z "$GROUP" ] || [ -z "$PERM" ]; then
     IS_SUCCESS=0
     REASON_LINE="/etc/services 파일의 소유자/그룹/권한 정보를 확인할 수 없어(stat 실패 등) 조치를 정상적으로 수행할 수 없습니다. 파일 상태 및 접근 권한을 확인한 뒤 소유자를 root(또는 bin/sys), 권한을 644 이하로 설정해야 합니다."
     DETAIL_CONTENT="stat_failed_or_no_output"
   else
-    BEFORE_OWNER="$OWNER"
-    BEFORE_GROUP="$GROUP"
-    BEFORE_PERM="$PERM"
-
-    # 소유자 조치: root/bin/sys 허용이므로 그 외에만 변경(필수 보강)
+    # 소유자 조치: root/bin/sys 허용이므로 그 외에만 변경
     if [[ ! "$OWNER" =~ ^(root|bin|sys)$ ]]; then
       chown root "$TARGET_FILE" 2>/dev/null
       MODIFIED=1
@@ -62,12 +57,10 @@ if [ -f "$TARGET_FILE" ]; then
     AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    DETAIL_CONTENT="before_owner=$BEFORE_OWNER
-before_group=$BEFORE_GROUP
-before_perm=$BEFORE_PERM
-after_owner=$AFTER_OWNER
-after_group=$AFTER_GROUP
-after_perm=$AFTER_PERM
+    # 조치 후(after) 또는 현재 상태만 기록 (before 제거)
+    DETAIL_CONTENT="owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
 modified=$MODIFIED"
 
     if [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -le 644 ]; then
