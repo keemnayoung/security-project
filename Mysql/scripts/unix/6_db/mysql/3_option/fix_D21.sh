@@ -17,7 +17,11 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
-ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+
+# 인가 예외(기관 정책에 따라 확장)
+ALLOWED_GRANT_USERS_CSV="${ALLOWED_GRANT_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
+ALLOWED_GRANT_PRINCIPALS_CSV="${ALLOWED_GRANT_PRINCIPALS_CSV:-root@localhost,root@127.0.0.1,root@::1}"
+ALLOWED_GRANT_GRANTEES_CSV="${ALLOWED_GRANT_GRANTEES_CSV:-}"
 
 run_mysql() {
   local sql="$1"
@@ -26,133 +30,109 @@ run_mysql() {
   else
     $MYSQL_CMD "$sql" 2>/dev/null
   fi
+  return $?
 }
 
 in_csv() {
-  local needle="$1"
-  local csv="$2"
+  local needle="$1" csv="$2"
+  needle="$(printf "%s" "$needle" | tr '[:upper:]' '[:lower:]')"
+  needle="${needle//[[:space:]]/}"
   IFS=',' read -r -a arr <<< "$csv"
   for item in "${arr[@]}"; do
-    [[ "$needle" == "$item" ]] && return 0
+    item="$(printf "%s" "$item" | tr '[:upper:]' '[:lower:]')"
+    item="${item//[[:space:]]/}"
+    [[ -n "$item" && "$needle" == "$item" ]] && return 0
   done
   return 1
 }
 
-sql_escape() {
-  local s="$1"
-  s="${s//\'/\'\'}"
-  printf "%s" "$s"
+extract_user_from_grantee() { echo "$1" | sed -E "s/^'([^']+)'.*$/\\1/"; }
+extract_host_from_grantee() { echo "$1" | sed -E "s/^'[^']+'@'([^']+)'$/\\1/"; }
+
+is_allowed_grantee() {
+  local grantee="$1"
+  local user host principal
+
+  if [[ -n "$ALLOWED_GRANT_GRANTEES_CSV" ]] && in_csv "$grantee" "$ALLOWED_GRANT_GRANTEES_CSV"; then
+    return 0
+  fi
+
+  user="$(extract_user_from_grantee "$grantee")"
+  host="$(extract_host_from_grantee "$grantee")"
+  principal="${user}@${host}"
+  in_csv "$user" "$ALLOWED_GRANT_USERS_CSV" && return 0
+  in_csv "$principal" "$ALLOWED_GRANT_PRINCIPALS_CSV" && return 0
+  return 1
 }
 
-# check_D21.sh와 동일한 기준(mysql.user.Grant_priv='Y')으로 대상 계정을 식별합니다.
-QUERY="SELECT User,Host FROM mysql.user WHERE Grant_priv='Y';"
-ROWS="$(run_mysql "$QUERY")"
-RC=$?
-if [[ $RC -eq 124 ]]; then
-  ACTION_LOG="조치 중단: 권한 조회 시간 초과"
-  EVIDENCE="mysql.user 조회가 ${MYSQL_TIMEOUT}초를 초과했습니다."
-elif [[ $RC -ne 0 ]]; then
-  ACTION_LOG="조치 실패: 권한 조회 실패"
+Q_IS_TABLE="SELECT GRANTEE,'TABLE' AS SCOPE, CONCAT(TABLE_SCHEMA,'.',TABLE_NAME) AS OBJ, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.table_privileges WHERE IS_GRANTABLE='YES';"
+Q_IS_SCHEMA="SELECT GRANTEE,'SCHEMA' AS SCOPE, TABLE_SCHEMA AS OBJ, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.schema_privileges WHERE IS_GRANTABLE='YES';"
+Q_IS_GLOBAL="SELECT GRANTEE,'GLOBAL' AS SCOPE, '*.*' AS OBJ, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.user_privileges WHERE IS_GRANTABLE='YES' OR PRIVILEGE_TYPE='GRANT OPTION';"
+
+ROWS_T="$(run_mysql "$Q_IS_TABLE")"; RC_T=$?
+ROWS_S="$(run_mysql "$Q_IS_SCHEMA")"; RC_S=$?
+ROWS_G="$(run_mysql "$Q_IS_GLOBAL")"; RC_G=$?
+
+FALLBACK_USED="N"
+if [[ $RC_T -ne 0 || $RC_S -ne 0 || $RC_G -ne 0 ]]; then
+  # 제한적 fallback: mysql.user.Grant_priv 기반
+  FALLBACK_USED="Y"
+  ROWS_T=""
+  ROWS_S=""
+  ROWS_G="$(run_mysql "SELECT CONCAT(\"'\",User,\"'@'\",Host,\"'\") AS GRANTEE,'GLOBAL' AS SCOPE,'*.*' AS OBJ,'GRANT OPTION' AS PRIVILEGE_TYPE,'YES' AS IS_GRANTABLE FROM mysql.user WHERE Grant_priv='Y';")"
+  RC_G=$?
+fi
+
+if [[ $RC_T -eq 124 || $RC_S -eq 124 || $RC_G -eq 124 ]]; then
+  ACTION_RESULT="MANUAL_REQUIRED"
+  ACTION_LOG="수동 조치 안내: GRANT OPTION(WITH GRANT OPTION) 조회 시간 초과. 접속/권한/부하 확인 후 인가되지 않은 GRANT OPTION을 회수하십시오."
+  EVIDENCE="조회가 ${MYSQL_TIMEOUT}초를 초과했습니다."
+elif [[ $RC_G -ne 0 ]]; then
+  ACTION_RESULT="MANUAL_REQUIRED"
+  ACTION_LOG="수동 조치 안내: GRANT OPTION(WITH GRANT OPTION) 조회 실패. 접속 정보 및 권한을 확인한 후 인가되지 않은 GRANT OPTION을 회수하십시오."
   EVIDENCE="MySQL 접속 실패 또는 권한 부족으로 D-21 조치를 수행할 수 없습니다."
 else
-  TARGETS=""
-  COUNT=0
-  while IFS=$'\t' read -r user host; do
-    [[ -z "$host" ]] && continue
-    in_csv "$user" "$ALLOWED_USERS_CSV" && continue
+  VULN_COUNT=0
+  SAMPLE="N/A"
+  REASON="N/A"
 
-    row="${user}"$'\t'"${host}"
-    if [[ -z "$TARGETS" ]]; then
-      TARGETS="$row"
-    else
-      TARGETS+=$'\n'"$row"
-    fi
-    COUNT=$((COUNT + 1))
-  done <<< "$ROWS"
+  check_rows() {
+    local rows="$1"
+    local default_reason="$2"
+    local grantee scope obj priv grantable
+    while IFS=$'\t' read -r grantee scope obj priv grantable; do
+      [[ -z "$grantee" || -z "$priv" ]] && continue
+      is_allowed_grantee "$grantee" && continue
+      VULN_COUNT=$((VULN_COUNT + 1))
+      if [[ "$SAMPLE" == "N/A" ]]; then
+        SAMPLE="${grantee} (${scope}:${obj}, ${priv}, grantable=${grantable:-?})"
+        REASON="$default_reason"
+      fi
+    done <<< "$rows"
+  }
 
-  if [[ $COUNT -eq 0 ]]; then
+  [[ -n "$ROWS_T" ]] && check_rows "$ROWS_T" "테이블 권한 WITH GRANT OPTION"
+  [[ -n "$ROWS_S" ]] && check_rows "$ROWS_S" "스키마 권한 WITH GRANT OPTION"
+  check_rows "$ROWS_G" "글로벌 GRANT OPTION/WITH GRANT OPTION"
+
+  if [[ "$VULN_COUNT" -eq 0 ]]; then
     STATUS="PASS"
     ACTION_RESULT="NOT_REQUIRED"
-    ACTION_LOG="비인가 계정의 GRANT OPTION이 없어 추가 조치가 필요하지 않습니다."
+    ACTION_LOG="추가 조치 불필요: 인가되지 않은 WITH GRANT OPTION/GRANT OPTION이 확인되지 않았습니다."
     EVIDENCE="D-21 기준 추가 조치 불필요"
   else
-    FAIL=0
-    APPLIED=0
-
-    # SHOW GRANTS 결과에서 WITH GRANT OPTION이 붙은 scope별로 GRANT OPTION만 회수합니다.
-    # 예) GRANT PROCESS ON *.* TO ... WITH GRANT OPTION  -> REVOKE GRANT OPTION ON *.* FROM ...
-    revoke_grant_option_scoped() {
-      local user="$1"
-      local host="$2"
-      local esc_user esc_host grants line scope
-
-      esc_user="$(sql_escape "$user")"
-      esc_host="$(sql_escape "$host")"
-
-      grants="$(run_mysql "SHOW GRANTS FOR '${esc_user}'@'${esc_host}';")"
-      [[ -z "$grants" ]] && return 1
-
-      while IFS=$'\n' read -r line; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" != *"WITH GRANT OPTION"* ]] && continue
-
-        scope="$(printf "%s" "$line" | sed -E 's/.*[[:space:]]ON[[:space:]]+([^[:space:]]+)[[:space:]]+TO[[:space:]].*/\\1/')"
-        [[ -z "$scope" || "$scope" == "$line" ]] && continue
-
-        run_mysql "REVOKE GRANT OPTION ON ${scope} FROM '${esc_user}'@'${esc_host}';" >/dev/null || return 1
-      done <<< "$grants"
-
-      return 0
-    }
-
-    while IFS=$'\t' read -r user host; do
-      [[ -z "$host" ]] && continue
-      esc_user="$(sql_escape "$user")"
-      esc_host="$(sql_escape "$host")"
-
-      # 1) scope별 REVOKE 시도(가능한 경우)
-      if ! revoke_grant_option_scoped "$user" "$host"; then
-        # 2) 전역(*.*) REVOKE 시도(구버전/권한 구성에 따라 scope 파싱이 실패할 수 있음)
-        run_mysql "REVOKE GRANT OPTION ON *.* FROM '${esc_user}'@'${esc_host}';" >/dev/null || true
-      fi
-
-      # 3) 여전히 Grant_priv가 남아있으면 최후 수단으로 mysql.user 플래그를 내립니다(교육/테스트 환경용)
-      run_mysql "UPDATE mysql.user SET Grant_priv='N' WHERE User='${esc_user}' AND Host='${esc_host}';" >/dev/null || FAIL=1
-      APPLIED=$((APPLIED + 1))
-    done <<< "$TARGETS"
-
-    run_mysql "FLUSH PRIVILEGES;" >/dev/null || FAIL=1
-
-    VERIFY_ROWS="$(run_mysql "$QUERY")"
-    RCV=$?
-    REMAIN=0
-    SAMPLE="N/A"
-    if [[ $RCV -eq 0 ]]; then
-      while IFS=$'\t' read -r user host; do
-        [[ -z "$host" ]] && continue
-        in_csv "$user" "$ALLOWED_USERS_CSV" && continue
-        REMAIN=1
-        if [[ "$SAMPLE" == "N/A" ]]; then
-          SAMPLE="${user}@${host}"
-        fi
-      done <<< "$VERIFY_ROWS"
+    STATUS="FAIL"
+    ACTION_RESULT="MANUAL_REQUIRED"
+    ACTION_LOG="수동 조치 필요: 인가되지 않은 계정/ROLE의 WITH GRANT OPTION/GRANT OPTION을 회수(REVOKE)하고, 권한 위임이 필요하면 ROLE로 관리하십시오."
+    if [[ "$FALLBACK_USED" == "Y" ]]; then
+      EVIDENCE="D-21 취약(제한적 점검): mysql.user(Grant_priv) 기준 인가되지 않은 GRANT OPTION이 확인됩니다. (${VULN_COUNT}건, 예: ${SAMPLE})"
     else
-      REMAIN=1
-      SAMPLE="재검증 조회 실패"
-    fi
-
-    if [[ $FAIL -eq 0 && $REMAIN -eq 0 ]]; then
-      STATUS="PASS"
-      ACTION_RESULT="SUCCESS"
-      ACTION_LOG="비인가 계정 GRANT OPTION ${APPLIED}건을 회수했습니다."
-      EVIDENCE="D-21 조치 후 비인가 GRANT OPTION 미검출"
-    else
-      ACTION_LOG="조치 일부 실패: 일부 계정의 GRANT OPTION이 남아 있을 수 있습니다."
-      EVIDENCE="D-21 자동 조치를 완료하지 못했습니다. (예: ${SAMPLE})"
+      EVIDENCE="D-21 취약: 인가되지 않은 WITH GRANT OPTION/GRANT OPTION이 확인됩니다. (${VULN_COUNT}건, 사유: ${REASON}, 예: ${SAMPLE})"
     fi
   fi
 fi
 
+echo ""
 cat <<JSON
 {
   "check_id":"$ID",
@@ -161,10 +141,11 @@ cat <<JSON
   "importance":"$IMPORTANCE",
   "status":"$STATUS",
   "evidence":"$EVIDENCE",
-  "guide":"비인가 계정의 GRANT OPTION을 회수합니다.",
+  "guide":"mysql.user의 grant_priv 또는 information_schema의 IS_GRANTABLE 값을 통해 WITH GRANT OPTION 보유 현황을 확인한 뒤 인가되지 않은 계정이나 ROLE의 GRANT OPTION을 REVOKE로 회수하고, 필요 시 해당 권한을 WITH GRANT OPTION 없이 재부여하며 권한 위임이 필요한 경우 ROLE에만 WITH GRANT OPTION을 부여하고 사용자에게는 ROLE만 할당하고 인가 예외는 ALLOWED_GRANT_USERS_CSV, ALLOWED_GRANT_PRINCIPALS_CSV, ALLOWED_GRANT_GRANTEES_CSV로 관리합니다.",
   "action_result":"$ACTION_RESULT",
   "action_log":"$ACTION_LOG",
   "action_date":"$(date '+%Y-%m-%d %H:%M:%S')",
   "check_date":"$(date '+%Y-%m-%d %H:%M:%S')"
 }
 JSON
+
