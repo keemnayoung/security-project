@@ -28,19 +28,24 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD_BASE="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
+# SQL root/익명 계정의 인증정보(비밀번호 해시)·잠금·호스트 조회
 QUERY_PRIMARY="SELECT user, host, COALESCE(authentication_string,''), COALESCE(account_locked,'N') FROM mysql.user WHERE user='root' OR user='';"
+# SQL account_locked 컬럼 미지원 환경 fallback
 QUERY_FALLBACK1="SELECT user, host, COALESCE(authentication_string,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
+# SQL authentication_string 미지원(구버전) fallback
 QUERY_FALLBACK2="SELECT user, host, COALESCE(password,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
 
 run_mysql_query() {
-    local query="$1"
-    if [[ -n "$TIMEOUT_BIN" ]]; then
-        $TIMEOUT_BIN "${MYSQL_TIMEOUT_SEC}s" $MYSQL_CMD_BASE "$query" 2>/dev/null || echo "ERROR_TIMEOUT"
-    else
-        $MYSQL_CMD_BASE "$query" 2>/dev/null || echo "ERROR"
-    fi
+  local query="$1"
+  # 무한 대기 방지(timeout 있으면 적용)
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    $TIMEOUT_BIN "${MYSQL_TIMEOUT_SEC}s" $MYSQL_CMD_BASE "$query" 2>/dev/null || echo "ERROR_TIMEOUT"
+  else
+    $MYSQL_CMD_BASE "$query" 2>/dev/null || echo "ERROR"
+  fi
 }
 
+# 1) 최신 컬럼 기반 조회 시도 → 실패 시 구버전 호환 fallback
 ACCOUNT_INFO="$(run_mysql_query "$QUERY_PRIMARY")"
 if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUERY_FALLBACK1")"; fi
 if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUERY_FALLBACK2")"; fi
@@ -48,64 +53,76 @@ if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUER
 REASON_LINE=""
 DETAIL_CONTENT=""
 
+# 2) 실행 실패 분기(타임아웃/접속 오류)
 if [[ "$ACCOUNT_INFO" == "ERROR_TIMEOUT" ]]; then
-    STATUS="FAIL"
-    REASON_LINE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다.\n조치 방법은 DB 상태/부하를 확인하신 후 재시도해주시기 바라며, 필요 시 timeout 값을 조정해주시기 바랍니다."
+  STATUS="FAIL"
+  REASON_LINE="MySQL 조회가 ${MYSQL_TIMEOUT_SEC}초를 초과하여 점검을 완료하지 못했습니다.\n조치 방법은 DB 상태/부하 및 접속 설정을 확인한 뒤 재시도하고, 필요 시 timeout 값을 조정하는 것입니다."
+  DETAIL_CONTENT="result=ERROR_TIMEOUT"
 elif [[ "$ACCOUNT_INFO" == "ERROR" ]]; then
-    STATUS="FAIL"
-    REASON_LINE="MySQL 접속에 실패했거나 mysql.user 조회 권한이 없어 D-01 점검을 수행할 수 없습니다.\n조치 방법은 접속 계정 권한(예: mysql.user 조회 권한) 및 인증 정보를 확인해주시기 바랍니다."
+  STATUS="FAIL"
+  REASON_LINE="MySQL 접속 실패 또는 mysql.user 조회 권한 부족으로 점검을 수행할 수 없습니다.\n조치 방법은 접속 계정 권한(mysql.user 조회) 및 인증 정보를 확인하는 것입니다."
+  DETAIL_CONTENT="result=ERROR"
 else
-    VULN_COUNT=0
-    ROOT_COUNT=0
-    REASONS=()
+  VULN_COUNT=0
+  ROOT_COUNT=0
+  REASONS=()
 
-    while IFS=$'\t' read -r user host auth locked; do
-        [[ -z "$user" && -z "$host" ]] && continue
-        [[ "$locked" == "Y" ]] && is_locked="Y" || is_locked="N"
+  # 3) 결과 파싱 분기(익명/루트 계정 위험요소만 체크)
+  while IFS=$'\t' read -r user host auth locked; do
+    [[ -z "$user" && -z "$host" ]] && continue
 
-        if [[ -z "$user" ]]; then
-            if [[ "$is_locked" != "Y" ]]; then
-                VULN_COUNT=$((VULN_COUNT + 1))
-                REASONS+=("anonymous@${host} 기본(익명) 계정이 활성 상태입니다(잠금 또는 삭제가 필요합니다).")
-            fi
-            continue
-        fi
+    # 잠긴 계정은 영향 범위에서 제외
+    [[ "$locked" == "Y" ]] && continue
 
-        if [[ "$user" == "root" ]]; then
-            ROOT_COUNT=$((ROOT_COUNT + 1))
-
-            if [[ "$is_locked" != "Y" && -z "$auth" ]]; then
-                VULN_COUNT=$((VULN_COUNT + 1))
-                REASONS+=("root@${host} 비밀번호가 설정되지 않은 상태입니다(초기 또는 공란 상태입니다).")
-                continue
-            fi
-
-            if [[ "$is_locked" != "Y" ]]; then
-                case "$host" in
-                    "localhost"|"127.0.0.1"|"::1") : ;;
-                    *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host} 원격 root 계정이 활성 상태입니다(로컬로 제한하거나 잠금 또는 삭제가 필요합니다).") ;;
-                esac
-            fi
-        fi
-    done <<< "$ACCOUNT_INFO"
-
-    if [[ "$ROOT_COUNT" -eq 0 ]]; then
-        STATUS="FAIL"
-        REASON_LINE="root 기본 계정을 확인할 수 없어 D-01 판정이 어렵습니다.\n조치 방법은 mysql.user에 root 계정 존재 여부 및 조회 결과를 확인해주시기 바랍니다."
-    else
-        if [[ "$VULN_COUNT" -eq 0 ]]; then
-            STATUS="PASS"
-            REASON_LINE="기본 계정의 초기 비밀번호 사용이 확인되지 않고, 불필요한 기본 계정이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
-        else
-            STATUS="FAIL"
-            REASON_LINE="${REASONS[*]}\n조치 방법은 익명 계정을 삭제하거나 잠금 처리해주시기 바라며, root 비밀번호를 설정해주시기 바랍니다. 또한 원격 root(host) 항목은 제거하거나 잠금 처리해주시기 바라며, 조치 후 권한 및 설정을 재확인해주시기 바랍니다."
-        fi
+    # 익명 계정 존재 자체가 취약 후보(활성 상태)
+    if [[ -z "$user" ]]; then
+      VULN_COUNT=$((VULN_COUNT + 1))
+      REASONS+=("anonymous@${host} 익명 계정 활성")
+      continue
     fi
+
+    # root 계정에 대해서만 추가 검증
+    if [[ "$user" == "root" ]]; then
+      ROOT_COUNT=$((ROOT_COUNT + 1))
+
+      # 비밀번호 미설정(해시 공란)
+      if [[ -z "$auth" ]]; then
+        VULN_COUNT=$((VULN_COUNT + 1))
+        REASONS+=("root@${host} 비밀번호 미설정")
+        continue
+      fi
+
+      # 원격 root 활성 여부(로컬만 허용 권장)
+      case "$host" in
+        "localhost"|"127.0.0.1"|"::1") : ;;
+        *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host} 원격 root 활성") ;;
+      esac
+    fi
+  done <<< "$ACCOUNT_INFO"
+
+  # 4) root 자체 미존재/미조회 분기(판정 불가로 FAIL)
+  if [[ "$ROOT_COUNT" -eq 0 ]]; then
+    STATUS="FAIL"
+    REASON_LINE="root 기본 계정 정보를 확인할 수 없어 점검을 완료하지 못했습니다.\n조치 방법은 mysql.user에 root 계정 존재 및 조회 결과를 확인하는 것입니다."
+    DETAIL_CONTENT="root_found=0"
+  else
+    # 5) 취약 항목 0건이면 PASS, 1건 이상이면 FAIL
+    if [[ "$VULN_COUNT" -eq 0 ]]; then
+      STATUS="PASS"
+      REASON_LINE="기본 계정(root/익명)의 위험 설정이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+      DETAIL_CONTENT="vuln_count=0"
+    else
+      STATUS="FAIL"
+      REASON_LINE="취약 항목: ${REASONS[*]}.\n조치 방법은 익명 계정 삭제/잠금, root 비밀번호 설정, 원격 root(host) 제거 또는 잠금 후 재점검하는 것입니다."
+      DETAIL_CONTENT="vuln_count=${VULN_COUNT}"
+    fi
+  fi
 fi
 
 CHECK_COMMAND="$MYSQL_CMD_BASE \"$QUERY_PRIMARY\" (fallback: \"$QUERY_FALLBACK1\" / \"$QUERY_FALLBACK2\")"
 
-DETAIL_CONTENT="account_info=${ACCOUNT_INFO} 입니다."
+# 원문 결과 포함(과다 출력 우려 시 head -n 적용 가능)
+DETAIL_CONTENT="${DETAIL_CONTENT}; account_info=${ACCOUNT_INFO}"
 
 RAW_EVIDENCE=$(cat <<EOF
 {

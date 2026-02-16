@@ -20,7 +20,6 @@ STATUS="FAIL"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="mysql.user"
-
 EVIDENCE="N/A"
 
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
@@ -33,6 +32,7 @@ MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 COMMON_USERS_CSV="${COMMON_USERS_CSV:-guest,test,demo,shared,common,public,user}"
 EXEMPT_USERS_CSV="${EXEMPT_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
+# SQL 활성 계정(user)별 host 분포 집계(원격 host 수, % 여부, host 목록)
 QUERY="
 SELECT user,
        SUM(CASE WHEN host NOT IN ('localhost','127.0.0.1','::1') THEN 1 ELSE 0 END) AS non_local_host_count,
@@ -55,6 +55,7 @@ in_csv() {
 
 run_mysql_query() {
   local q="$1"
+  # 무한 대기 방지(timeout 있으면 적용)
   if [[ -n "$TIMEOUT_BIN" ]]; then
     $TIMEOUT_BIN "${MYSQL_TIMEOUT}s" $MYSQL_CMD "$q" 2>/dev/null || echo "ERROR_TIMEOUT"
   else
@@ -67,14 +68,15 @@ RESULT="$(run_mysql_query "$QUERY")"
 REASON_LINE=""
 DETAIL_CONTENT=""
 
+# 실행 실패 분기(타임아웃/접속 오류)
 if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
   STATUS="FAIL"
-  REASON_LINE="DB 사용자 계정 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-06 점검에 실패했습니다. DB 응답 지연 또는 접속 설정을 확인해주시기 바랍니다.\n조치 방법은 DB 상태/부하 및 접속 옵션을 점검하신 후 재시도해주시기 바랍니다."
-  DETAIL_CONTENT="조회 결과는 ERROR_TIMEOUT 입니다."
+  REASON_LINE="DB 사용자 계정 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-06 점검을 완료하지 못했습니다.\n조치 방법은 DB 상태/부하 및 접속 옵션을 확인한 뒤 재시도하는 것입니다."
+  DETAIL_CONTENT="result=ERROR_TIMEOUT"
 elif [[ "$RESULT" == "ERROR" ]]; then
   STATUS="FAIL"
-  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 계정 개별 사용 여부를 확인할 수 없습니다. 진단 계정 권한 또는 접속 정보를 점검해주시기 바랍니다.\n조치 방법은 진단 계정의 권한과 인증 정보를 확인해주시기 바랍니다."
-  DETAIL_CONTENT="조회 결과는 ERROR 입니다."
+  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 D-06 점검을 수행할 수 없습니다.\n조치 방법은 진단 계정의 권한과 인증 정보를 확인하는 것입니다."
+  DETAIL_CONTENT="result=ERROR"
 else
   VULN_COUNT=0
   SAMPLE="N/A"
@@ -83,6 +85,7 @@ else
   while IFS=$'\t' read -r user non_local wildcard hosts; do
     [[ -z "$user" ]] && continue
 
+    # 예외 계정은 영향 범위에서 제외
     if in_csv "$user" "$EXEMPT_USERS_CSV"; then
       continue
     fi
@@ -90,15 +93,18 @@ else
     flag="N"
     reason=""
 
+    # 공용/테스트 계정명 패턴 탐지
     if in_csv "$user" "$COMMON_USERS_CSV"; then
       flag="Y"
-      reason="공용 또는 테스트 성격의 계정명으로 확인됩니다."
+      reason="공용/테스트 성격 계정명"
+    # host=% + 여러 원격 host 동시 사용(공용 계정 가능성 높음)
     elif [[ "$wildcard" -gt 0 && "$non_local" -gt 1 ]]; then
       flag="Y"
-      reason="와일드카드(host=%)가 설정되어 있으며 다수의 원격 호스트에서 사용되는 것으로 확인됩니다."
+      reason="host=% + 다중 원격 host"
+    # 원격 host가 과도하게 많음(공용 계정 가능성)
     elif [[ "$non_local" -ge 3 ]]; then
       flag="Y"
-      reason="다수의 원격 호스트에서 동일 계정이 사용되는 것으로 확인됩니다."
+      reason="다중 원격 host 사용"
     fi
 
     if [[ "$flag" == "Y" ]]; then
@@ -110,14 +116,15 @@ else
     fi
   done <<< "$RESULT"
 
+  # 판정 분기(PASS/FAIL)
   if [[ "$VULN_COUNT" -eq 0 ]]; then
     STATUS="PASS"
-    REASON_LINE="공용 계정 사용 징후(명백한 공용 계정명 또는 과도한 다중 원격 호스트)가 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="공용 계정 의심 계정 수는 0건입니다."
+    REASON_LINE="공용 계정 사용 징후(공용/테스트 계정명, 과도한 다중 원격 host, host=%)가 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+    DETAIL_CONTENT="suspect_count=0"
   else
     STATUS="FAIL"
-    REASON_LINE="공용 계정 사용 가능성이 높은 계정이 확인되었습니다. ${REASON}\n조치 방법은 해당 계정을 개인별 계정으로 분리해주시기 바라며, 불필요한 계정은 삭제하거나 잠금 처리해주시기 바랍니다. 또한 원격 접속이 필요한 경우에도 host 범위를 최소화하고, 와일드카드(host=%) 설정은 제거해주시기 바랍니다."
-    DETAIL_CONTENT="공용 계정 의심 계정 수는 ${VULN_COUNT}건이며, 예시는 ${SAMPLE} 입니다."
+    REASON_LINE="공용 계정 사용 가능성이 높은 계정이 확인되었습니다. (${REASON})\n조치 방법은 개인별 계정으로 분리하고, 불필요 계정은 삭제/잠금 처리하며, host 범위를 최소화하고 host=%는 제거하는 것입니다."
+    DETAIL_CONTENT="suspect_count=${VULN_COUNT}; sample=${SAMPLE}"
   fi
 fi
 
