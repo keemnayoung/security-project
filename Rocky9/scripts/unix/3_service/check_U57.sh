@@ -19,8 +19,6 @@
 
 # [진단] U-57 Ftpusers 파일 설정
 
-set -u
-
 # 기본 변수
 ID="U-57"
 STATUS="PASS"

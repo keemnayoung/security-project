@@ -30,7 +30,7 @@ CHECK_COMMAND='
   systemctl list-units --type=socket 2>/dev/null | grep -Ei "autofs" || echo "no_running_autofs_socket";
   systemctl list-unit-files 2>/dev/null | grep -Ei "automount.*\.mount[[:space:]]" || echo "no_automount_mount_units";
   for u in autofs.service autofs.socket; do
-    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || echo unknown) active=$(systemctl is-active "$u" 2>/dev/null || echo unknown)";
+    systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]" && echo "unit:$u enabled=$(systemctl is-enabled "$u" 2>/dev/null || true) active=$(systemctl is-active "$u" 2>/dev/null || true)";
   done
 )) || echo "systemctl_not_found"
 '
@@ -89,6 +89,25 @@ disable_mount_if_exists() {
   MODIFIED=1
 }
 
+# 단일 값 수집(2줄 출력 방지)
+get_is_enabled() {
+  local u="$1"
+  local out
+  out="$(systemctl is-enabled "$u" 2>/dev/null || true)"
+  out="$(printf "%s" "$out" | head -n 1 | tr -d '\r')"
+  [ -z "$out" ] && out="unknown"
+  echo "$out"
+}
+
+get_is_active() {
+  local u="$1"
+  local out
+  out="$(systemctl is-active "$u" 2>/dev/null || true)"
+  out="$(printf "%s" "$out" | head -n 1 | tr -d '\r')"
+  [ -z "$out" ] && out="unknown"
+  echo "$out"
+}
+
 # ---------------------------
 # 조치 수행
 # ---------------------------
@@ -97,7 +116,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
   REASON_LINE="systemctl 명령을 사용할 수 없어 automountd(autofs) 서비스 비활성화 조치를 수행할 수 없습니다."
   DETAIL_CONTENT="systemctl_not_found"
 else
-  # 1) autofs 서비스/소켓 비활성화(필수 보강: socket 포함)
+  # 1) autofs 서비스/소켓 비활성화
   disable_unit_if_exists "autofs.socket"
   disable_unit_if_exists "autofs.service"
 
@@ -111,26 +130,27 @@ else
 
   # ---------------------------
   # 조치 후 검증(현재/조치 후 상태만)
+  # 판정은 "정확히 enabled / active 인가"만 체크(inactive 오탐 방지)
   # ---------------------------
 
   # autofs.socket
   if systemctl list-unit-files 2>/dev/null | grep -qiE "^autofs\.socket[[:space:]]"; then
-    en="$(systemctl is-enabled autofs.socket 2>/dev/null || echo unknown)"
-    ac="$(systemctl is-active autofs.socket 2>/dev/null || echo unknown)"
+    en="$(get_is_enabled autofs.socket)"
+    ac="$(get_is_active autofs.socket)"
     append_detail "autofs.socket(after) enabled=$en active=$ac"
-    echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
-    echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+    [ "$en" = "enabled" ] && FAIL_FLAG=1
+    [ "$ac" = "active" ] && FAIL_FLAG=1
   else
     append_detail "autofs.socket(after)=not_installed_or_not_registered"
   fi
 
   # autofs.service
   if systemctl list-unit-files 2>/dev/null | grep -qiE "^autofs\.service[[:space:]]"; then
-    en="$(systemctl is-enabled autofs.service 2>/dev/null || echo unknown)"
-    ac="$(systemctl is-active autofs.service 2>/dev/null || echo unknown)"
+    en="$(get_is_enabled autofs.service)"
+    ac="$(get_is_active autofs.service)"
     append_detail "autofs.service(after) enabled=$en active=$ac"
-    echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
-    echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+    [ "$en" = "enabled" ] && FAIL_FLAG=1
+    [ "$ac" = "active" ] && FAIL_FLAG=1
   else
     append_detail "autofs.service(after)=not_installed_or_not_registered"
   fi
@@ -138,11 +158,11 @@ else
   # automount*.mount
   if [ -n "$AUTOMOUNT_MOUNTS" ]; then
     for m in $AUTOMOUNT_MOUNTS; do
-      en="$(systemctl is-enabled "$m" 2>/dev/null || echo unknown)"
-      ac="$(systemctl is-active "$m" 2>/dev/null || echo unknown)"
+      en="$(get_is_enabled "$m")"
+      ac="$(get_is_active "$m")"
       append_detail "${m}(after) enabled=$en active=$ac"
-      echo "$en" | grep -qiE "enabled" && FAIL_FLAG=1
-      echo "$ac" | grep -qiE "active" && FAIL_FLAG=1
+      [ "$en" = "enabled" ] && FAIL_FLAG=1
+      [ "$ac" = "active" ] && FAIL_FLAG=1
     done
   else
     append_detail "automount_mount_units(after)=not_found"

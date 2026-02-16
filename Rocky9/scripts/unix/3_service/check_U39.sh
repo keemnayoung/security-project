@@ -83,6 +83,7 @@ done
 if [ -f /etc/exports ]; then
   EXPORTS_ACTIVE="$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports 2>/dev/null || true)"
   if [ -n "$EXPORTS_ACTIVE" ]; then
+    FOUND=1
     add_found "/etc/exports에 export 설정이 존재합니다(주석 제외). 예: $(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
   else
     add_found "/etc/exports는 존재하나 유효 export 설정(주석/공백 제외)은 없습니다."

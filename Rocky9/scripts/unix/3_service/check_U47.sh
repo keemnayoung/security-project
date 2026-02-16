@@ -27,7 +27,18 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE=""
-CHECK_COMMAND='(command -v sendmail >/dev/null 2>&1 && sendmail -d0 -bt < /dev/null 2>/dev/null); ( [ -f /etc/mail/sendmail.cf ] && grep -inE "promiscuous_relay|Relaying denied" /etc/mail/sendmail.cf 2>/dev/null ); (command -v postconf >/dev/null 2>&1 && postconf -n 2>/dev/null); ( [ -f /etc/postfix/main.cf ] && grep -nE "^(mynetworks|smtpd_(relay|recipient)_restrictions)[[:space:]]*=" /etc/postfix/main.cf 2>/dev/null ); (command -v exim >/dev/null 2>&1 && exim -bV 2>/dev/null); (command -v exim4 >/dev/null 2>&1 && exim4 -bV 2>/dev/null); (grep -nE "relay_from_hosts|accept[[:space:]]+hosts[[:space:]]*=.*\\+relay_from_hosts" /etc/exim/exim.conf /etc/exim4/exim4.conf /etc/exim4/update-exim4.conf.conf 2>/dev/null)'
+
+# ✅ 따옴표 깨짐/파싱 오류 방지: heredoc로 CHECK_COMMAND 정의
+CHECK_COMMAND=$(cat <<'EOF'
+( command -v sendmail >/dev/null 2>&1 && sendmail -d0 < /dev/null 2>/dev/null );
+( [ -f /etc/mail/sendmail.cf ] && grep -inE "promiscuous_relay|Relaying denied" /etc/mail/sendmail.cf 2>/dev/null );
+( command -v postconf >/dev/null 2>&1 && postconf -n 2>/dev/null );
+( [ -f /etc/postfix/main.cf ] && grep -nE "^(mynetworks|smtpd_(relay|recipient)_restrictions)[[:space:]]*=" /etc/postfix/main.cf 2>/dev/null );
+( command -v exim >/dev/null 2>&1 && exim -bV 2>/dev/null );
+( command -v exim4 >/dev/null 2>&1 && exim4 -bV 2>/dev/null );
+( grep -nE "relay_from_hosts|accept[[:space:]]+hosts[[:space:]]*=.*\\+relay_from_hosts" /etc/exim/exim.conf /etc/exim4/exim4.conf /etc/exim4/update-exim4.conf.conf 2>/dev/null );
+EOF
+)
 
 VULNERABLE=0
 FOUND_ANY=0
@@ -54,15 +65,11 @@ add_target_file() {
 }
 
 contains_open_all_network() {
-  # 0.0.0.0/0, ::/0, 0/0 등 전체 허용 패턴
   echo "$1" | grep -qE '(^|[[:space:],])0\.0\.0\.0/0($|[[:space:],])|(^|[[:space:],])::/0($|[[:space:],])|(^|[[:space:],])0/0($|[[:space:],])'
 }
 
 # -----------------------------
 # 1) Sendmail 점검
-#   - 핵심 위험: sendmail.cf에 promiscuous_relay 존재(무조건 릴레이)
-#   - 가이드는 sendmail 8.9+에서 access 기반 제어를 예시로 안내하지만,
-#     access/access.db 미존재만으로 오픈릴레이라 단정하기 어려워 "참고 신호"로만 기록
 # -----------------------------
 if command -v sendmail >/dev/null 2>&1; then
   FOUND_ANY=1
@@ -88,7 +95,6 @@ if command -v sendmail >/dev/null 2>&1; then
       append_detail "[sendmail] $SM_CF에서 promiscuous_relay 미탐지 -> 무조건 릴레이 설정 없음"
     fi
 
-    # (참고) 가이드 예시: Relaying denied / access map
     if grep -q "Relaying denied" "$SM_CF" 2>/dev/null; then
       append_detail "[sendmail] $SM_CF에서 'Relaying denied' 문자열 확인(릴레이 차단 신호)"
     else
@@ -101,20 +107,15 @@ if command -v sendmail >/dev/null 2>&1; then
       append_detail "[sendmail] /etc/mail/access 및 access.db 미존재(참고) -> 운영 정책에 따라 access 기반 제어 사용 여부 확인"
     fi
 
-    # (추가 신호) sendmail.mc에 FEATURE(`promiscuous_relay')가 있으면 위험(가능한 경우)
     if [ -f "$SM_MC" ] && grep -qE 'FEATURE\(\s*`promiscuous_relay`\s*\)' "$SM_MC" 2>/dev/null; then
       VULNERABLE=1
-      append_detail "[sendmail] $SM_MC에 FEATURE(`promiscuous_relay') 존재 -> 오픈 릴레이 위험"
+      append_detail "[sendmail] $SM_MC에 FEATURE(`promiscuous_relay`) 존재 -> 오픈 릴레이 위험"
     fi
   fi
 fi
 
 # -----------------------------
 # 2) Postfix 점검
-#   - 필수: 유효 설정(postconf -n) 기준으로 mynetworks / restrictions 확인
-#   - 위험:
-#     * mynetworks가 전체 허용(0.0.0.0/0, ::/0 등)
-#     * smtpd_(relay|recipient)_restrictions에 reject_unauth_destination 미포함
 # -----------------------------
 POSTFIX_FOUND=0
 if command -v postconf >/dev/null 2>&1 || command -v postfix >/dev/null 2>&1; then
@@ -123,14 +124,12 @@ if command -v postconf >/dev/null 2>&1 || command -v postfix >/dev/null 2>&1; th
   PF_MAIN="/etc/postfix/main.cf"
   add_target_file "$PF_MAIN"
 
-  # 유효 설정 우선
   PF_EFFECTIVE=""
   if command -v postconf >/dev/null 2>&1; then
     PF_EFFECTIVE="$(postconf -n 2>/dev/null)"
   fi
 
   get_pf_param() {
-    # $1: key
     local key="$1"
     local line=""
     if [ -n "$PF_EFFECTIVE" ]; then
@@ -159,7 +158,6 @@ if command -v postconf >/dev/null 2>&1 || command -v postfix >/dev/null 2>&1; th
     append_detail "[postfix] mynetworks 설정 라인 미확인 -> 기본값 적용 가능(운영 정책에 따라 허용 네트워크 확인 필요)"
   fi
 
-  # reject_unauth_destination 포함 여부(유효 설정 기준)
   FOUND_REJECT="N"
   echo "$PF_RELAY_LINE $PF_RCPT_LINE" | grep -q "reject_unauth_destination" && FOUND_REJECT="Y"
 
@@ -175,8 +173,6 @@ fi
 
 # -----------------------------
 # 3) Exim 점검
-#   - 위험: relay_from_hosts가 *, 0.0.0.0/0, ::/0 등 전체 허용
-#   - conf 파일이 아예 없으면 확인 불가 -> 취약(가이드 기준)
 # -----------------------------
 EXIM_CMD=""
 command -v exim >/dev/null 2>&1 && EXIM_CMD="exim"
@@ -225,9 +221,7 @@ if [ -n "$EXIM_CMD" ]; then
 fi
 
 # -----------------------------
-# 4) 최종 판정 + (요청 문구) REASON_LINE 구성
-#    - PASS: “어디서 어떻게 설정되어 있어 이 항목에 대한 보안 위협이 없습니다.”
-#    - FAIL: “어디서 어떻게 설정되어 있어 취약합니다.” + 간단 조치 방법
+# 4) 최종 판정/문구
 # -----------------------------
 if [ $FOUND_ANY -eq 0 ]; then
   STATUS="PASS"
@@ -246,10 +240,8 @@ else
   [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
-# target_file 기본값 보정
 [ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/mail/sendmail.cf, /etc/mail/sendmail.mc, /etc/mail/access, /etc/mail/access.db, /etc/postfix/main.cf, /etc/exim/exim.conf, /etc/exim4/exim4.conf, /etc/exim4/update-exim4.conf.conf"
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -259,12 +251,10 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {

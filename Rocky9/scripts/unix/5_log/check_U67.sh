@@ -21,60 +21,78 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/var/log"
-CHECK_COMMAND='[ -d /var/log ] && find /var/log -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%n owner=%U perm=%a" "{}" 2>/dev/null || echo "/var/log dir_not_found"'
+CHECK_COMMAND='[ -d /var/log ] && (find /var/log -xdev -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%n owner=%U perm=%a" "{}" 2>/dev/null; echo "__STAT_END__") || echo "/var/log dir_not_found"'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 FOUND_VULN="N"
 VULN_LINES=""
 
-# /var/log 존재 여부에 따른 분기
-if [ -d "$TARGET_FILE" ]; then
-    # 로그 파일들을 순회하며 소유자/권한 점검
-    while IFS= read -r file; do
-        OWNER=$(stat -c %U "$file" 2>/dev/null)
-        PERM=$(stat -c %a "$file" 2>/dev/null)
+# JSON escape
+json_escape() {
+  echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g'
+}
 
-        if [ "$OWNER" != "root" ] || [ "$PERM" -gt 644 ]; then
-            STATUS="FAIL"
-            FOUND_VULN="Y"
-            VULN_LINES+="$file owner=$OWNER perm=$PERM"$'\n'
-        fi
-    done < <(find "$TARGET_FILE" -type f 2>/dev/null)
+if [ ! -d "$TARGET_FILE" ]; then
+  STATUS="FAIL"
+  FOUND_VULN="Y"
+  VULN_LINES="/var/log dir_not_found"
 else
+  # stat 결과 수집(실패 포함)
+  OUT="$(find "$TARGET_FILE" -xdev -type f -print0 2>/dev/null \
+        | xargs -0 -I{} stat -c "%n owner=%U perm=%a" "{}" 2>/dev/null; echo "__STAT_END__")"
+
+  # stat이 전부 실패해도 OUT엔 __STAT_END__만 남을 수 있음 → 그 경우 취약 처리
+  if ! echo "$OUT" | grep -q "__STAT_END__"; then
     STATUS="FAIL"
     FOUND_VULN="Y"
-    VULN_LINES="/var/log dir_not_found"
+    VULN_LINES="stat_failed_or_no_files"
+  else
+    # 취약 조건: owner!=root OR perm>644 OR owner/perm 확인 불가
+    VULN_LINES="$(echo "$OUT" | sed '/^__STAT_END__$/d' \
+      | awk '
+        BEGIN{v=0}
+        {
+          line=$0
+          owner=""; perm=""
+          if (match(line, /owner=[^ ]+/)) owner=substr(line, RSTART+6, RLENGTH-6)
+          if (match(line, /perm=[0-9]+/)) perm=substr(line, RSTART+5, RLENGTH-5)
+          if (owner=="" || perm=="" || owner!="root" || perm+0>644) { print line; v=1 }
+        }
+      ')"
+
+    if [ -n "$VULN_LINES" ]; then
+      STATUS="FAIL"
+      FOUND_VULN="Y"
+    fi
+  fi
 fi
 
-# 결과에 따른 평가 이유 및 detail 구성
 if [ "$FOUND_VULN" = "Y" ]; then
-    REASON_LINE="/var/log 디렉터리 내 일부 로그 파일의 소유자가 root가 아니거나 권한이 644 초과로 설정되어 비인가 사용자가 로그를 변조하거나 열람 범위를 확대할 위험이 있으므로 취약합니다. 해당 로그 파일의 소유자를 root로 변경하고 권한을 644 이하로 제한해야 합니다."
-    DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
+  REASON_LINE="/var/log 내 로그 파일에서 owner=root가 아니거나 perm=644 초과(또는 소유자/권한 확인 불가)로 설정되어 있어 취약합니다. 조치: 해당 파일에 chown root <파일>; chmod 644 <파일> 적용"
+  DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
 else
-    STATUS="PASS"
-    REASON_LINE="/var/log 디렉터리 내 로그 파일의 소유자가 root로 설정되어 있고 권한이 644 이하로 제한되어 로그 변조 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="all_log_files_ok"
+  REASON_LINE="/var/log 내 로그 파일이 owner=root로 설정되어 있고 perm=644 이하로 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  # PASS에서도 “어디서 어떻게”가 보이도록 샘플/요약을 남김
+  OK_SUMMARY="$(find "$TARGET_FILE" -xdev -type f 2>/dev/null | wc -l | awk '{print "checked_files=" $1 ", all owner=root perm<=644"}')"
+  DETAIL_CONTENT="$OK_SUMMARY"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# raw_evidence (첫 줄: REASON_LINE / 다음 줄: DETAIL_CONTENT)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE")"
 
-# scan_history 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "status": "$STATUS",

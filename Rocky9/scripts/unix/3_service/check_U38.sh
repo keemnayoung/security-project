@@ -24,25 +24,26 @@ ID="U-38"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# 가이드 기준 점검 대상(주요 DoS 취약 서비스)
 DOS_SERVICES=("echo" "discard" "daytime" "chargen")
 
-# 대상 파일/영역 표시용
-TARGET_FILE="/etc/inetd.conf /etc/xinetd.d/(echo|discard|daytime|chargen) systemd(socket/unit)"
+TARGET_FILE="/etc/inetd.conf
+/etc/xinetd.d/(echo|discard|daytime|chargen)
+systemd(echo|discard|daytime|chargen 및 -dgram/-stream 변형 unit)"
+
 CHECK_COMMAND='
 # [inetd]
-[ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | egrep -n "^[[:space:]]*(echo|discard|daytime|chargen)[[:space:]]" || echo "inetd_not_found_or_no_active_rules";
+[ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | egrep -n "^[[:space:]]*(echo|discard|daytime|chargen)([[:space:]]|$)" || echo "inetd_conf_not_found_or_no_active";
 # [xinetd]
 for f in /etc/xinetd.d/echo /etc/xinetd.d/discard /etc/xinetd.d/daytime /etc/xinetd.d/chargen; do
-  [ -f "$f" ] && grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" && echo "ACTIVE:$f";
+  [ -f "$f" ] && echo "xinetd_file:$f" && grep -nEv "^[[:space:]]*#" "$f" 2>/dev/null | grep -niE "^[[:space:]]*disable([[:space:]]*=)?[[:space:]]*" | head -n 2 || true;
 done;
-# [systemd - well-known sockets]
-systemctl list-unit-files --type=socket --type=service 2>/dev/null | egrep -i "^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(socket|service)" || true;
-systemctl list-units --type=socket --type=service 2>/dev/null | egrep -i "^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(socket|service)" || true
+# [systemd]
+(command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files --type=service --type=socket 2>/dev/null | grep -Ei "^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(service|socket)[[:space:]]") || echo "systemd_units_not_found";
+(command -v systemctl >/dev/null 2>&1 && systemctl list-units --type=service --type=socket 2>/dev/null | grep -Ei "^(echo|discard|daytime|chargen)(-dgram|-stream)?\.(service|socket)[[:space:]]") || true
 '
 
-DETAIL_CONTENT=""
 REASON_LINE=""
+DETAIL_CONTENT=""
 FOUND_LIST=()
 
 add_found() {
@@ -50,26 +51,22 @@ add_found() {
   [ -n "$msg" ] && FOUND_LIST+=("$msg")
 }
 
-# -----------------------------------------------------------------------------
-# 1) inetd(/etc/inetd.conf) : 주석 제외 후 해당 서비스 라인이 존재하면 취약
-# -----------------------------------------------------------------------------
+# 1) inetd: /etc/inetd.conf 주석 제외 후 서비스 라인 존재 시 취약
 if [ -f "/etc/inetd.conf" ]; then
   for svc in "${DOS_SERVICES[@]}"; do
     if grep -Ev "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*${svc}([[:space:]]|$)"; then
       STATUS="FAIL"
-      add_found "/etc/inetd.conf: ${svc} 서비스 활성 라인 존재(주석 제외)"
+      add_found "/etc/inetd.conf: ${svc} 활성 라인 존재(주석 제외)"
     fi
   done
 fi
 
-# -----------------------------------------------------------------------------
-# 2) xinetd(/etc/xinetd.d/<svc>) : disable = no 이면 취약
-# -----------------------------------------------------------------------------
+# 2) xinetd: disable=no 형태면 취약(대소문자/형식 다양성 대응)
 if [ -d "/etc/xinetd.d" ]; then
   for svc in "${DOS_SERVICES[@]}"; do
     f="/etc/xinetd.d/$svc"
     if [ -f "$f" ]; then
-      if grep -Ev "^[[:space:]]*#" "$f" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+      if grep -Ev "^[[:space:]]*#" "$f" 2>/dev/null | grep -qiE "^[[:space:]]*disable([[:space:]]*=)?[[:space:]]*no([[:space:]]|$)"; then
         STATUS="FAIL"
         add_found "$f: disable=no(서비스 활성)"
       fi
@@ -77,43 +74,41 @@ if [ -d "/etc/xinetd.d" ]; then
   done
 fi
 
-# -----------------------------------------------------------------------------
-# 3) systemd : 가이드 취지에 맞게 “해당 서비스 socket/unit” 중심으로 확인(오탐 방지)
-#    - 일반적으로 echo/chargen/daytime/discard 는 -dgram / -stream socket 형태가 존재할 수 있음
-# -----------------------------------------------------------------------------
+# 3) systemd: 해당 unit이 active 또는 enabled면 취약 (unit 후보: 기본 + -dgram/-stream)
 SYSTEMD_FOUND=""
-for base in "${DOS_SERVICES[@]}"; do
-  for suf in "" "-dgram" "-stream"; do
-    for typ in "socket" "service"; do
-      unit="${base}${suf}.${typ}"
+if command -v systemctl >/dev/null 2>&1; then
+  for base in "${DOS_SERVICES[@]}"; do
+    for suf in "" "-dgram" "-stream"; do
+      for typ in "socket" "service"; do
+        unit="${base}${suf}.${typ}"
 
-      # 활성(ActiveState=active) 또는 enable(부팅시 활성) 중 하나라도 감지되면 취약 근거로 수집
-      if systemctl is-active "$unit" >/dev/null 2>&1; then
-        SYSTEMD_FOUND="${SYSTEMD_FOUND}${unit}(active) "
-      else
-        # is-enabled은 unit이 없으면 실패하므로 stderr 버림
-        EN_STATE="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
-        if [ "$EN_STATE" = "enabled" ] || [ "$EN_STATE" = "enabled-runtime" ]; then
-          SYSTEMD_FOUND="${SYSTEMD_FOUND}${unit}(${EN_STATE}) "
+        # unit 존재 여부(없으면 스킵)
+        if systemctl list-unit-files --type=service --type=socket 2>/dev/null | grep -qiE "^${unit}[[:space:]]"; then
+          if systemctl is-active "$unit" >/dev/null 2>&1; then
+            SYSTEMD_FOUND="${SYSTEMD_FOUND}${unit}(active) "
+          else
+            EN_STATE="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+            if [ "$EN_STATE" = "enabled" ] || [ "$EN_STATE" = "enabled-runtime" ]; then
+              SYSTEMD_FOUND="${SYSTEMD_FOUND}${unit}(${EN_STATE}) "
+            fi
+          fi
         fi
-      fi
+      done
     done
   done
-done
+fi
 
 if [ -n "$SYSTEMD_FOUND" ]; then
   STATUS="FAIL"
   add_found "systemd: ${SYSTEMD_FOUND% }"
 fi
 
-# -----------------------------------------------------------------------------
 # 결과 정리 (요구 문구 반영)
-# -----------------------------------------------------------------------------
 if [ "$STATUS" = "PASS" ]; then
-  REASON_LINE="(/etc/inetd.conf, /etc/xinetd.d, systemd)에서 DoS 공격에 취약한 서비스(echo/discard/daytime/chargen)가 주석 처리/비활성(disable!=no) 또는 관련 socket/unit 비활성 상태로 확인되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="확인 결과: inetd 활성 라인 없음, xinetd에서 disable=no 미검출, systemd 관련 socket/unit 활성/enable 미검출"
+  REASON_LINE="(/etc/inetd.conf, /etc/xinetd.d, systemd)에서 DoS 공격에 취약한 서비스(echo/discard/daytime/chargen)가 비활성화(주석 처리 또는 disable!=no, 관련 unit 비활성) 상태로 확인되어 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="확인 결과: inetd 활성 라인 없음, xinetd에서 disable=no 미검출, systemd 관련 socket/service 활성/enable 미검출"
 else
-  REASON_LINE="(/etc/inetd.conf, /etc/xinetd.d, systemd)에서 DoS 공격에 취약한 서비스(echo/discard/daytime/chargen)가 활성 상태로 확인되어 취약합니다. 조치: inetd는 해당 라인 주석 처리 후 inetd 재시작, xinetd는 disable=yes로 변경 후 xinetd 재시작, systemd는 관련 socket/unit stop 및 disable 하십시오."
+  REASON_LINE="(/etc/inetd.conf, /etc/xinetd.d, systemd)에서 DoS 공격에 취약한 서비스(echo/discard/daytime/chargen)가 활성 상태로 확인되어 취약합니다. 조치: inetd는 해당 라인 주석 처리 후 inetd 재시작, xinetd는 disable=yes로 변경 후 xinetd 재시작, systemd는 관련 socket/service stop 및 disable 하십시오."
   DETAIL_CONTENT=$(printf "%s\n" "${FOUND_LIST[@]}")
 fi
 

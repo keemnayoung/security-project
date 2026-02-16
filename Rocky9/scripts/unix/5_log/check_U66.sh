@@ -20,93 +20,107 @@ ID="U-66"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="/etc/rsyslog.conf /etc/rsyslog.d/default.conf"
-CHECK_COMMAND='for f in /etc/rsyslog.conf /etc/rsyslog.d/default.conf; do [ -f "$f" ] && echo "[FILE] $f" && egrep -n "^[[:space:]]*(\*\.info;mail\.none;authpriv\.none;cron\.none[[:space:]]+/var/log/messages|auth,authpriv\.\*[[:space:]]+/var/log/secure|mail\.\*[[:space:]]+/var/log/maillog|cron\.\*[[:space:]]+/var/log/cron|\*\.alert[[:space:]]+/dev/console|\*\.emerg[[:space:]]+\*)" "$f"; done; for l in /var/log/messages /var/log/secure /var/log/maillog /var/log/cron; do [ -f "$l" ] && echo "[LOGFILE] $l exists" || echo "[LOGFILE] $l missing"; done'
+# 점검 대상(존재하는 것만 사용)
+CONFIG_CANDIDATES=(/etc/rsyslog.conf /etc/rsyslog.d/*.conf /etc/rsyslog.d/default.conf)
+LOG_FILES=(/var/log/messages /var/log/secure /var/log/maillog /var/log/cron)
+
+TARGET_FILE="/etc/rsyslog.conf /etc/rsyslog.d/*.conf"
+CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active rsyslog 2>/dev/null || true); (pgrep -a rsyslogd 2>/dev/null || true); for f in /etc/rsyslog.conf /etc/rsyslog.d/*.conf /etc/rsyslog.d/default.conf; do [ -f "$f" ] && echo "[FILE] $f" && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$f" | head -n 200; done; for l in /var/log/messages /var/log/secure /var/log/maillog /var/log/cron; do [ -f "$l" ] && echo "[LOGFILE] $l exists" || echo "[LOGFILE] $l missing"; done'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
-FOUND_VULN="N"
 DETAIL_LINES=""
 
-REQUIRED_POLICIES=(
-    "*.info;mail.none;authpriv.none;cron.none /var/log/messages"
-    "auth,authpriv.* /var/log/secure"
-    "mail.* /var/log/maillog"
-    "cron.* /var/log/cron"
-    "*.alert /dev/console"
-    "*.emerg *"
-)
+# JSON escape
+json_escape() {
+  echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g'
+}
 
-CONFIG_FOUND="N"
-POLICY_OK="Y"
-
-# 설정 파일 존재 및 정책 존재 여부 점검
-for FILE in /etc/rsyslog.conf /etc/rsyslog.d/default.conf; do
-    if [ -f "$FILE" ]; then
-        CONFIG_FOUND="Y"
-
-        for POLICY in "${REQUIRED_POLICIES[@]}"; do
-            # 정규식 특수문자 최소 처리(* 만 이스케이프). 기존 로직 의도 유지
-            if ! grep -E "^[[:space:]]*${POLICY//\*/\\*}" "$FILE" >/dev/null 2>&1; then
-                POLICY_OK="N"
-                FOUND_VULN="Y"
-                DETAIL_LINES+="$FILE missing_policy=$POLICY"$'\n'
-            fi
-        done
-    fi
+# 1) 실제 존재하는 설정 파일 수집
+CONF_FILES=()
+for f in "${CONFIG_CANDIDATES[@]}"; do
+  [ -f "$f" ] && CONF_FILES+=("$f")
 done
 
-if [ "$CONFIG_FOUND" = "N" ]; then
-    STATUS="FAIL"
-    FOUND_VULN="Y"
-    DETAIL_LINES+="rsyslog_config_not_found"$'\n'
+# 2) rsyslog 동작 여부(최소)
+RSYSLOG_RUNNING="N"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet rsyslog 2>/dev/null && RSYSLOG_RUNNING="Y"
 fi
+pgrep -x rsyslogd >/dev/null 2>&1 && RSYSLOG_RUNNING="Y"
 
-# 로그 파일 존재 여부 점검
-LOG_FILES=(
-    "/var/log/messages"
-    "/var/log/secure"
-    "/var/log/maillog"
-    "/var/log/cron"
+# 3) 필수 정책(가이드 표 기준) 확인: “어느 파일/몇 번째 줄에서” 찾았는지 기록
+#    형식: ID|정규식|설명(사람이 읽기용)
+REQUIRED=$(
+cat <<'EOF'
+P1|\*\.info;mail\.none;authpriv\.none;cron\.none[[:space:]]+/var/log/messages|*.info;mail.none;authpriv.none;cron.none -> /var/log/messages
+P2|auth,authpriv\.\*[[:space:]]+/var/log/secure|auth,authpriv.* -> /var/log/secure
+P3|mail\.\*[[:space:]]+/var/log/maillog|mail.* -> /var/log/maillog
+P4|cron\.\*[[:space:]]+/var/log/cron|cron.* -> /var/log/cron
+P5|\*\.alert[[:space:]]+/dev/console|*.alert -> /dev/console
+P6|\*\.emerg[[:space:]]+\*|*.emerg -> *
+EOF
 )
 
-for LOG in "${LOG_FILES[@]}"; do
-    if [ ! -f "$LOG" ]; then
-        STATUS="FAIL"
-        FOUND_VULN="Y"
-        DETAIL_LINES+="logfile_missing=$LOG"$'\n'
-    fi
-done
+MISSING=""
+FOUND_SUMMARY=""
 
-# 결과에 따른 PASS/FAIL 및 reason/detail 구성
-if [ "$FOUND_VULN" = "Y" ]; then
-    STATUS="FAIL"
-    REASON_LINE="rsyslog 설정 파일에 필수 로그 기록 정책이 누락되었거나 주요 로그 파일이 생성되지 않아 보안 감사 및 사고 분석에 필요한 로그가 충분히 수집되지 않을 위험이 있으므로 취약합니다. rsyslog 설정 파일에 내부 정책에 따른 로깅 규칙을 반영하고 로그 파일이 정상 생성되도록 설정해야 합니다."
-    DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
+if [ "${#CONF_FILES[@]}" -eq 0 ]; then
+  STATUS="FAIL"
+  DETAIL_LINES+="rsyslog_config_not_found\n"
 else
-    STATUS="PASS"
-    REASON_LINE="rsyslog 설정 파일에 필수 로그 기록 정책이 설정되어 있고 주요 로그 파일이 존재하여 보안 감사 및 사고 분석에 필요한 로그가 정상적으로 수집되므로 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="all_required_policies_present\nall_log_files_exist"
+  while IFS='|' read -r key re desc; do
+    [ -z "${key:-}" ] && continue
+    hit="N"
+    for cf in "${CONF_FILES[@]}"; do
+      # 주석/공백 라인 제외하고 매칭되는 “첫 1개”만 뽑아도 충분(필수만)
+      m=$(grep -nE "$re" "$cf" 2>/dev/null | head -n 1 || true)
+      if [ -n "$m" ]; then
+        hit="Y"
+        FOUND_SUMMARY+="$key found_in=$cf:$m\n"
+        break
+      fi
+    done
+    [ "$hit" = "N" ] && MISSING+="$key missing_policy=$desc\n"
+  done <<< "$REQUIRED"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# 4) 로그 파일 존재 확인(가이드 표의 주요 로그파일)
+for lf in "${LOG_FILES[@]}"; do
+  [ -f "$lf" ] || DETAIL_LINES+="logfile_missing=$lf\n"
+done
+
+# 5) 취약 판정
+if [ "$RSYSLOG_RUNNING" != "Y" ]; then
+  STATUS="FAIL"
+  DETAIL_LINES+="rsyslog_service_not_running\n"
+fi
+[ -n "$MISSING" ] && STATUS="FAIL" && DETAIL_LINES+="$MISSING"
+
+# 6) reason/detail 구성 (요청 문구 + 취약 시 간단 조치 안내 포함)
+if [ "$STATUS" = "PASS" ]; then
+  REASON_LINE="(/etc/rsyslog.conf 또는 /etc/rsyslog.d/*.conf)에 가이드 기준 로깅 규칙이 설정되어 있고(/var/log/messages, /var/log/secure, /var/log/maillog, /var/log/cron 생성 확인), 이 항목에 대한 보안 위협이 없습니다."
+  DETAIL_CONTENT="$(printf "%b" "$FOUND_SUMMARY" | sed 's/[[:space:]]*$//')"
+else
+  REASON_LINE="(/etc/rsyslog.conf 또는 /etc/rsyslog.d/*.conf)에서 가이드 기준 로깅 규칙이 누락되었거나(rs y slog 서비스 미동작/주요 로그 파일 미생성 포함) 정책에 따라 로그가 충분히 수집되지 않아 취약합니다. 조치: rsyslog 설정에 가이드 표의 규칙을 추가/수정하고 systemctl restart rsyslog 로 재시작 후 로그 파일 생성 여부를 확인하세요."
+  DETAIL_CONTENT="$(printf "%b" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
+fi
+
+# raw_evidence (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE")"
 
-# scan_history 저장용 JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "status": "$STATUS",

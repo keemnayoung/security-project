@@ -56,7 +56,7 @@ fi
 #    - /etc/xinetd.d/finger 가 존재할 때 disable = yes 가 명시되어 있지 않으면 취약(= disable=no 또는 disable 미설정 포함)
 if [ -f "$XINETD_FINGER" ]; then
   # 주석 제외한 disable 라인(마지막 기준)
-  DISABLE_LINE_RAW=$(grep -nEv '^[[:space:]]*#' "$XINETD_FINGER" 2>/dev/null | grep -iE '^[[:space:]]*disable[[:space:]]*=' | tail -n 1 || true)
+  DISABLE_LINE_RAW=$(grep -nEv '^[[:space:]]*#' "$XINETD_FINGER" 2>/dev/null | tr -d '\r' < /etc/xinetd.d/finger | grep -nEv '^[[:space:]]*#' | grep -niE '[[:space:]]*disable[[:space:]]*=' | tail -n 1 || true)
   DISABLE_VAL=$(printf "%s" "$DISABLE_LINE_RAW" | awk -F= '{gsub(/[[:space:]]/,"",$2); print tolower($2)}')
 
   if [ -z "$DISABLE_LINE_RAW" ]; then
