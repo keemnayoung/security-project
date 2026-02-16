@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-08
@@ -64,6 +64,7 @@ format_non_scram() {
   printf "%s" "${out%,}"
 }
 
+# pg_hba_file_rules에서 auth_method=md5 규칙 조회
 MD5_RULE_ROWS=$(run_psql "
 SELECT line_number || '|' || type || '|' ||
        COALESCE(array_to_string(database, ','), '') || '|' ||
@@ -77,10 +78,11 @@ ORDER BY line_number;
 
 if [ $? -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="pg_hba_file_rules 조회 실패(md5 규칙 점검 불가)"
-  REASON_LINE="D-08 취약: ${EVIDENCE}"
-  DETAIL_CONTENT="접속 계정의 pg_hba_file_rules 조회 권한과 PostgreSQL 상태를 확인하십시오."
+  EVIDENCE="pg_hba_file_rules를 조회하지 못하여 md5 인증 규칙 존재 여부를 점검할 수 없습니다.\n조치 방법은 접속 계정의 조회 권한과 PostgreSQL 상태를 확인해주시기 바랍니다."
+  REASON_LINE="${EVIDENCE}"
+  DETAIL_CONTENT="pg_hba_file_rules 조회 권한 및 DB 상태를 점검해주시기 바랍니다."
 else
+  # 로그인 가능 계정 중 SCRAM-SHA-256 미사용(또는 비밀번호 미설정) 계정 조회
   NON_SCRAM_ROWS=$(run_psql "
 SELECT rolname || '|' ||
        CASE
@@ -101,29 +103,29 @@ ORDER BY rolname;
 
   if [ $? -ne 0 ]; then
     STATUS="FAIL"
-    EVIDENCE="계정별 해시 알고리즘 조회 실패(pg_authid 접근 오류)"
-    REASON_LINE="D-08 취약: ${EVIDENCE}"
-    DETAIL_CONTENT="PostgreSQL 접속 권한(POSTGRES_USER/PG_SUPERUSER) 및 pg_authid 조회 권한을 확인하십시오."
+    EVIDENCE="pg_authid를 조회하지 못하여 계정별 해시 알고리즘을 점검할 수 없습니다.\n조치 방법은 PostgreSQL 접속 권한과 pg_authid 조회 권한을 확인해주시기 바랍니다."
+    REASON_LINE="${EVIDENCE}"
+    DETAIL_CONTENT="POSTGRES_USER 또는 PG_SUPERUSER 권한 및 pg_authid 조회 권한을 점검해주시기 바랍니다."
   else
     MD5_DESC="$(format_md5_rules "$MD5_RULE_ROWS")"
     NON_SCRAM_DESC="$(format_non_scram "$NON_SCRAM_ROWS")"
 
     if [ -z "$MD5_DESC" ] && [ -z "$NON_SCRAM_DESC" ]; then
       STATUS="PASS"
-      EVIDENCE="md5 인증 규칙 없음. 모든 로그인 계정 SCRAM-SHA-256 사용."
-      REASON_LINE="D-08 양호: ${EVIDENCE}"
+      EVIDENCE="md5 인증 규칙이 확인되지 않고, 모든 로그인 계정이 SCRAM-SHA-256을 사용하고 있으므로 이 항목에 대한 보안 위협이 없습니다."
+      REASON_LINE="${EVIDENCE}"
       DETAIL_CONTENT="현재 기준에서 추가 조치가 필요하지 않습니다."
     else
       STATUS="FAIL"
       if [ -n "$MD5_DESC" ] && [ -n "$NON_SCRAM_DESC" ]; then
-        EVIDENCE="md5 인증 규칙: ${MD5_DESC}. SCRAM 미사용 계정: ${NON_SCRAM_DESC}."
+        EVIDENCE="md5 인증 규칙이 존재하고 SCRAM-SHA-256을 사용하지 않는 로그인 계정이 확인되어 계정 탈취 및 무차별 대입 공격 위험이 있습니다.\n조치 방법은 pg_hba.conf에서 md5 인증 규칙을 제거하고, 해당 계정의 비밀번호를 SCRAM-SHA-256 방식으로 재설정한 뒤 재검증해주시기 바랍니다."
       elif [ -n "$MD5_DESC" ]; then
-        EVIDENCE="md5 인증 규칙: ${MD5_DESC}."
+        EVIDENCE="md5 인증 규칙이 존재하여 약한 해시 기반 인증이 사용될 수 있어 계정 탈취 위험이 있습니다.\n조치 방법은 pg_hba.conf에서 md5 인증 규칙을 제거하고 SCRAM-SHA-256 기반 인증으로 전환한 뒤 재검증해주시기 바랍니다."
       else
-        EVIDENCE="SCRAM 미사용 계정: ${NON_SCRAM_DESC}."
+        EVIDENCE="SCRAM-SHA-256을 사용하지 않는 로그인 계정이 확인되어 비밀번호 유출 및 계정 탈취 위험이 있습니다.\n조치 방법은 해당 계정의 비밀번호를 SCRAM-SHA-256 방식으로 재설정하고 재검증해주시기 바랍니다."
       fi
-      REASON_LINE="D-08 취약: ${EVIDENCE}"
-      DETAIL_CONTENT="md5 인증 규칙 제거 및 미준수 계정 SCRAM 전환 후 재검증하십시오."
+      REASON_LINE="${EVIDENCE}"
+      DETAIL_CONTENT="md5 인증 규칙은 ${MD5_DESC:-없음} 이며, SCRAM-SHA-256 미사용 계정은 ${NON_SCRAM_DESC:-없음} 입니다. md5 규칙 제거 및 계정 비밀번호 재설정 후 재점검해주시기 바랍니다."
     fi
   fi
 fi

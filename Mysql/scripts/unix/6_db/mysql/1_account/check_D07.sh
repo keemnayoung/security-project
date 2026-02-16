@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-07
@@ -24,6 +24,7 @@ TARGET_FILE="/etc/my.cnf"
 EVIDENCE="N/A"
 
 # 실제 mysqld 바이너리(/proc/<pid>/exe)가 확인되는 프로세스만 수집
+# - 같은 이름의 가짜 프로세스(예: comm만 mysqld로 위장)를 제외
 get_real_mysqld_proc_info() {
     local pid user comm exe
     while read -r pid user comm; do
@@ -42,8 +43,8 @@ DETAIL_CONTENT=""
 
 if [[ -z "$PROC_INFO" ]]; then
     STATUS="FAIL"
-    REASON_LINE="MySQL 서비스(mysqld) 프로세스를 확인할 수 없어, 서비스 구동 계정을 점검할 수 없습니다."
-    DETAIL_CONTENT="proc_info=EMPTY"
+    REASON_LINE="MySQL 서비스(mysqld) 프로세스를 확인할 수 없어 서비스 구동 계정을 점검할 수 없습니다.\n조치 방법은 MySQL 서비스가 실행 중인지 확인하시고, 실행 중인 경우 프로세스 조회 권한 및 /proc 접근 가능 여부를 점검해주시기 바랍니다."
+    DETAIL_CONTENT="프로세스 정보가 확인되지 않았습니다(proc_info=EMPTY)."
 else
     # root 계정으로 실행 중인 mysqld 존재 여부 확인
     ROOT_PROC=$(echo "$PROC_INFO" | awk -F'\t' '$2=="root"')
@@ -51,15 +52,17 @@ else
     if [[ -z "$ROOT_PROC" ]]; then
         STATUS="PASS"
         RUN_USER=$(echo "$PROC_INFO" | awk -F'\t' 'NR==1{print $2}')
-        REASON_LINE="MySQL 서비스가 root 권한이 아닌 '${RUN_USER}' 계정으로 실행되고 있어, 서비스 권한 남용으로 인한 시스템 손상 위험이 낮습니다."
-        DETAIL_CONTENT="run_user=${RUN_USER}; proc_count=$(echo "$PROC_INFO" | awk 'END{print NR+0}')"
+        REASON_LINE="MySQL 서비스가 root 권한이 아닌 '${RUN_USER}' 계정으로 실행되고 있어 과도한 권한으로 인한 시스템 손상 위험이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
+        DETAIL_CONTENT="서비스 실행 계정은 ${RUN_USER} 이며, 확인된 프로세스 수는 $(echo "$PROC_INFO" | awk 'END{print NR+0}')건입니다."
     else
         STATUS="FAIL"
-        REASON_LINE="MySQL 서비스가 root 권한으로 실행되고 있어, 서비스 취약점 악용 시 시스템 전체가 손상될 수 있는 위험이 있습니다."
-        DETAIL_CONTENT="root_proc=$(echo "$ROOT_PROC" | awk -F'\t' '{print $1":"$3}' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        REASON_LINE="MySQL 서비스가 root 권한으로 실행되고 있어 서비스 취약점 악용 시 시스템 전체가 손상될 수 있는 위험이 있습니다.\n조치 방법은 MySQL 서비스를 전용 계정(mysql 등)으로 실행하도록 설정을 변경해주시기 바랍니다. 또한 systemd 유닛 또는 설정 파일에서 User/Group 지정 여부를 점검하신 후 서비스를 재기동해주시기 바랍니다."
+        DETAIL_CONTENT="root 권한으로 실행 중인 프로세스는 $(echo "$ROOT_PROC" | awk -F'\t' '{print $1":"$3}' | tr '\n' ' ' | sed 's/[[:space:]]*$//') 입니다."
     fi
 fi
 
+# 점검 명령 설명:
+# - ps로 mysqld/mariadbd 후보를 찾고, /proc/<pid>/exe로 실제 실행 바이너리 경로를 확인
 CHECK_COMMAND="ps -eo pid=,user=,comm= | awk '\$3==\"mysqld\" || \$3==\"mariadbd\"{print \$1, \$2, \$3}' + readlink -f /proc/<pid>/exe"
 RAW_EVIDENCE=$(cat <<EOF
 {

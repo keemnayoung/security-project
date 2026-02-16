@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-04
@@ -28,7 +28,7 @@ EVIDENCE="N/A"
 GUIDE_MSG="N/A"
 
 ALLOWED_SUPERUSERS="${ALLOWED_SUPERUSERS:-postgres}"
-# 정책 허용 계정 + 실제 점검/조치 접속 관리자 계정(POSTGRES_USER/PG_SUPERUSER)을 모두 허용 목록으로 사용
+# 정책 허용 계정 + 실제 점검/조치 접속 관리자 계정(POSTGRES_USER/PG_SUPERUSER) 포함
 MERGED_ALLOWED="${ALLOWED_SUPERUSERS},${POSTGRES_USER},${PG_SUPERUSER}"
 ALLOWED_SUPERUSERS_MERGED="$(printf '%s' "$MERGED_ALLOWED" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd, -)"
 [ -z "$ALLOWED_SUPERUSERS_MERGED" ] && ALLOWED_SUPERUSERS_MERGED="postgres"
@@ -46,7 +46,7 @@ run_psql() {
 }
 
 escape_json_str() {
-  # JSON 문자열 안전 처리: \, ", 줄바꿈
+  # JSON 문자열 안전 처리(\, ", 줄바꿈)
   echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
@@ -61,6 +61,7 @@ done
 SQL_LIST="${SQL_LIST%,}"
 [ -z "$SQL_LIST" ] && SQL_LIST="'postgres'"
 
+# SUPERUSER 계정 중 허용 목록(SQL_LIST) 외 계정 조회
 EXTRA_ADMINS=$(run_psql "
 SELECT rolname
 FROM pg_roles
@@ -71,16 +72,16 @@ ORDER BY rolname;
 
 if [ $? -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="SUPERUSER 목록 조회 실패"
-  GUIDE_MSG="postgres 계정 접근 권한을 확인하십시오."
+  EVIDENCE="SUPERUSER 목록을 조회하지 못하여 관리자 권한 최소화 상태를 점검할 수 없습니다.\n조치 방법은 postgres 계정 접근 권한과 접속 정보를 확인해주시기 바랍니다."
+  GUIDE_MSG="pg_roles 조회 권한 및 접속 설정을 확인해주시기 바랍니다."
 elif [ -z "$EXTRA_ADMINS" ]; then
   STATUS="PASS"
-  EVIDENCE="허용 목록(${ALLOWED_SUPERUSERS_MERGED}) 외 SUPERUSER 계정 없음"
+  EVIDENCE="허용 목록(${ALLOWED_SUPERUSERS_MERGED}) 외 SUPERUSER 계정이 확인되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
   GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 else
   STATUS="FAIL"
-  EVIDENCE="허용 목록 외 SUPERUSER 계정: $(echo "$EXTRA_ADMINS" | tr '\n' ',' | sed 's/,$//')"
-  GUIDE_MSG="불필요 계정에 대해 ALTER ROLE <계정명> NOSUPERUSER; ALTER ROLE <계정명> NOCREATEROLE; ALTER ROLE <계정명> NOCREATEDB; ALTER ROLE <계정명> NOREPLICATION; ALTER ROLE <계정명> NOBYPASSRLS; 로 관리자 권한을 회수하십시오."
+  EVIDENCE="허용 목록(${ALLOWED_SUPERUSERS_MERGED}) 외 SUPERUSER 계정이 확인되어 과도한 관리자 권한으로 인한 권한 오남용 및 침해 확산 위험이 있습니다.\n조치 방법은 불필요한 계정의 SUPERUSER 및 관리자 권한을 회수하거나 로그인 제한을 적용해주시기 바랍니다."
+  GUIDE_MSG="허용 목록 외 SUPERUSER 계정은 $(echo "$EXTRA_ADMINS" | tr '\n' ',' | sed 's/,$//') 입니다. 예) ALTER ROLE <계정명> NOSUPERUSER; ALTER ROLE <계정명> NOCREATEROLE; ALTER ROLE <계정명> NOCREATEDB; ALTER ROLE <계정명> NOREPLICATION; ALTER ROLE <계정명> NOBYPASSRLS; 를 적용해주시기 바랍니다."
 fi
 
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"

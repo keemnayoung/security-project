@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-11
@@ -22,6 +22,7 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 TARGET_FILE="information_schema"
 EVIDENCE="N/A"
 
+# timeout 미사용(원본 로직 유지)
 TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
 MYSQL_USER="${MYSQL_USER:-root}"
@@ -29,6 +30,7 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
+# 시스템 스키마 권한(스키마/테이블/전역) 조회
 QUERY="
 SELECT GRANTEE, 'SCHEMA' AS SCOPE, TABLE_SCHEMA AS OBJ, PRIVILEGE_TYPE
 FROM information_schema.schema_privileges
@@ -49,6 +51,7 @@ else
     LIST=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
 fi
 
+# 허용 계정 목록(기본 DBA/시스템 계정)
 ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
 is_allowed_user() {
@@ -60,6 +63,7 @@ is_allowed_user() {
     return 1
 }
 
+# GRANTEE 문자열에서 user 추출
 extract_user_from_grantee() {
     echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
 }
@@ -69,17 +73,17 @@ DETAIL_CONTENT=""
 
 if [[ "$LIST" == "ERROR_TIMEOUT" ]]; then
     STATUS="FAIL"
-    REASON_LINE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 수행하지 못했습니다."
-    DETAIL_CONTENT="timeout_sec=${MYSQL_TIMEOUT}"
+    REASON_LINE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 수행하지 못했습니다.\n조치 방법은 DB 응답 지연 또는 접속 설정을 확인하신 후 재시도해주시기 바랍니다."
+    DETAIL_CONTENT="제한 시간은 ${MYSQL_TIMEOUT}초로 설정되어 있습니다(timeout_sec=${MYSQL_TIMEOUT})."
 elif [[ "$LIST" == "ERROR" ]]; then
     STATUS="FAIL"
-    REASON_LINE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 점검을 수행할 수 없습니다."
-    DETAIL_CONTENT="mysql_access=FAILED"
+    REASON_LINE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 점검을 수행할 수 없습니다.\n조치 방법은 진단 계정 권한 및 접속 정보를 확인해주시기 바랍니다."
+    DETAIL_CONTENT="MySQL 접속 상태가 확인되지 않았습니다(mysql_access=FAILED)."
 else
     if [[ -z "$LIST" ]]; then
         STATUS="PASS"
-        REASON_LINE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
-        DETAIL_CONTENT="no_privileges_found=1"
+        REASON_LINE="시스템 스키마(mysql/performance_schema/sys/information_schema) 관련 권한이 일반 사용자에게 부여되어 있지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+        DETAIL_CONTENT="시스템 스키마 관련 권한 조회 결과가 없습니다(no_privileges_found=1)."
     else
         VIOLATION_COUNT=0
         SAMPLE="N/A"
@@ -99,12 +103,12 @@ else
 
         if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
             STATUS="PASS"
-            REASON_LINE="시스템 테이블 관련 권한이 일반 사용자에게 부여되어 있지 않아 D-11 기준을 충족합니다."
-            DETAIL_CONTENT="allowed_only=1; allowed_users=${ALLOWED_USERS_CSV}"
+            REASON_LINE="시스템 스키마(mysql/performance_schema/sys/information_schema) 관련 권한이 허용 계정으로만 제한되어 있으므로 이 항목에 대한 보안 위협이 없습니다."
+            DETAIL_CONTENT="허용 계정 외 위반 항목이 확인되지 않았습니다(allowed_only=1). 허용 계정 목록은 ${ALLOWED_USERS_CSV} 입니다."
         else
             STATUS="FAIL"
-            REASON_LINE="DBA 외 계정에 시스템 테이블 접근 가능 권한이 확인되었습니다."
-            DETAIL_CONTENT="violation_count=${VIOLATION_COUNT}; sample=${SAMPLE}; allowed_users=${ALLOWED_USERS_CSV}"
+            REASON_LINE="DBA 외 계정에 시스템 스키마 접근 권한이 부여되어 정보 노출 또는 권한 오남용 위험이 있습니다.\n조치 방법은 일반 계정에 부여된 전역/스키마/테이블 권한을 REVOKE로 회수해주시기 바라며, 업무 DB에 필요한 권한만 최소 범위로 재부여해주시기 바랍니다. 또한 시스템 스키마 권한은 허용 계정(ALLOWED_USERS_CSV)으로만 제한해주시기 바랍니다."
+            DETAIL_CONTENT="위반 항목은 ${VIOLATION_COUNT}건이며, 예시는 ${SAMPLE} 입니다. 허용 계정 목록은 ${ALLOWED_USERS_CSV} 입니다."
         fi
     fi
 fi

@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-01
@@ -54,16 +54,16 @@ WHERE r.rolsuper = true
 
 if [ $? -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="SUPERUSER 비밀번호 설정 상태 조회 실패"
-  GUIDE_MSG="postgres 계정으로 pg_shadow 조회 권한을 확인하십시오."
+  EVIDENCE="SUPERUSER 비밀번호 설정 상태를 조회하지 못하여 점검을 수행할 수 없습니다.\n조치 방법은 postgres 계정으로 pg_shadow 조회 권한과 접속 정보를 확인해주시기 바랍니다."
+  GUIDE_MSG="pg_shadow 조회 권한 및 접속 설정을 확인해주시기 바랍니다."
 elif [ -z "$VULN_USERS" ]; then
   STATUS="PASS"
-  EVIDENCE="SUPERUSER 계정의 비밀번호 설정 상태 양호"
+  EVIDENCE="SUPERUSER 계정에 비밀번호가 설정되어 있으며 비밀번호 미설정 계정이 확인되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
   GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 else
   STATUS="FAIL"
-  EVIDENCE="비밀번호 미설정 SUPERUSER 계정: $(echo "$VULN_USERS" | tr '\n' ',' | sed 's/,$//')"
-  GUIDE_MSG="기본 관리자 계정의 비밀번호를 변경하십시오. 예) ALTER ROLE <계정명> WITH PASSWORD '<강력한 비밀번호>';"
+  EVIDENCE="비밀번호가 설정되지 않은 SUPERUSER 계정이 확인되어 관리자 계정 탈취 및 권한 오남용 위험이 있습니다.\n조치 방법은 해당 SUPERUSER 계정에 강력한 비밀번호를 설정해주시기 바랍니다."
+  GUIDE_MSG="비밀번호 미설정 SUPERUSER 계정은 $(echo "$VULN_USERS" | tr '\n' ',' | sed 's/,$//') 입니다. 예) ALTER ROLE <계정명> WITH PASSWORD '<강력한 비밀번호>'; 를 적용해주시기 바랍니다."
 fi
 
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"

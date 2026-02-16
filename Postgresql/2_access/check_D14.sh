@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-14
@@ -25,11 +25,15 @@ STATUS="PASS"
 EVIDENCE_LIST=""
 GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 
+# 데이터 디렉터리 경로 조회
 DATA_DIR=$(run_psql "SHOW data_directory;" | xargs)
 [ -z "$DATA_DIR" ] && DATA_DIR="$PGDATA"
+# pg_hba.conf 경로 조회
 HBA_FILE=$(run_psql "SHOW hba_file;" | xargs)
+# postgresql.conf 경로 조회
 CONF_FILE=$(run_psql "SHOW config_file;" | xargs)
 IDENT_FILE="$DATA_DIR/pg_ident.conf"
+# 로그 디렉터리 설정값 조회
 LOG_DIR=$(run_psql "SHOW log_directory;" | xargs)
 
 if [ -n "$LOG_DIR" ] && [ "${LOG_DIR#/}" = "$LOG_DIR" ]; then
@@ -87,15 +91,16 @@ check_item "$HISTORY_FILE" 600 "file"
 check_item "$LOG_DIR" 750 "logdir"
 
 if [ "$STATUS" = "PASS" ]; then
-  EVIDENCE="주요 파일 권한 양호(data=$DATA_DIR, conf=$CONF_FILE, hba=$HBA_FILE)"
+  EVIDENCE="주요 파일 및 디렉터리의 소유자와 권한이 기준에 부합하여 이 항목에 대한 보안 위협이 없습니다."
+  GUIDE_MSG="점검 대상 경로는 data=${DATA_DIR}, conf=${CONF_FILE}, hba=${HBA_FILE}, ident=${IDENT_FILE}, history=${HISTORY_FILE}, log_dir=${LOG_DIR} 입니다."
 else
-  EVIDENCE="취약 권한 항목: ${EVIDENCE_LIST%,}"
-  GUIDE_MSG="postgresql.conf/pg_hba.conf/pg_ident.conf/log 파일은 640 이하, .psql_history는 600 이하로 설정하십시오."
+  EVIDENCE="주요 파일 및 디렉터리의 소유자 또는 권한이 기준을 초과하여 정보 노출 및 권한 오남용 위험이 있습니다.\n조치 방법은 취약 항목의 소유자를 ${PG_SUPERUSER} 또는 postgres로 정리하고, postgresql.conf/pg_hba.conf/pg_ident.conf 및 로그 파일은 640 이하, .psql_history는 600 이하로 설정해주시기 바랍니다."
+  GUIDE_MSG="취약 항목은 ${EVIDENCE_LIST%,} 입니다. 설정 변경 후 동일 기준으로 재점검해주시기 바랍니다."
 fi
 
 # ===== 표준 출력(scan_history) =====
 CHECK_COMMAND="stat 기반 주요 파일/디렉터리 권한·소유자 점검(data_directory/config_file/hba_file/log_directory/.psql_history)"
-REASON_LINE="D-14 ${STATUS}: ${EVIDENCE}"
+REASON_LINE="${EVIDENCE}"
 DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 TARGET_FILE="${DATA_DIR},${CONF_FILE},${HBA_FILE},${IDENT_FILE},${HISTORY_FILE},${LOG_DIR}"

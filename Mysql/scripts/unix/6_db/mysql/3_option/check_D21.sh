@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 한은결
-# @Last Updated: 2026-02-07
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-21
@@ -31,7 +31,7 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
-# 인가 예외(기관 정책에 따라 확장)
+# 인가 예외 목록
 ALLOWED_GRANT_USERS_CSV="${ALLOWED_GRANT_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 ALLOWED_GRANT_PRINCIPALS_CSV="${ALLOWED_GRANT_PRINCIPALS_CSV:-root@localhost,root@127.0.0.1,root@::1}"
 ALLOWED_GRANT_GRANTEES_CSV="${ALLOWED_GRANT_GRANTEES_CSV:-}"
@@ -41,6 +41,7 @@ escape_json_str() {
 }
 
 in_csv() {
+  # 대소문자/공백 정규화 후 CSV 포함 여부 확인
   local needle="$1"
   local csv="$2"
   needle="$(printf "%s" "$needle" | tr '[:upper:]' '[:lower:]')"
@@ -61,6 +62,7 @@ is_allowed_grantee() {
   local grantee="$1"
   local user host principal
 
+  # GRANTEE 문자열 자체 예외
   if [[ -n "$ALLOWED_GRANT_GRANTEES_CSV" ]] && in_csv "$grantee" "$ALLOWED_GRANT_GRANTEES_CSV"; then
     return 0
   fi
@@ -69,6 +71,7 @@ is_allowed_grantee() {
   host="$(extract_host_from_grantee "$grantee")"
   principal="${user}@${host}"
 
+  # user / user@host 예외
   in_csv "$user" "$ALLOWED_GRANT_USERS_CSV" && return 0
   in_csv "$principal" "$ALLOWED_GRANT_PRINCIPALS_CSV" && return 0
   return 1
@@ -76,6 +79,7 @@ is_allowed_grantee() {
 
 run_mysql_query() {
   local query="$1"
+  # timeout 적용(무한 대기 방지)
   if [[ -n "$TIMEOUT_BIN" ]]; then
     $TIMEOUT_BIN "${MYSQL_TIMEOUT}s" $MYSQL_CMD "$query" 2>/dev/null || echo "ERROR_TIMEOUT"
   else
@@ -106,6 +110,7 @@ R_GLOBAL="$(run_mysql_query "$Q_IS_GLOBAL")"
 
 FALLBACK_USED="N"
 if [[ "$R_TABLE" == "ERROR" || "$R_SCHEMA" == "ERROR" || "$R_GLOBAL" == "ERROR" ]]; then
+  # 정보 스키마 조회 실패 시 mysql.user(Grant_priv) 기반으로 대체
   FALLBACK_USED="Y"
   R_TABLE="N/A"
   R_SCHEMA="N/A"
@@ -114,12 +119,12 @@ fi
 
 if [[ "$R_TABLE" == "ERROR_TIMEOUT" || "$R_SCHEMA" == "ERROR_TIMEOUT" || "$R_GLOBAL" == "ERROR_TIMEOUT" ]]; then
   STATUS="ERROR"
-  REASON_LINE="D-21 ERROR: GRANT OPTION 부여 현황 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과했습니다."
-  DETAIL_CONTENT="DB 응답 지연으로 점검을 완료하지 못했기 때문에 이 항목에 대한 보안 상태를 판단할 수 없습니다. DB 상태(부하/네트워크) 확인 후 재실행하십시오."
+  REASON_LINE="GRANT OPTION 부여 현황 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 완료하지 못했습니다.\n조치 방법은 DB 상태(부하/네트워크)와 접속 환경을 확인하신 후 재실행해주시기 바랍니다."
+  DETAIL_CONTENT="DB 응답 지연으로 점검을 완료하지 못해 보안 상태를 판단할 수 없습니다."
 elif [[ "$R_GLOBAL" == "ERROR" ]]; then
   STATUS="ERROR"
-  REASON_LINE="D-21 ERROR: MySQL 접속 실패 또는 권한 부족으로 점검을 수행할 수 없습니다."
-  DETAIL_CONTENT="MySQL 접속 계정 권한 및 접속 정보를 확인한 뒤 재실행하십시오."
+  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 GRANT OPTION 부여 현황 점검을 수행할 수 없습니다.\n조치 방법은 진단 계정 권한 및 접속 정보를 확인하신 후 재실행해주시기 바랍니다."
+  DETAIL_CONTENT="MySQL 접속 또는 조회 권한 문제로 점검을 수행할 수 없습니다."
 else
   VULN_COUNT=0
   SAMPLE="N/A"
@@ -150,16 +155,16 @@ else
   if [[ "$VULN_COUNT" -eq 0 ]]; then
     STATUS="PASS"
     if [[ "$FALLBACK_USED" == "Y" ]]; then
-      REASON_LINE="D-21 PASS: mysql.user(Grant_priv='Y') 기준으로 인가되지 않은 GRANT OPTION이 확인되지 않습니다."
-      DETAIL_CONTENT="mysql.user에서 Grant_priv='Y'인 계정이 인가 목록으로 제한되어 있기 때문에 이 항목에 대한 보안 위협이 없습니다."
+      REASON_LINE="mysql.user(Grant_priv='Y') 기준으로 인가되지 않은 GRANT OPTION이 확인되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+      DETAIL_CONTENT="Grant_priv='Y'로 확인된 계정이 인가 목록으로 제한되어 있습니다."
     else
-      REASON_LINE="D-21 PASS: information_schema 권한 뷰에서 인가되지 않은 WITH GRANT OPTION/GRANT OPTION이 확인되지 않습니다."
-      DETAIL_CONTENT="information_schema의 table_privileges/schema_privileges/user_privileges에서 IS_GRANTABLE='YES' 또는 GRANT OPTION이 인가되지 않은 계정에 존재하지 않기 때문에 이 항목에 대한 보안 위협이 없습니다."
+      REASON_LINE="information_schema 권한 뷰에서 인가되지 않은 WITH GRANT OPTION 또는 GRANT OPTION이 확인되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
+      DETAIL_CONTENT="table_privileges/schema_privileges/user_privileges에서 IS_GRANTABLE='YES' 또는 GRANT OPTION이 인가되지 않은 계정에 존재하지 않습니다."
     fi
   else
     STATUS="FAIL"
-    REASON_LINE="D-21 FAIL: 인가되지 않은 계정에 WITH GRANT OPTION/GRANT OPTION이 부여되어 취약합니다."
-    DETAIL_CONTENT="information_schema(또는 mysql.user)에서 ${REASON} 설정이 인가되지 않은 계정에 존재하기 때문에 취약합니다. (총 ${VULN_COUNT}건, 예: ${SAMPLE}). 조치: 해당 계정에서 GRANT OPTION/IS_GRANTABLE 권한을 REVOKE로 회수하고, 권한 위임이 필요하면 ROLE에만 WITH GRANT OPTION을 부여한 뒤 사용자에는 ROLE만 부여하십시오."
+    REASON_LINE="인가되지 않은 계정에 WITH GRANT OPTION 또는 GRANT OPTION이 부여되어 권한 위임을 통한 권한 확대 위험이 있습니다.\n조치 방법은 해당 계정에서 GRANT OPTION 또는 IS_GRANTABLE 권한을 REVOKE로 회수해주시기 바랍니다. 권한 위임이 필요한 경우 ROLE에만 WITH GRANT OPTION을 부여하고, 사용자 계정에는 ROLE만 부여해주시기 바랍니다."
+    DETAIL_CONTENT="인가되지 않은 계정에 ${REASON} 설정이 확인되었습니다. 총 ${VULN_COUNT}건이며, 예시는 ${SAMPLE} 입니다."
   fi
 fi
 

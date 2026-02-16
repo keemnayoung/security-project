@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-11
@@ -42,6 +42,7 @@ is_allowed_dba() {
   return 1
 }
 
+# 위험 권한 후보 조회(위험 내장 롤 멤버십 + 시스템 스키마 테이블 권한)
 RISK_CANDIDATES=$(run_psql "
 WITH risk_role_member AS (
   SELECT DISTINCT m.rolname AS account
@@ -85,8 +86,8 @@ RC=$?
 
 if [ $RC -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="미인가 계정 점검 실패(권한/접속 오류)"
-  GUIDE_MSG="PostgreSQL 접속 정보 및 점검 계정 권한을 확인하십시오."
+  EVIDENCE="시스템 스키마 권한 위험 후보를 조회하지 못하여 미인가 계정 점검을 수행할 수 없습니다.\n조치 방법은 PostgreSQL 접속 정보와 점검 계정 권한을 확인해주시기 바랍니다."
+  GUIDE_MSG="접속 정보 및 점검 계정 권한을 점검해주시기 바랍니다."
 else
   FILTERED=""
   while IFS= read -r acct; do
@@ -101,12 +102,12 @@ else
 
   if [ -z "$FILTERED_CSV" ]; then
     STATUS="PASS"
-    EVIDENCE="미인가 일반계정의 시스템 테이블 접근 권한 없음"
+    EVIDENCE="허용되지 않은 일반 계정에 시스템 스키마 관련 위험 권한이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
     GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
   else
     STATUS="FAIL"
-    EVIDENCE="미인가 일반계정 접근 권한 발견: $FILTERED_CSV"
-    GUIDE_MSG="미인가 일반계정 접근 권한을 제거하십시오."
+    EVIDENCE="허용되지 않은 일반 계정에 시스템 스키마 관련 위험 권한이 확인되어 정보 노출 및 권한 오남용 위험이 있습니다.\n조치 방법은 해당 계정의 위험 내장 롤 멤버십을 제거하고, pg_catalog 또는 information_schema에 부여된 불필요 권한을 회수해주시기 바랍니다."
+    GUIDE_MSG="미인가로 판단된 계정은 ${FILTERED_CSV} 입니다. 해당 계정의 위험 내장 롤(pg_read_all_data 등) 멤버십 제거 및 시스템 스키마 권한(REVOKE)을 적용해주시기 바랍니다."
   fi
 
   # ⚠️ 원본에 남아있던 미정의 변수(cnt) 기반 분기 블록은
@@ -116,7 +117,7 @@ fi
 
 # ===== 표준 출력(scan_history) =====
 CHECK_COMMAND="run_psql: 시스템 스키마 권한 위험 후보(role membership/table grants) 조회"
-REASON_LINE="D-11 ${STATUS}: ${EVIDENCE}"
+REASON_LINE="${EVIDENCE}"
 DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 TARGET_FILE="pg_auth_members,information_schema.table_privileges"

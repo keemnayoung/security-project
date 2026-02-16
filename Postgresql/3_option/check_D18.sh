@@ -31,6 +31,7 @@ GUIDE_MSG="N/A"
 # 본 점검은 "PUBLIC에 스키마 CREATE 권한이 남아있는지"를 점검합니다.
 # (특히 schema public의 CREATE 권한은 권한 확산의 대표 원인)
 
+# PUBLIC(grantee=0)에 부여된 비시스템 스키마(public 포함) CREATE/USAGE 권한 조회
 PUBLIC_SCHEMA_CREATE=$(run_psql "
 SELECT n.nspname || ':' || e.privilege_type
 FROM pg_namespace n
@@ -47,21 +48,21 @@ ORDER BY 1;
 
 if [ $? -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="PUBLIC 스키마 권한 조회 실패"
-  GUIDE_MSG="DB 접속 정보 및 pg_namespace/aclexplode 조회 권한을 확인하십시오."
+  EVIDENCE="PUBLIC 대상 스키마 권한을 조회하지 못하여 점검을 수행할 수 없습니다.\n조치 방법은 DB 접속 정보와 pg_namespace/aclexplode 조회 권한을 확인해주시기 바랍니다."
+  GUIDE_MSG="접속 정보 및 권한을 점검해주시기 바랍니다."
 elif [ -z "$PUBLIC_SCHEMA_CREATE" ]; then
   STATUS="PASS"
-  EVIDENCE="PUBLIC 대상 스키마 권한 없음"
+  EVIDENCE="PUBLIC 대상 스키마 권한이 확인되지 않아 권한 확산 위험이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
   GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
 else
   STATUS="FAIL"
-  EVIDENCE="PUBLIC 대상 스키마 권한: $(echo "$PUBLIC_SCHEMA_CREATE" | tr '\n' ',' | sed 's/,$//')"
-  GUIDE_MSG="특히 schema public에 대해 REVOKE CREATE ON SCHEMA public FROM PUBLIC; 을 적용하고, 불필요한 PUBLIC 권한을 회수하십시오."
+  EVIDENCE="PUBLIC 대상 스키마 권한이 확인되어 비인가 사용자의 객체 생성 또는 권한 확산 위험이 있습니다.\n조치 방법은 schema public에서 PUBLIC의 CREATE 권한을 회수하고, 비시스템 스키마에 부여된 불필요한 PUBLIC 권한을 정리해주시기 바랍니다."
+  GUIDE_MSG="확인된 항목은 $(echo "$PUBLIC_SCHEMA_CREATE" | tr '\n' ',' | sed 's/,$//') 입니다. 예) REVOKE CREATE ON SCHEMA public FROM PUBLIC; 적용 후 재점검해주시기 바랍니다."
 fi
 
 # ===== 표준 출력(scan_history) =====
 CHECK_COMMAND="aclexplode 기반 PUBLIC(grantee=0) 스키마 권한(CREATE/USAGE) 점검"
-REASON_LINE="D-18 ${STATUS}: ${EVIDENCE}"
+REASON_LINE="${EVIDENCE}"
 DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 TARGET_FILE="pg_namespace(nspacl),aclexplode(),schema(public 및 비시스템 스키마)"

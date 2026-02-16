@@ -24,8 +24,11 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 GUIDE_MSG="N/A"
 
+# postgresql.conf 실제 경로 조회
 CONF_FILE=$(run_psql "SHOW config_file;" | xargs)
+# pg_hba.conf 실제 경로 조회
 HBA_FILE=$(run_psql "SHOW hba_file;" | xargs)
+# listen_addresses 설정값 조회
 LISTEN_ADDR=$(run_psql "SHOW listen_addresses;" | xargs)
 
 resolve_conf_path() {
@@ -132,8 +135,8 @@ fi
 
 if [ -z "$HBA_FILE" ] || [ ! -f "$HBA_FILE" ]; then
   STATUS="FAIL"
-  EVIDENCE="pg_hba.conf 경로 확인 실패"
-  GUIDE_MSG="SHOW hba_file 결과와 파일 접근 권한을 확인하십시오."
+  EVIDENCE="pg_hba.conf 경로를 확인하지 못하여 원격 접속 허용 범위를 점검할 수 없습니다.\n조치 방법은 SHOW hba_file 결과와 파일 접근 권한을 확인해주시기 바랍니다."
+  GUIDE_MSG="hba_file 경로 확인 및 파일 접근 권한을 점검해주시기 바랍니다."
 else
   HOST_SUMMARY=$(
     awk '
@@ -189,21 +192,21 @@ else
     LISTEN_STATUS="허용"
   fi
 
-  # D-10 범위: 원격 접속 제한(주소/바인딩). trust(METHOD)는 별도 항목에서 조치한다.
+  # D-10 범위: 원격 접속 제한(주소/바인딩)
   if [ "$LISTEN_STATUS" != "허용" ] || [ -n "$OPEN_ADDR" ] || [ -n "$OTHER_ADDR" ]; then
     STATUS="FAIL"
-    EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS}). pg_hba.conf CIDR-ADDRESS 전체=${ALLOWED_ADDR:-없음}. 조건1(open/*/all)=${OPEN_ADDR:-없음}. 조건2(loopback/localhost 허용)=${LOOPBACK_ADDR:-없음}. 조건3(기타 원격 CIDR)=${OTHER_ADDR:-없음}. (참고) trust METHOD 라인=${TRUST_LINES:-없음}."
-    GUIDE_MSG="1) postgresql.conf(listen_addresses)를 localhost/루프백만 남겨야 합니다.\n2) pg_hba.conf의 CIDR-ADDRESS가 *, all, 0.0.0.0/0, ::/0 인 host 규칙은 제거하십시오.\n3) loopback/localhost가 아닌 CIDR(예: samenet/사내망 대역 등)은 기관 정책에 맞게 '필요 최소 대역만' 남기거나 제거하십시오.\n4) 적용 후 서비스 재시작 명령어 sudo systemctl restart postgresql; 또는 시스템 재기동 명령어 sudo systemctl reload postgresql; 후 재점검하십시오."
+    EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS})이며 pg_hba.conf에서 원격 CIDR 허용이 확인되어 무단 원격 접속 위험이 있습니다.\n조치 방법은 listen_addresses를 루프백(localhost/127.0.0.1/::1)만 남기고, pg_hba.conf의 open 대역(*, all, 0.0.0.0/0, ::/0 등) 및 불필요 원격 CIDR을 제거하거나 필요 최소 대역만 남겨주시기 바랍니다."
+    GUIDE_MSG="CIDR-ADDRESS 전체는 ${ALLOWED_ADDR:-없음} 입니다. open 대역은 ${OPEN_ADDR:-없음} 이며, 루프백 허용은 ${LOOPBACK_ADDR:-없음} 이고, 기타 원격 CIDR은 ${OTHER_ADDR:-없음} 입니다. 설정 적용 후 postgresql 서비스를 재시작 또는 리로드한 뒤 재점검해주시기 바랍니다. trust METHOD 라인은 ${TRUST_LINES:-없음} 입니다."
   else
     STATUS="PASS"
-    EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS}). pg_hba.conf CIDR-ADDRESS 전체=${ALLOWED_ADDR:-없음}. 조건1(open/*/all)=없음. 조건2(loopback/localhost 허용)=${LOOPBACK_ADDR:-없음}. 조건3(기타 원격 CIDR)=없음. (참고) trust METHOD 라인=${TRUST_LINES:-없음}."
-    GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
+    EVIDENCE="listen_addresses=${LISTEN_ADDR:-unknown} (${LISTEN_STATUS})이며 pg_hba.conf에서 open 대역 및 불필요 원격 CIDR이 확인되지 않아 원격 접속이 제한되어 있으므로 이 항목에 대한 보안 위협이 없습니다."
+    GUIDE_MSG="CIDR-ADDRESS 전체는 ${ALLOWED_ADDR:-없음} 이며, 루프백 허용은 ${LOOPBACK_ADDR:-없음} 입니다. trust METHOD 라인은 ${TRUST_LINES:-없음} 입니다."
   fi
 fi
 
 # ===== 표준 출력(scan_history) =====
 CHECK_COMMAND="SHOW config_file; SHOW hba_file; SHOW listen_addresses; parse pg_hba.conf(listen_addresses/CIDR-ADDRESS)"
-REASON_LINE="D-10 ${STATUS}: ${EVIDENCE}"
+REASON_LINE="${EVIDENCE}"
 DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 

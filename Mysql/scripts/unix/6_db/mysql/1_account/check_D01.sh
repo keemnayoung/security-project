@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 한은결
-# @Last Updated: 2026-02-11
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-01
@@ -21,7 +21,6 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="mysql.user"
 
-# 실행 안정성: DB 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 MYSQL_TIMEOUT_SEC=5
 MYSQL_USER="${MYSQL_USER:-root}"
@@ -29,7 +28,6 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD_BASE="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
-# [가이드 D-01(MySQL) 대응] 기본 계정(root/익명) 비밀번호/잠금 상태 조회
 QUERY_PRIMARY="SELECT user, host, COALESCE(authentication_string,''), COALESCE(account_locked,'N') FROM mysql.user WHERE user='root' OR user='';"
 QUERY_FALLBACK1="SELECT user, host, COALESCE(authentication_string,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
 QUERY_FALLBACK2="SELECT user, host, COALESCE(password,''), 'N' AS account_locked FROM mysql.user WHERE user='root' OR user='';"
@@ -52,10 +50,10 @@ DETAIL_CONTENT=""
 
 if [[ "$ACCOUNT_INFO" == "ERROR_TIMEOUT" ]]; then
     STATUS="FAIL"
-    REASON_LINE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다."
+    REASON_LINE="MySQL 명령 실행이 ${MYSQL_TIMEOUT_SEC}초 내에 완료되지 않아 대기 또는 지연이 발생하였으며, 무한 로딩 방지를 위해 처리를 중단하였습니다.\n조치 방법은 DB 상태/부하를 확인하신 후 재시도해주시기 바라며, 필요 시 timeout 값을 조정해주시기 바랍니다."
 elif [[ "$ACCOUNT_INFO" == "ERROR" ]]; then
     STATUS="FAIL"
-    REASON_LINE="MySQL 접속에 실패했거나 mysql.user 조회 권한이 없어 D-01 점검을 수행할 수 없습니다."
+    REASON_LINE="MySQL 접속에 실패했거나 mysql.user 조회 권한이 없어 D-01 점검을 수행할 수 없습니다.\n조치 방법은 접속 계정 권한(예: mysql.user 조회 권한) 및 인증 정보를 확인해주시기 바랍니다."
 else
     VULN_COUNT=0
     ROOT_COUNT=0
@@ -65,29 +63,27 @@ else
         [[ -z "$user" && -z "$host" ]] && continue
         [[ "$locked" == "Y" ]] && is_locked="Y" || is_locked="N"
 
-        # 익명 기본 계정은 잠금(또는 삭제)되어야 안전
         if [[ -z "$user" ]]; then
             if [[ "$is_locked" != "Y" ]]; then
                 VULN_COUNT=$((VULN_COUNT + 1))
-                REASONS+=("anonymous@${host}: 기본(익명) 계정이 활성 상태(잠금/삭제 필요)")
+                REASONS+=("anonymous@${host} 기본(익명) 계정이 활성 상태입니다(잠금 또는 삭제가 필요합니다).")
             fi
             continue
         fi
 
-        # root 계정: 초기 비밀번호(공란) 사용 여부 + 원격 root 제한
         if [[ "$user" == "root" ]]; then
             ROOT_COUNT=$((ROOT_COUNT + 1))
 
             if [[ "$is_locked" != "Y" && -z "$auth" ]]; then
                 VULN_COUNT=$((VULN_COUNT + 1))
-                REASONS+=("root@${host}: 비밀번호 미설정(초기/공란) 상태")
+                REASONS+=("root@${host} 비밀번호가 설정되지 않은 상태입니다(초기 또는 공란 상태입니다).")
                 continue
             fi
 
             if [[ "$is_locked" != "Y" ]]; then
                 case "$host" in
                     "localhost"|"127.0.0.1"|"::1") : ;;
-                    *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host}: 원격 root 계정 활성(로컬 제한/잠금/삭제 필요)") ;;
+                    *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host} 원격 root 계정이 활성 상태입니다(로컬로 제한하거나 잠금 또는 삭제가 필요합니다).") ;;
                 esac
             fi
         fi
@@ -95,20 +91,21 @@ else
 
     if [[ "$ROOT_COUNT" -eq 0 ]]; then
         STATUS="FAIL"
-        REASON_LINE="root 기본 계정을 확인할 수 없어 D-01 판정 불가"
+        REASON_LINE="root 기본 계정을 확인할 수 없어 D-01 판정이 어렵습니다.\n조치 방법은 mysql.user에 root 계정 존재 여부 및 조회 결과를 확인해주시기 바랍니다."
     else
         if [[ "$VULN_COUNT" -eq 0 ]]; then
             STATUS="PASS"
-            REASON_LINE="D-01 양호: 기본 계정의 초기 비밀번호 사용이 확인되지 않고, 불필요한 기본 계정이 제한되어 있습니다."
+            REASON_LINE="기본 계정의 초기 비밀번호 사용이 확인되지 않고, 불필요한 기본 계정이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
         else
             STATUS="FAIL"
-            REASON_LINE="D-01 취약: ${REASONS[*]}"
+            REASON_LINE="${REASONS[*]}\n조치 방법은 익명 계정을 삭제하거나 잠금 처리해주시기 바라며, root 비밀번호를 설정해주시기 바랍니다. 또한 원격 root(host) 항목은 제거하거나 잠금 처리해주시기 바라며, 조치 후 권한 및 설정을 재확인해주시기 바랍니다."
         fi
     fi
 fi
 
 CHECK_COMMAND="$MYSQL_CMD_BASE \"$QUERY_PRIMARY\" (fallback: \"$QUERY_FALLBACK1\" / \"$QUERY_FALLBACK2\")"
-DETAIL_CONTENT="account_info=$ACCOUNT_INFO"
+
+DETAIL_CONTENT="account_info=${ACCOUNT_INFO} 입니다."
 
 RAW_EVIDENCE=$(cat <<EOF
 {

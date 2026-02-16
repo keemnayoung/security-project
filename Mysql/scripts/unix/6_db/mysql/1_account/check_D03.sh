@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.0.1
 # @Author: 한은결
-# @Last Updated: 2026-02-11
+# @Last Updated: 2026-02-16
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-03
@@ -21,7 +21,6 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="mysql.system_variables"
 
-# 실행 안정성: DB 지연 시 무한 대기를 막기 위한 timeout/접속 옵션
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 MYSQL_TIMEOUT=5
 MYSQL_USER="${MYSQL_USER:-root}"
@@ -66,12 +65,12 @@ DETAIL_CONTENT=""
 
 if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
   STATUS="FAIL"
-  REASON_LINE="비밀번호 정책 변수 조회가 ${MYSQL_TIMEOUT}초를 초과하여 D-03 진단에 실패했습니다."
-  DETAIL_CONTENT="result=ERROR_TIMEOUT"
+  REASON_LINE="비밀번호 정책 변수 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-03 진단에 실패했습니다. DB 응답 지연 또는 접속 설정을 확인해주시기 바랍니다.\n조치 방법은 DB 상태/부하 및 접속 옵션을 점검하신 후 재시도해주시기 바랍니다."
+  DETAIL_CONTENT="조회 결과는 ERROR_TIMEOUT 입니다."
 elif [[ "$RESULT" == "ERROR" ]]; then
   STATUS="FAIL"
-  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 D-03(비밀번호 기간/복잡도) 점검을 수행할 수 없습니다."
-  DETAIL_CONTENT="result=ERROR"
+  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 D-03(비밀번호 기간/복잡도) 점검을 수행할 수 없습니다. 진단 계정 권한 또는 접속 정보를 점검해주시기 바랍니다.\n조치 방법은 진단 계정의 권한과 인증 정보를 확인해주시기 바랍니다."
+  DETAIL_CONTENT="조회 결과는 ERROR 입니다."
 else
   get_var() {
     local name="$1"
@@ -93,49 +92,49 @@ else
   REASONS=()
 
   if ! is_integer "$PASSWORD_LIFETIME"; then
-    REASONS+=("default_password_lifetime 값을 확인할 수 없음")
+    REASONS+=("default_password_lifetime 값을 확인할 수 없습니다.")
   elif [[ "$PASSWORD_LIFETIME" -le 0 ]]; then
-    REASONS+=("default_password_lifetime=${PASSWORD_LIFETIME}(0 이하)")
+    REASONS+=("default_password_lifetime 값이 ${PASSWORD_LIFETIME}로 확인되어(0 이하) 기준에 부합하지 않습니다.")
   fi
 
   if [[ -z "$POLICY" ]]; then
-    REASONS+=("validate_password 정책 변수 미확인(컴포넌트/플러그인 미적용 가능)")
+    REASONS+=("validate_password 정책 변수를 확인할 수 없습니다(컴포넌트 또는 플러그인이 적용되지 않았을 수 있습니다).")
   else
     POLICY_UPPER="$(echo "$POLICY" | tr '[:lower:]' '[:upper:]')"
     if [[ "$POLICY_UPPER" == "LOW" ]]; then
-      REASONS+=("validate_password policy가 LOW")
+      REASONS+=("validate_password policy가 LOW로 설정되어 기준에 부합하지 않습니다.")
     fi
   fi
 
   if ! is_integer "$LENGTH"; then
-    REASONS+=("비밀번호 최소 길이(validate_password length) 값을 확인할 수 없음")
+    REASONS+=("비밀번호 최소 길이(validate_password length) 값을 확인할 수 없습니다.")
   elif [[ "$LENGTH" -lt 8 ]]; then
-    REASONS+=("비밀번호 최소 길이=${LENGTH}(8 미만)")
+    REASONS+=("비밀번호 최소 길이가 ${LENGTH}로 확인되어(8 미만) 기준에 부합하지 않습니다.")
   fi
 
   for rule in "대소문자:$MIXED" "숫자:$NUMBER" "특수문자:$SPECIAL"; do
     label="${rule%%:*}"
     value="${rule#*:}"
     if ! is_integer "$value"; then
-      REASONS+=("${label} 조합 최소 개수 값을 확인할 수 없음")
+      REASONS+=("${label} 조합 최소 개수 값을 확인할 수 없습니다.")
       continue
     fi
     if [[ "$value" -lt 1 ]]; then
-      REASONS+=("${label} 조합 최소 개수=${value}(1 미만)")
+      REASONS+=("${label} 조합 최소 개수가 ${value}로 확인되어(1 미만) 기준에 부합하지 않습니다.")
     fi
   done
 
   if [[ "${#REASONS[@]}" -eq 0 ]]; then
     STATUS="PASS"
-    REASON_LINE="D-03 양호: 비밀번호 사용 기간 및 복잡도 정책이 적용되어 있습니다."
+    REASON_LINE="비밀번호 사용 기간 및 복잡도 정책이 적용되어 있어 이 항목에 대한 보안 위협이 없습니다."
   else
     STATUS="FAIL"
-    REASON_LINE="D-03 취약: 비밀번호 사용 기간 또는 복잡도 정책 설정이 기준에 부합하지 않습니다."
+    REASON_LINE="${REASONS[*]}\n조치 방법은 비밀번호 정책 컴포넌트 또는 플러그인 적용 여부를 확인해주시기 바라며, default_password_lifetime, validate_password 정책/길이/조합 규칙 값이 기준에 부합하도록 설정을 보완해주시기 바랍니다. 설정 변경 후 적용 여부를 재확인해주시기 바랍니다."
   fi
 
-  DETAIL_CONTENT="default_password_lifetime=${PASSWORD_LIFETIME}, policy=${POLICY}, length=${LENGTH}, mixed=${MIXED}, number=${NUMBER}, special=${SPECIAL}"
+  DETAIL_CONTENT="조회된 설정 값은 default_password_lifetime=${PASSWORD_LIFETIME}, policy=${POLICY}, length=${LENGTH}, mixed=${MIXED}, number=${NUMBER}, special=${SPECIAL} 입니다."
   if [[ "${#REASONS[@]}" -gt 0 ]]; then
-    DETAIL_CONTENT="${DETAIL_CONTENT}; reasons=${REASONS[*]}"
+    DETAIL_CONTENT="${DETAIL_CONTENT}\n기준 미충족 항목은 ${REASONS[*]} 입니다."
   fi
 fi
 
