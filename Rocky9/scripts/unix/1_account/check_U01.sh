@@ -39,7 +39,7 @@ CMD
 REASON_LINE=""
 DETAIL_CONTENT=""
 
-# 1) SSH 점검: PermitRootLogin (실적용값: sshd -T)
+# 1) SSH 점검: PermitRootLogin
 SSH_RESULT="PASS"
 SSH_VAL="unknown"
 SSH_REASON=""
