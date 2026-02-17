@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -17,8 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-43 NIS, NIS+ 점검
-
 # 1. 항목 정보 정의
 ID="U-43"
 CATEGORY="서비스 관리"
@@ -30,52 +28,75 @@ TARGET_FILE="N/A"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# 가이드 기준 점검 대상(서비스 유닛)
-NIS_UNIT_REGEX='^(ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated)\.service$'
 NIS_UNITS=("ypserv.service" "ypbind.service" "ypxfrd.service" "rpc.yppasswdd.service" "rpc.ypupdated.service")
 
 CHECK_COMMAND="systemctl list-units --type=service | grep -E 'ypserv|ypbind|ypxfrd|rpc.yppasswdd|rpc.ypupdated'; systemctl is-active/is-enabled <unit>"
-
-REASON_LINE=""
-DETAIL_CONTENT=""
 
 ACTIVE_FOUND=""
 ENABLED_FOUND=""
 FOUND_ANY=0
 
-# systemctl 사용 가능 여부(대상: Rocky Linux 9/10은 일반적으로 systemd)
+# 분기 1) systemctl 사용 불가 시: 점검 자체 불가(ERROR)
 if ! command -v systemctl >/dev/null 2>&1; then
   STATUS="ERROR"
-  REASON_LINE="systemctl 명령을 사용할 수 없어 NIS 관련 서비스 활성화 여부를 점검하지 못했습니다."
-  DETAIL_CONTENT="(점검 불가) systemctl 미존재"
+  ACTIVE_FOUND="systemctl_not_found"
+  ENABLED_FOUND="systemctl_not_found"
 else
-  # [1] 현재 실행(활성) 상태 점검: list-units는 주로 active 대상
-  ACTIVE_LIST="$(systemctl list-units --type=service 2>/dev/null | awk '{print $1}' | grep -E 'ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated' | tr '\n' ' ')"
+  # 분기 2) active(현재 실행) 탐지: list-units 기반(현재 떠있는 서비스 위주)
+  ACTIVE_LIST="$(systemctl list-units --type=service 2>/dev/null | awk '{print $1}' | grep -E 'ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated' | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
   if [ -n "$ACTIVE_LIST" ]; then
     ACTIVE_FOUND="$ACTIVE_LIST"
     FOUND_ANY=1
+  else
+    ACTIVE_FOUND="none"
   fi
 
-  # [2] enabled(부팅 시 자동 시작) 상태 점검: 지금은 꺼져 있어도 enabled면 관리 필요
+  # 분기 3) enabled(부팅 자동 시작) 탐지: is-enabled 기반(현재 꺼져있어도 enabled면 취약)
   for unit in "${NIS_UNITS[@]}"; do
-    # 유닛이 존재할 때만 enabled 여부 확인(없으면 "disabled"/"not-found" 등)
     en_state="$(systemctl is-enabled "$unit" 2>/dev/null | tr -d '\r')"
     if [ "$en_state" = "enabled" ]; then
       ENABLED_FOUND+="${unit} "
       FOUND_ANY=1
     fi
   done
+  ENABLED_FOUND="$(echo "$ENABLED_FOUND" | sed 's/[[:space:]]\+$//')"
+  [ -z "$ENABLED_FOUND" ] && ENABLED_FOUND="none"
 
+  # 분기 4) active 또는 enabled가 하나라도 있으면 FAIL
   if [ "$FOUND_ANY" -eq 1 ]; then
     STATUS="FAIL"
-    REASON_LINE="systemctl에서 NIS 관련 서비스가 활성(active) 또는 부팅 시 자동 시작(enabled)으로 설정되어 있어 취약합니다."
-    DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(판정 결과) active: ${ACTIVE_FOUND:-없음}\n(판정 결과) enabled: ${ENABLED_FOUND:-없음}\n(간단 조치) 불필요 시 'systemctl stop <서비스> && systemctl disable <서비스>'로 비활성화 후 재점검 (예: systemctl stop ypserv ypbind; systemctl disable ypserv ypbind)."
   else
     STATUS="PASS"
-    REASON_LINE="systemctl에서 NIS 관련 서비스가 active 또는 enabled로 설정되어 있지 않아 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(판정 결과) active/enabled 모두 없음"
   fi
 fi
+
+# DETAIL_CONTENT: 양호/취약 무관하게 "현재 설정 값"만 출력
+DETAIL_CONTENT="active: ${ACTIVE_FOUND}
+enabled: ${ENABLED_FOUND}"
+
+# detail의 "이유"는 가이드 문구 없이 실제 설정값만으로 자연스럽게 구성
+DETAIL_PREFIX=""
+if [ "$STATUS" = "PASS" ]; then
+  DETAIL_PREFIX="active: none, enabled: none 로 설정되어 있어 이 항목에 대해 양호합니다."
+elif [ "$STATUS" = "FAIL" ]; then
+  # 취약 시에는 취약한 부분의 설정만 이유로 노출
+  if [ "${ACTIVE_FOUND}" != "none" ] && [ "${ENABLED_FOUND}" != "none" ]; then
+    DETAIL_PREFIX="active: ${ACTIVE_FOUND}, enabled: ${ENABLED_FOUND} 로 설정되어 있어 이 항목에 대해 취약합니다."
+  elif [ "${ACTIVE_FOUND}" != "none" ]; then
+    DETAIL_PREFIX="active: ${ACTIVE_FOUND} 로 설정되어 있어 이 항목에 대해 취약합니다."
+  else
+    DETAIL_PREFIX="enabled: ${ENABLED_FOUND} 로 설정되어 있어 이 항목에 대해 취약합니다."
+  fi
+else
+  DETAIL_PREFIX="systemctl 사용 불가로 현재 설정 값을 확인하지 못해 이 항목에 대해 판단할 수 없습니다."
+fi
+
+# guide: 취약일 때를 가정한 "자동 조치 방법 + 주의사항" (조치 스크립트 로직 기반)
+GUIDE_LINE="자동 조치: 
+탐지된 NIS 관련 서비스 유닛에 대해 systemctl stop <unit> 으로 중지하고 systemctl disable <unit> 으로 부팅 자동 시작을 해제합니다.
+조치 후 systemctl is-active/is-enabled 재점검으로 active/enabled 잔존 여부를 확인합니다.
+주의사항: 
+NIS를 실제로 사용하는 환경에서는 중지/비활성화 시 계정/인증 및 이름서비스(디렉터리/맵) 연동이 끊길 수 있어 로그인/권한 확인 등에 영향이 발생할 수 있으므로 사전에 사용 여부와 대체 서비스 적용 여부를 확인해야 합니다."
 
 escape_json_str() {
   # 백슬래시 -> \\ , 줄바꿈 -> \n , 따옴표 -> \"
@@ -85,7 +106,8 @@ escape_json_str() {
 RAW_EVIDENCE_JSON="$(cat <<EOF
 {
   "command":"$(escape_json_str "$CHECK_COMMAND")",
-  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "detail":"$(escape_json_str "${DETAIL_PREFIX}\n${DETAIL_CONTENT}")",
+  "guide":"$(escape_json_str "$GUIDE_LINE")",
   "target_file":"$(escape_json_str "$TARGET_FILE")"
 }
 EOF

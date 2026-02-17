@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.2
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -15,7 +15,6 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 # 기본 변수
 ID="U-19"
 STATUS="PASS"
@@ -26,46 +25,99 @@ CHECK_COMMAND='stat -c "%U %a" /etc/hosts'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
+GUIDE_LINE=""
 
-# 파일 존재 여부에 따른 분기
+# 파일 존재 여부 분기
 if [ -f "$TARGET_FILE" ]; then
-    FILE_OWNER=$(stat -c %U "$TARGET_FILE" 2>/dev/null)
-    FILE_PERM=$(stat -c %a "$TARGET_FILE" 2>/dev/null)
+  FILE_OWNER=$(stat -c %U "$TARGET_FILE" 2>/dev/null)
+  FILE_PERM=$(stat -c %a "$TARGET_FILE" 2>/dev/null)
 
-    # stat 결과 수집 실패 처리
-    if [ -z "$FILE_OWNER" ] || [ -z "$FILE_PERM" ]; then
-        STATUS="FAIL"
-        REASON_LINE="/etc/hosts 파일의 소유자/권한 정보를 수집하지 못해 적절성 검증이 불가능하므로 취약합니다. stat 명령 실행 가능 여부 및 파일 상태를 확인해야 합니다."
-        DETAIL_CONTENT="owner=${FILE_OWNER:-unknown} perm=${FILE_PERM:-unknown}"
-    else
-        # 권한을 8진수로 안전하게 해석(예: 644 -> 8#644)
-        PERM_OCT=$((8#$FILE_PERM))
-
-        # 기준:
-        # 1) 소유자 root
-        # 2) 권한이 0644 이하
-        # 3) 그룹/기타 쓰기 권한(022) 없어야 함 (숫자 비교만으로는 624 같은 오탐 가능)
-        if [ "$FILE_OWNER" = "root" ] && [ "$PERM_OCT" -le $((8#644)) ] && [ $((PERM_OCT & 8#022)) -eq 0 ]; then
-            STATUS="PASS"
-            REASON_LINE="/etc/hosts 파일의 소유자가 root이고 권한이 $FILE_PERM(644 이하)이며, 그룹/기타 쓰기 권한이 제거되어 비인가 사용자의 임의 수정이 제한되므로 이 항목에 대한 보안 위협이 없습니다."
-        else
-            STATUS="FAIL"
-            REASON_LINE="/etc/hosts 파일의 소유자가 root가 아니거나, 권한이 $FILE_PERM로 설정되어(644 이하 기준 미충족 또는 그룹/기타 쓰기 권한 존재) 비인가 사용자가 호스트 해석 정보를 임의로 변경할 위험이 있으므로 취약합니다. 소유자를 root로 변경하고 권한을 644 이하(그룹/기타 쓰기 제거)로 설정해야 합니다."
-        fi
-
-        DETAIL_CONTENT="owner=$FILE_OWNER perm=$FILE_PERM"
-    fi
-else
+  # stat 수집 실패 분기
+  if [ -z "$FILE_OWNER" ] || [ -z "$FILE_PERM" ]; then
     STATUS="FAIL"
-    REASON_LINE="/etc/hosts 파일이 존재하지 않아 호스트 해석 설정의 무결성과 관리가 보장되지 않으므로 취약합니다. /etc/hosts 파일을 생성(복구)하고 소유자를 root, 권한을 644 이하로 설정해야 합니다."
-    DETAIL_CONTENT="file_not_found"
+
+    # 취약 사유(설정값만): 수집 실패 자체를 상태값으로 표현
+    REASON_LINE="owner=${FILE_OWNER:-unknown} perm=${FILE_PERM:-unknown} 으로 확인되어 이 항목에 대해 취약합니다."
+
+    # 현재 설정값(항상 출력)
+    DETAIL_CONTENT="owner=${FILE_OWNER:-unknown}
+perm=${FILE_PERM:-unknown}
+exists=yes
+note=stat_failed_or_empty"
+
+    # 취약 시 가이드(자동 조치 가정)
+    GUIDE_LINE="자동 조치: 
+    chown root:root /etc/hosts 수행 후 chmod 644 /etc/hosts를 적용합니다.
+    주의사항: 
+    /etc/hosts 내용이 서비스 접근/이름해석에 사용되는 환경에서는 잘못된 항목이 존재할 경우 연결 영향이 있을 수 있으니 내용은 변경하지 않고 권한/소유자만 조치해야 합니다."
+  else
+    # 권한을 8진수로 안전하게 해석
+    PERM_OCT=$((8#$FILE_PERM))
+
+    # 현재 설정값(항상 출력)
+    DETAIL_CONTENT="owner=$FILE_OWNER
+perm=$FILE_PERM
+exists=yes"
+
+    # 기준 판정 분기
+    if [ "$FILE_OWNER" = "root" ] && [ "$PERM_OCT" -le $((8#644)) ] && [ $((PERM_OCT & 8#022)) -eq 0 ]; then
+      STATUS="PASS"
+
+      # 양호 사유(설정값만): 한 문장, 줄바꿈 없음
+      REASON_LINE="owner=$FILE_OWNER perm=$FILE_PERM 으로 설정되어 이 항목에 대해 양호합니다."
+      
+    else
+      STATUS="FAIL"
+
+      # 취약 사유(설정값만): 취약한 설정만 담기
+      VULN_PARTS=""
+      if [ "$FILE_OWNER" != "root" ]; then
+        VULN_PARTS="owner=$FILE_OWNER"
+      fi
+      if [ "$PERM_OCT" -gt $((8#644)) ] || [ $((PERM_OCT & 8#022)) -ne 0 ]; then
+        if [ -n "$VULN_PARTS" ]; then
+          VULN_PARTS="$VULN_PARTS perm=$FILE_PERM"
+        else
+          VULN_PARTS="perm=$FILE_PERM"
+        fi
+      fi
+      [ -z "$VULN_PARTS" ] && VULN_PARTS="owner=$FILE_OWNER perm=$FILE_PERM"
+
+      REASON_LINE="$VULN_PARTS 으로 설정되어 이 항목에 대해 취약합니다."
+
+      # 취약 시 가이드(자동 조치 가정)
+      GUIDE_LINE="자동 조치: 
+      chown root:root /etc/hosts 수행 후 chmod 644 /etc/hosts를 적용합니다.
+      주의사항: 
+      /etc/hosts 를 참조하는 서비스가 있는 경우 권한 변경 자체는 영향이 거의 없지만, 운영 중 비root 계정이 파일을 직접 수정하는 절차가 있었다면 해당 작업이 차단될 수 있으니 변경 주체/절차를 확인한 뒤 적용해야 합니다."
+    fi
+  fi
+else
+  # 파일 미존재 분기
+  STATUS="FAIL"
+
+  # 취약 사유(설정값만): 파일 상태를 설정값처럼 표현
+  REASON_LINE="target_file=$TARGET_FILE state=not_found 으로 확인되어 이 항목에 대해 취약합니다."
+
+  # 현재 설정값(항상 출력)
+  DETAIL_CONTENT="owner=unknown
+perm=unknown
+exists=no"
+
+  # 취약 시 가이드(자동 조치 가정)
+  GUIDE_LINE="자동 조치: 
+  /etc/hosts 복구 후 chown root:root /etc/hosts 및 chmod 644 /etc/hosts를 적용합니다.
+  주의사항: 
+  파일 생성/복구 과정에서 잘못된 호스트 매핑이 들어가면 이름해석 및 서비스 연결에 영향을 줄 수 있으니, 내용은 백업/검증된 값으로만 복구해야 합니다."
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+# raw_evidence 구성 (각 값은 줄바꿈으로 문장 구분 가능하도록 구성)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

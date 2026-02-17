@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.2
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -20,95 +20,108 @@ ID="U-20"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# [추가] xinetd.d 및 system.conf 명시 포함
 TARGET_FILE="/etc/inetd.conf /etc/xinetd.conf /etc/xinetd.d/* /etc/systemd/system.conf /etc/systemd/*"
 CHECK_COMMAND='stat -c "%U %a %n" /etc/inetd.conf /etc/xinetd.conf /etc/systemd/system.conf 2>/dev/null; find /etc/xinetd.d -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%U %a %n" "{}" 2>/dev/null; find /etc/systemd -type f -print0 2>/dev/null | xargs -0 -I{} stat -c "%U %a %n" "{}" 2>/dev/null'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
 VULN_LINES=""
+ALL_LINES=""
+GUIDE_LINE="N/A"
 
-# 단일 파일 점검 함수
+append_line() {
+  # $1: target var name, $2: line
+  if [ "$1" = "ALL" ]; then
+    ALL_LINES+="$2"$'\n'
+  else
+    VULN_LINES+="$2"$'\n'
+  fi
+}
+
+# 단일 파일 점검: 현재 설정값은 ALL_LINES에 누적, 취약 설정은 VULN_LINES에 누적
 check_file() {
-    local FILE="$1"
+  local FILE="$1"
 
-    # 파일이 없으면 detail에 INFO로 남김
-    if [ ! -e "$FILE" ]; then
-        DETAIL_CONTENT+="[INFO] $FILE file_not_found"$'\n'
-        return
-    fi
+  if [ ! -e "$FILE" ]; then
+    append_line "ALL" "[INFO] $FILE file_not_found"
+    return
+  fi
 
-    local OWNER
-    local PERM
+  local OWNER PERM
+  OWNER=$(stat -c %U "$FILE" 2>/dev/null)
+  PERM=$(stat -c %a "$FILE" 2>/dev/null)
+
+  append_line "ALL" "$FILE owner=$OWNER perm=$PERM"
+
+  if [ "$OWNER" != "root" ] || [ "$PERM" -gt 600 ]; then
+    STATUS="FAIL"
+    append_line "VULN" "$FILE owner=$OWNER perm=$PERM"
+  fi
+}
+
+# 디렉터리 내 파일 점검: 현재 설정값은 ALL_LINES에 누적, 취약 설정은 VULN_LINES에 누적
+check_directory_files() {
+  local DIR="$1"
+
+  if [ ! -d "$DIR" ]; then
+    append_line "ALL" "[INFO] $DIR dir_not_found"
+    return
+  fi
+
+  while IFS= read -r FILE; do
+    local OWNER PERM
     OWNER=$(stat -c %U "$FILE" 2>/dev/null)
     PERM=$(stat -c %a "$FILE" 2>/dev/null)
 
-    # 취약이면 목록 누적
+    append_line "ALL" "$FILE owner=$OWNER perm=$PERM"
+
     if [ "$OWNER" != "root" ] || [ "$PERM" -gt 600 ]; then
-        STATUS="FAIL"
-        VULN_LINES+="$FILE owner=$OWNER perm=$PERM"$'\n'
+      STATUS="FAIL"
+      append_line "VULN" "$FILE owner=$OWNER perm=$PERM"
     fi
+  done < <(find "$DIR" -type f 2>/dev/null)
 }
 
-# 디렉터리 내 파일 점검 함수
-check_directory_files() {
-    local DIR="$1"
-
-    # 디렉터리가 없으면 detail에 INFO로 남김
-    if [ ! -d "$DIR" ]; then
-        DETAIL_CONTENT+="[INFO] $DIR dir_not_found"$'\n'
-        return
-    fi
-
-    # 디렉터리 내 파일 순회
-    while IFS= read -r FILE; do
-        local OWNER
-        local PERM
-        OWNER=$(stat -c %U "$FILE" 2>/dev/null)
-        PERM=$(stat -c %a "$FILE" 2>/dev/null)
-
-        if [ "$OWNER" != "root" ] || [ "$PERM" -gt 600 ]; then
-            STATUS="FAIL"
-            VULN_LINES+="$FILE owner=$OWNER perm=$PERM"$'\n'
-        fi
-    done < <(find "$DIR" -type f 2>/dev/null)
-}
-
-# inetd / xinetd 설정 파일 점검
+# 대상 점검 수행
 check_file "/etc/inetd.conf"
 check_file "/etc/xinetd.conf"
-
-# [추가] xinetd.d 디렉터리 내 모든 파일 점검 (가이드 Step 2)
 check_directory_files "/etc/xinetd.d"
-
-# systemd 설정 파일 및 디렉터리 점검
 check_directory_files "/etc/systemd"
 
-# 결과에 따른 평가 이유 및 detail 구성
+# DETAIL_CONTENT는 양호/취약과 관계 없이 현재 설정값 전체를 출력
+DETAIL_CONTENT="$(printf "%s" "$ALL_LINES" | sed 's/[[:space:]]*$//')"
+[ -n "$DETAIL_CONTENT" ] || DETAIL_CONTENT="no_data"
+
+# 분기: 양호/취약에 따라 REASON_LINE(1문장) 및 GUIDE_LINE 구성
 if [ "$STATUS" = "PASS" ]; then
-    REASON_LINE="/etc/inetd.conf, /etc/xinetd.conf, /etc/xinetd.d 및 /etc/systemd 내 파일의 소유자가 root이고 권한이 600 이하로 설정되어 있어 비인가 사용자의 임의 수정이 제한되므로 이 항목에 대한 보안 위협이 없습니다."
-    if [ -z "$DETAIL_CONTENT" ]; then
-        DETAIL_CONTENT="all_files_ok"
-    else
-        # INFO만 있는 경우(파일/디렉터리 미존재 정보)는 유지
-        DETAIL_CONTENT="$(printf "%s" "$DETAIL_CONTENT" | sed 's/[[:space:]]*$//')"
-    fi
+  REASON_LINE="모든 대상 파일이 owner=root이고 perm이 600 이하로 설정되어 있어 이 항목에 대해 양호합니다."
 else
-    REASON_LINE="/etc/inetd.conf, /etc/xinetd.conf, /etc/xinetd.d 또는 /etc/systemd 내 일부 파일의 소유자가 root가 아니거나 권한이 600 초과로 설정되어 비인가 사용자가 설정을 변경할 위험이 있으므로 취약합니다. 해당 파일들의 소유자를 root로 변경하고 권한을 600 이하로 설정해야 합니다."
-    DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
+  # 취약 시 REASON_LINE에는 취약 설정(설정값)만 포함하고 1문장으로 구성
+  VULN_ONE_LINE="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+  [ -n "$VULN_ONE_LINE" ] || VULN_ONE_LINE="vulnerable_settings_not_collected"
+  REASON_LINE="$VULN_ONE_LINE 로 설정되어 있어 이 항목에 대해 취약합니다."
+
+  # 취약 가정 자동 조치 + 주의사항(문장별 줄바꿈)
+  GUIDE_LINE="자동 조치:
+  /etc/inetd.conf, /etc/xinetd.conf, /etc/systemd/system.conf 및 /etc/xinetd.d/*, /etc/systemd/* 파일에 대해 소유자/그룹을 root:root로 변경하고 권한을 600으로 적용합니다.
+  조치 후 systemctl daemon-reload를 수행하여 설정 반영을 확인합니다(서비스 환경에 따라 재시작이 필요할 수 있습니다).
+  주의사항: 
+  일부 환경에서 systemd 설정 파일 권한을 600으로 변경하면 비root 계정으로 설정 조회/진단 도구 사용에 제한이 생길 수 있어 운영 절차에 영향을 줄 수 있습니다."
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# raw_evidence 구성: 첫 줄(REASON_LINE 1문장) + 다음 줄부터(DETAIL_CONTENT 전체)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리 (따옴표, 줄바꿈): DB 저장 후 재로딩 시 \n이 유지되도록 \\n 형태로 저장
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')

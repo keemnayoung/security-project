@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
 # @Last Updated: 2026-02-13
 # ============================================================================
@@ -26,50 +26,88 @@ PASSWD_FILE="/etc/passwd"
 SHADOW_FILE="/etc/shadow"
 TARGET_FILE="$PASSWD_FILE $SHADOW_FILE"
 
-# 가이드 핵심: /etc/passwd에 비밀번호(평문/해시)가 저장되지 않고, shadow로 분리(x)되어 있는지 확인
-# - passwd 2필드가 'x'면 정상(쉐도우 사용)
-# - passwd 2필드가 '!' 또는 '*' 계열이면 잠금/비밀번호 미사용(평문/해시 저장 아님) → 취약으로 보지 않음(오탐 방지)
-# - 그 외 값이면 passwd에 비밀번호(평문/해시)가 남아있을 가능성 → 취약
+# 점검 명령(참고 출력용)
 CHECK_COMMAND='[ -f /etc/passwd ] && awk -F: '\''$2 != "x" && $2 !~ /^(\!|\*)+$/ {print $1 ":" $2}'\'' /etc/passwd || echo "passwd_not_found"; [ -f /etc/shadow ] && echo "shadow_exists" || echo "shadow_not_found"'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
 
 UNSHADOWED_USERS=""
+PASSWD_FIELDS=""
+SHADOW_STATE=""
+
+# 현재 설정값 수집(항상 DETAIL_CONTENT에 포함)
+if [ -f "$PASSWD_FILE" ]; then
+  PASSWD_FIELDS="$(awk -F: '{print $1 ":" $2}' "$PASSWD_FILE" 2>/dev/null | head -n 200)"
+else
+  PASSWD_FIELDS="passwd_not_found"
+fi
+
+if [ -f "$SHADOW_FILE" ]; then
+  SHADOW_STATE="shadow_exists"
+else
+  SHADOW_STATE="shadow_not_found"
+fi
 
 # 파일 존재 여부에 따른 분기
 if [ -f "$PASSWD_FILE" ] && [ -f "$SHADOW_FILE" ]; then
-    # /etc/passwd 내 두 번째 필드가 'x'가 아니면서, '!','*' (잠금/미사용) 계열이 아닌 계정만 추출
-    UNSHADOWED_USERS=$(awk -F: '$2 != "x" && $2 !~ /^(\!|\*)+$/ {print $1 ":" $2}' "$PASSWD_FILE" 2>/dev/null)
+  # /etc/passwd 2필드가 x가 아니면서 !/* 계열이 아닌 계정만 취약 후보로 수집
+  UNSHADOWED_USERS="$(awk -F: '$2 != "x" && $2 !~ /^(\!|\*)+$/ {print $1 ":" $2}' "$PASSWD_FILE" 2>/dev/null | head -n 200)"
 
-    if [ -z "$UNSHADOWED_USERS" ]; then
-        STATUS="PASS"
-        REASON_LINE="/etc/passwd의 두 번째 필드가 모든 계정에서 'x'(쉐도우)로 설정되어 있거나, 잠금/비밀번호 미사용('!','*') 상태로 저장되어 /etc/passwd에 비밀번호(평문/해시)가 노출되지 않으므로 양호합니다."
-        DETAIL_CONTENT="all_users_shadowed_or_locked"
-    else
-        STATUS="FAIL"
-        REASON_LINE="/etc/passwd의 두 번째 필드에 'x'가 아닌 값(잠금/미사용 '!','*' 제외)이 존재하여 비밀번호(평문/해시)가 /etc/passwd에 저장되었을 가능성이 있으므로 취약합니다. pwconv 등을 통해 쉐도우 패스워드 정책을 적용해야 합니다."
-        DETAIL_CONTENT="$UNSHADOWED_USERS"
-    fi
-else
+  if [ -z "$UNSHADOWED_USERS" ]; then
+    STATUS="PASS"
+    # 설정 값만 이용해 “양호” 사유 문장을 한 줄로 구성
+    REASON_LINE="모든 계정의 /etc/passwd 두 번째 필드가 x 또는 !/* 로 설정되어 있어 이 항목에 대해 양호합니다."
+  else
     STATUS="FAIL"
-    if [ ! -f "$PASSWD_FILE" ] && [ ! -f "$SHADOW_FILE" ]; then
-        REASON_LINE="비밀번호 관련 필수 파일(/etc/passwd, /etc/shadow)이 모두 존재하지 않아 쉐도우 패스워드 적용 여부를 확인할 수 없으므로 취약합니다."
-        DETAIL_CONTENT="passwd_not_found\nshadow_not_found"
-    elif [ ! -f "$PASSWD_FILE" ]; then
-        REASON_LINE="비밀번호 관련 필수 파일(/etc/passwd)이 존재하지 않아 계정 정보 및 쉐도우 정책 적용 여부를 확인할 수 없으므로 취약합니다."
-        DETAIL_CONTENT="passwd_not_found\nshadow_exists"
-    else
-        REASON_LINE="비밀번호 관련 필수 파일(/etc/shadow)이 존재하지 않아 비밀번호 해시 분리 저장(쉐도우) 정책이 적용되지 않을 수 있으므로 취약합니다."
-        DETAIL_CONTENT="passwd_exists\nshadow_not_found"
-    fi
+    # 취약일 때는 “취약한 설정”만 사유에 포함(한 줄)
+    OFFENDING_ONE_LINE="$(echo "$UNSHADOWED_USERS" | head -n 20 | tr '\n' ',' | sed 's/,$//')"
+    [ -z "$OFFENDING_ONE_LINE" ] && OFFENDING_ONE_LINE="unshadowed_users_found"
+    REASON_LINE="/etc/passwd 두 번째 필드가 x가 아닌 값(예: ${OFFENDING_ONE_LINE})으로 설정되어 있어 이 항목에 대해 취약합니다."
+  fi
+else
+  STATUS="FAIL"
+  # 파일 부재 분기: “현재 상태(설정)”만으로 사유를 한 줄로 구성
+  if [ ! -f "$PASSWD_FILE" ] && [ ! -f "$SHADOW_FILE" ]; then
+    REASON_LINE="/etc/passwd 없음 및 /etc/shadow 없음 상태로 설정되어 있어 이 항목에 대해 취약합니다."
+  elif [ ! -f "$PASSWD_FILE" ]; then
+    REASON_LINE="/etc/passwd 없음 상태로 설정되어 있어 이 항목에 대해 취약합니다."
+  else
+    REASON_LINE="/etc/shadow 없음 상태로 설정되어 있어 이 항목에 대해 취약합니다."
+  fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# DETAIL_CONTENT는 양호/취약과 관계 없이 현재 설정값만 표시
+# - passwd 2필드 전체(상위 200)
+# - shadow 존재 여부
+# - 취약 후보(user:2field) 목록(상위 200, 없으면 none)
+DETAIL_CONTENT=$(cat <<EOF
+shadow_file=$SHADOW_STATE
+passwd_second_field(user:field2)
+$PASSWD_FIELDS
+unshadowed_candidates(user:field2)
+${UNSHADOWED_USERS:-none}
+EOF
+)
+
+# 자동 조치 가이드(취약 시 조치를 가정한 설명 + 주의사항)
+GUIDE_LINE=$(cat <<'EOF'
+자동 조치:
+/etc/passwd 및 /etc/shadow를 /var/tmp 경로에 타임스탬프로 백업한 뒤 pwconv를 실행하여 /etc/passwd의 비밀번호 필드를 x로 정규화하고 /etc/shadow에 해시를 분리 저장합니다.
+조치 후 /etc/passwd의 두 번째 필드가 x 또는 !/* 인지 재점검하여 잔여 계정이 있으면 실패로 처리합니다.
+주의사항:
+파일 편집/동시 작업 중 자동 조치를 수행하면 계정 DB 불일치가 발생할 수 있으므로 조치 전 사용자/프로세스 변경 작업을 최소화하고 백업 파일로 즉시 원복 가능하도록 준비합니다.
+특정 계정의 비정상 패스워드 필드가 강제로 정리되면 로그인이 제한될 수 있어 운영 계정은 사전 영향도 확인이 필요합니다.
+EOF
+)
+
+# raw_evidence 구성(detail은 한 문장 + 줄바꿈 + 현재 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

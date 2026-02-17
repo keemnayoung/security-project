@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
 # @Last Updated: 2026-02-13
 # ============================================================================
@@ -17,7 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
 ID="U-02"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -50,357 +49,289 @@ awk -F: '\''{print $1":"$2}'\'' /etc/shadow 2>/dev/null | head -n 50
 REASON_LINE=""
 DETAIL_CONTENT=""
 STATUS_FAIL="N"
-DETAIL_LINES=""
 
-# ---------------------------
-# 공통 유틸
-# ---------------------------
-trim() { echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+DETAIL_LINES=""
+VULN_SUMMARY=""
 
 get_kv_val_last() {
-    # KEY=VALUE 형태 (공백/탭 허용)에서 마지막 값 추출
-    local file="$1"
-    local key="$2"
-    grep -iv '^[[:space:]]*#' "$file" 2>/dev/null \
-      | grep -E "^[[:space:]]*${key}[[:space:]]*=" \
-      | tail -n 1 \
-      | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}'
+  local file="$1"
+  local key="$2"
+  grep -iv '^[[:space:]]*#' "$file" 2>/dev/null \
+    | grep -E "^[[:space:]]*${key}[[:space:]]*=" \
+    | tail -n 1 \
+    | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}'
 }
 
 has_standalone_token() {
-    # 파일에서 주석 제외 후 "토큰"이 단독 라인으로 존재하는지(공백 허용)
-    local file="$1"
-    local token="$2"
-    grep -iv '^[[:space:]]*#' "$file" 2>/dev/null \
-      | grep -Eq "^[[:space:]]*${token}[[:space:]]*$"
-}
-
-# PAM에서 특정 모듈 라인(주석 제외) 추출: password 스택만
-pam_get_line_no_first() {
-    local file="$1"
-    local module="$2"  # pam_pwquality.so / pam_pwhistory.so / pam_unix.so
-    grep -nEv '^[[:space:]]*#' "$file" 2>/dev/null \
-      | grep -nE "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)" \
-      | head -n 1 \
-      | awk -F: '{print $1}'
-}
-
-pam_get_line_text_first() {
-    local file="$1"
-    local module="$2"
-    grep -Ev '^[[:space:]]*#' "$file" 2>/dev/null \
-      | grep -E "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)" \
-      | head -n 1
+  local file="$1"
+  local token="$2"
+  grep -iv '^[[:space:]]*#' "$file" 2>/dev/null \
+    | grep -Eq "^[[:space:]]*${token}[[:space:]]*$"
 }
 
 pam_has_module() {
-    local file="$1"
-    local module="$2"
-    grep -Ev '^[[:space:]]*#' "$file" 2>/dev/null \
-      | grep -Eq "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)"
+  local file="$1"
+  local module="$2"
+  grep -Ev '^[[:space:]]*#' "$file" 2>/dev/null \
+    | grep -Eq "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)"
+}
+
+pam_get_line_text_first() {
+  local file="$1"
+  local module="$2"
+  grep -Ev '^[[:space:]]*#' "$file" 2>/dev/null \
+    | grep -E "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)" \
+    | head -n 1
+}
+
+pam_get_line_no_first() {
+  local file="$1"
+  local module="$2"
+  grep -nEv '^[[:space:]]*#' "$file" 2>/dev/null \
+    | grep -nE "^[[:space:]]*password[[:space:]]+.*${module}([[:space:]]|$)" \
+    | head -n 1 \
+    | awk -F: '{print $1}'
 }
 
 pam_order_ok() {
-    # pam_pwquality.so, pam_pwhistory.so 모듈이 pam_unix.so 보다 위에 있는지 확인
-    local file="$1"
-    local m1="$2"
-    local m2="$3"
-    local uline
-    local m1line
-    local m2line
-
-    uline="$(pam_get_line_no_first "$file" "pam_unix\.so")"
-    m1line="$(pam_get_line_no_first "$file" "$m1")"
-    m2line="$(pam_get_line_no_first "$file" "$m2")"
-
-    # pam_unix 없으면 순서 비교 의미가 약하므로, 모듈이 있으면 PASS, 없으면 FAIL은 상위에서 처리
-    if [ -z "$uline" ]; then
-        echo "UNKNOWN"
-        return 0
-    fi
-
-    # 각 모듈이 존재하면 pam_unix 보다 위에 있어야 함
-    if [ -n "$m1line" ] && [ "$m1line" -gt "$uline" ]; then
-        echo "NO"
-        return 0
-    fi
-    if [ -n "$m2line" ] && [ "$m2line" -gt "$uline" ]; then
-        echo "NO"
-        return 0
-    fi
-    echo "YES"
+  local file="$1"
+  local m1="$2"
+  local m2="$3"
+  local uline m1line m2line
+  uline="$(pam_get_line_no_first "$file" "pam_unix\.so")"
+  m1line="$(pam_get_line_no_first "$file" "$m1")"
+  m2line="$(pam_get_line_no_first "$file" "$m2")"
+  if [ -z "$uline" ]; then
+    echo "UNKNOWN"; return 0
+  fi
+  if [ -n "$m1line" ] && [ "$m1line" -gt "$uline" ] 2>/dev/null; then
+    echo "NO"; return 0
+  fi
+  if [ -n "$m2line" ] && [ "$m2line" -gt "$uline" ] 2>/dev/null; then
+    echo "NO"; return 0
+  fi
+  echo "YES"
 }
 
-# ---------------------------
-# (추가) 대상 계정/예외 처리(요청하신 3번 항목)
-# - 잠금/비밀번호 미설정 계정, nologin/false 쉘 계정은 정책 적용 대상에서 제외(표기만)
-# ---------------------------
+json_escape_multiline() {
+  echo -e "$1" \
+    | sed 's/\\/\\\\/g' \
+    | sed 's/"/\\"/g' \
+    | sed ':a;N;$!ba;s/\n/\\n/g'
+}
+
+append_summary() {
+  local s="$1"
+  [ -z "$s" ] && return 0
+  if [ -n "$VULN_SUMMARY" ]; then
+    VULN_SUMMARY="${VULN_SUMMARY}; ${s}"
+  else
+    VULN_SUMMARY="${s}"
+  fi
+}
+
+# 대상/제외 계정은 정책 적용 범위를 확인하기 위해 수집합니다.
 SUBJECT_USERS=""
 EXCLUDED_USERS=""
-
 if [ -r /etc/passwd ] && [ -r /etc/shadow ]; then
-    while IFS=: read -r user _ uid _ _ _ shell; do
-        # 대상: root 또는 일반 사용자(UID>=1000)
-        if [ "$user" != "root" ] && [ "$uid" -lt 1000 ] 2>/dev/null; then
-            continue
-        fi
-
-        # 쉘이 비대화형이면 제외
-        case "$shell" in
-            */nologin|*/false|"")
-                EXCLUDED_USERS+="${user}(non_login_shell:${shell}), "
-                continue
-                ;;
-        esac
-
-        # shadow 상태 확인
-        spw="$(awk -F: -v u="$user" '$1==u{print $2}' /etc/shadow 2>/dev/null)"
-        if [ -z "$spw" ]; then
-            EXCLUDED_USERS+="${user}(shadow_not_found), "
-            continue
-        fi
-        # 잠금/미사용 처리: !, !!, *, 빈값 등
-        case "$spw" in
-            "!"*|"!!"*|"*"|"*LK*"|"")
-                EXCLUDED_USERS+="${user}(locked_or_no_password), "
-                continue
-                ;;
-        esac
-
-        SUBJECT_USERS+="${user}, "
-    done < /etc/passwd
-
-    SUBJECT_USERS="$(echo "$SUBJECT_USERS" | sed 's/, $//')"
-    EXCLUDED_USERS="$(echo "$EXCLUDED_USERS" | sed 's/, $//')"
-
-    DETAIL_LINES+="[대상 계정] ${SUBJECT_USERS:-none}"$'\n'
-    DETAIL_LINES+="[제외 계정] ${EXCLUDED_USERS:-none}"$'\n'
+  while IFS=: read -r user _ uid _ _ _ shell; do
+    if [ "$user" != "root" ] && [ "$uid" -lt 1000 ] 2>/dev/null; then
+      continue
+    fi
+    case "$shell" in
+      */nologin|*/false|"")
+        EXCLUDED_USERS+="${user}(non_login_shell:${shell}), "
+        continue
+        ;;
+    esac
+    spw="$(awk -F: -v u="$user" '$1==u{print $2}' /etc/shadow 2>/dev/null)"
+    if [ -z "$spw" ]; then
+      EXCLUDED_USERS+="${user}(shadow_not_found), "
+      continue
+    fi
+    case "$spw" in
+      "!"*|"!!"*|"*"|"*LK*"|"")
+        EXCLUDED_USERS+="${user}(locked_or_no_password), "
+        continue
+        ;;
+    esac
+    SUBJECT_USERS+="${user}, "
+  done < /etc/passwd
+  SUBJECT_USERS="$(echo "$SUBJECT_USERS" | sed 's/, $//')"
+  EXCLUDED_USERS="$(echo "$EXCLUDED_USERS" | sed 's/, $//')"
 else
-    DETAIL_LINES+="[대상/제외 계정] passwd/shadow 접근 불가"$'\n'
+  SUBJECT_USERS="unknown(passwd_or_shadow_unreadable)"
+  EXCLUDED_USERS="unknown(passwd_or_shadow_unreadable)"
 fi
 
-# ---------------------------
-# 1) pwquality.conf 점검
-# - 가이드 기준: minlen=8, d/u/l/o credit=-1, enforce_for_root
-# ---------------------------
+# pwquality.conf 설정을 수집하고 기준 충족 여부를 판정합니다.
 PWQ_OK="N"
-PWQ_SRC="NONE"
-
-MINLEN_VAL=""
-MINCLASS_VAL=""
-DCREDIT_VAL=""
-UCREDIT_VAL=""
-LCREDIT_VAL=""
-OCREDIT_VAL=""
-PWQ_ENFORCE="N"
-
+MINLEN_VAL=""; MINCLASS_VAL=""; DCREDIT_VAL=""; UCREDIT_VAL=""; LCREDIT_VAL=""; OCREDIT_VAL=""; PWQ_ENFORCE="N"
 if [ -f "$PW_CONF" ]; then
-    MINLEN_VAL="$(get_kv_val_last "$PW_CONF" "minlen")"
-    MINCLASS_VAL="$(get_kv_val_last "$PW_CONF" "minclass")"
-    DCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "dcredit")"
-    UCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "ucredit")"
-    LCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "lcredit")"
-    OCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "ocredit")"
-    if has_standalone_token "$PW_CONF" "enforce_for_root"; then
-        PWQ_ENFORCE="Y"
-    fi
+  MINLEN_VAL="$(get_kv_val_last "$PW_CONF" "minlen")"
+  MINCLASS_VAL="$(get_kv_val_last "$PW_CONF" "minclass")"
+  DCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "dcredit")"
+  UCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "ucredit")"
+  LCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "lcredit")"
+  OCREDIT_VAL="$(get_kv_val_last "$PW_CONF" "ocredit")"
+  has_standalone_token "$PW_CONF" "enforce_for_root" && PWQ_ENFORCE="Y"
 
-    # 값 출력(근거용)
-    DETAIL_LINES+="[pwquality.conf] minlen=${MINLEN_VAL:-not_set} (expected>=8)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] minclass=${MINCLASS_VAL:-not_set} (reference only)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] dcredit=${DCREDIT_VAL:-not_set} (expected=-1)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] ucredit=${UCREDIT_VAL:-not_set} (expected=-1)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] lcredit=${LCREDIT_VAL:-not_set} (expected=-1)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] ocredit=${OCREDIT_VAL:-not_set} (expected=-1)"$'\n'
-    DETAIL_LINES+="[pwquality.conf] enforce_for_root=${PWQ_ENFORCE} (expected=Y)"$'\n'
-
-    # 판정(가이드 레드햇 절차 중심)
-    if [ -n "$MINLEN_VAL" ] && [ "$MINLEN_VAL" -ge 8 ] 2>/dev/null \
-       && [ "$DCREDIT_VAL" = "-1" ] && [ "$UCREDIT_VAL" = "-1" ] && [ "$LCREDIT_VAL" = "-1" ] && [ "$OCREDIT_VAL" = "-1" ] \
-       && [ "$PWQ_ENFORCE" = "Y" ]; then
-        PWQ_OK="Y"
-        PWQ_SRC="pwquality.conf"
-    fi
+  if [ -n "$MINLEN_VAL" ] && [ "$MINLEN_VAL" -ge 8 ] 2>/dev/null \
+     && [ "$DCREDIT_VAL" = "-1" ] && [ "$UCREDIT_VAL" = "-1" ] && [ "$LCREDIT_VAL" = "-1" ] && [ "$OCREDIT_VAL" = "-1" ] \
+     && [ "$PWQ_ENFORCE" = "Y" ]; then
+    PWQ_OK="Y"
+  else
+    STATUS_FAIL="Y"
+    append_summary "pwquality.conf(minlen=${MINLEN_VAL:-not_set}, dcredit=${DCREDIT_VAL:-not_set}, ucredit=${UCREDIT_VAL:-not_set}, lcredit=${LCREDIT_VAL:-not_set}, ocredit=${OCREDIT_VAL:-not_set}, enforce_for_root=${PWQ_ENFORCE})"
+  fi
 else
-    DETAIL_LINES+="[pwquality.conf] file_not_found"$'\n'
+  STATUS_FAIL="Y"
+  append_summary "pwquality.conf(file_not_found)"
 fi
 
-# ---------------------------
-# 2) pwhistory.conf 점검
-# - 가이드 기준: remember=4, file=/etc/security/opasswd, enforce_for_root
-# ---------------------------
+# pwhistory.conf 설정을 수집하고 기준 충족 여부를 판정합니다.
 PWH_OK="N"
-PWH_SRC="NONE"
-
-REMEMBER_VAL=""
-OPASSWD_FILE_VAL=""
-PWH_ENFORCE="N"
-
+REMEMBER_VAL=""; OPASSWD_FILE_VAL=""; PWH_ENFORCE="N"
 if [ -f "$PWH_CONF" ]; then
-    REMEMBER_VAL="$(get_kv_val_last "$PWH_CONF" "remember")"
-    OPASSWD_FILE_VAL="$(get_kv_val_last "$PWH_CONF" "file")"
-    if has_standalone_token "$PWH_CONF" "enforce_for_root"; then
-        PWH_ENFORCE="Y"
-    fi
+  REMEMBER_VAL="$(get_kv_val_last "$PWH_CONF" "remember")"
+  OPASSWD_FILE_VAL="$(get_kv_val_last "$PWH_CONF" "file")"
+  has_standalone_token "$PWH_CONF" "enforce_for_root" && PWH_ENFORCE="Y"
 
-    DETAIL_LINES+="[pwhistory.conf] remember=${REMEMBER_VAL:-not_set} (expected>=4)"$'\n'
-    DETAIL_LINES+="[pwhistory.conf] file=${OPASSWD_FILE_VAL:-not_set} (expected=/etc/security/opasswd)"$'\n'
-    DETAIL_LINES+="[pwhistory.conf] enforce_for_root=${PWH_ENFORCE} (expected=Y)"$'\n'
-
-    # remember는 최소 4 이상으로 허용(가이드 예시는 4)
-    if [ -n "$REMEMBER_VAL" ] && [ "$REMEMBER_VAL" -ge 4 ] 2>/dev/null \
-       && [ "$OPASSWD_FILE_VAL" = "/etc/security/opasswd" ] \
-       && [ "$PWH_ENFORCE" = "Y" ]; then
-        PWH_OK="Y"
-        PWH_SRC="pwhistory.conf"
-    fi
+  if [ -n "$REMEMBER_VAL" ] && [ "$REMEMBER_VAL" -ge 4 ] 2>/dev/null \
+     && [ "$OPASSWD_FILE_VAL" = "/etc/security/opasswd" ] \
+     && [ "$PWH_ENFORCE" = "Y" ]; then
+    PWH_OK="Y"
+  else
+    STATUS_FAIL="Y"
+    append_summary "pwhistory.conf(remember=${REMEMBER_VAL:-not_set}, file=${OPASSWD_FILE_VAL:-not_set}, enforce_for_root=${PWH_ENFORCE})"
+  fi
 else
-    DETAIL_LINES+="[pwhistory.conf] file_not_found"$'\n'
+  STATUS_FAIL="Y"
+  append_summary "pwhistory.conf(file_not_found)"
 fi
 
-# ---------------------------
-# 3) login.defs PASS_MAX_DAYS / PASS_MIN_DAYS 점검
-# - 가이드 기준: MAX<=90, MIN>=1(예시 1일)
-# ---------------------------
-MAX_DAYS_VAL=""
-MIN_DAYS_VAL=""
-
+# login.defs 설정을 수집하고 기준 충족 여부를 판정합니다.
+MAX_DAYS_VAL=""; MIN_DAYS_VAL=""
 if [ -f "$LOGIN_DEFS" ]; then
-    MAX_DAYS_VAL="$(grep -E '^[[:space:]]*PASS_MAX_DAYS[[:space:]]+' "$LOGIN_DEFS" 2>/dev/null | awk '{print $2}' | tail -n 1)"
-    MIN_DAYS_VAL="$(grep -E '^[[:space:]]*PASS_MIN_DAYS[[:space:]]+' "$LOGIN_DEFS" 2>/dev/null | awk '{print $2}' | tail -n 1)"
+  MAX_DAYS_VAL="$(grep -E '^[[:space:]]*PASS_MAX_DAYS[[:space:]]+' "$LOGIN_DEFS" 2>/dev/null | awk '{print $2}' | tail -n 1)"
+  MIN_DAYS_VAL="$(grep -E '^[[:space:]]*PASS_MIN_DAYS[[:space:]]+' "$LOGIN_DEFS" 2>/dev/null | awk '{print $2}' | tail -n 1)"
 
-    DETAIL_LINES+="[login.defs] PASS_MAX_DAYS=${MAX_DAYS_VAL:-not_set} (expected<=90)"$'\n'
-    DETAIL_LINES+="[login.defs] PASS_MIN_DAYS=${MIN_DAYS_VAL:-not_set} (expected>=1)"$'\n'
+  ok_login="Y"
+  [ -z "$MAX_DAYS_VAL" ] && ok_login="N"
+  [ -n "$MAX_DAYS_VAL" ] && [ "$MAX_DAYS_VAL" -gt 90 ] 2>/dev/null && ok_login="N"
+  [ -z "$MIN_DAYS_VAL" ] && ok_login="N"
+  [ -n "$MIN_DAYS_VAL" ] && [ "$MIN_DAYS_VAL" -lt 1 ] 2>/dev/null && ok_login="N"
+
+  if [ "$ok_login" != "Y" ]; then
+    STATUS_FAIL="Y"
+    append_summary "login.defs(PASS_MAX_DAYS=${MAX_DAYS_VAL:-not_set}, PASS_MIN_DAYS=${MIN_DAYS_VAL:-not_set})"
+  fi
 else
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[login.defs] file_not_found"$'\n'
+  STATUS_FAIL="Y"
+  append_summary "login.defs(file_not_found)"
 fi
 
-# login.defs 판정(값이 없으면 FAIL)
-if [ -z "$MAX_DAYS_VAL" ]; then
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[login.defs] FAIL: PASS_MAX_DAYS not_set"$'\n'
-elif [ "$MAX_DAYS_VAL" -gt 90 ] 2>/dev/null; then
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[login.defs] FAIL: PASS_MAX_DAYS=$MAX_DAYS_VAL (expected<=90)"$'\n'
-fi
-
-if [ -z "$MIN_DAYS_VAL" ]; then
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[login.defs] FAIL: PASS_MIN_DAYS not_set"$'\n'
-elif [ "$MIN_DAYS_VAL" -lt 1 ] 2>/dev/null; then
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[login.defs] FAIL: PASS_MIN_DAYS=$MIN_DAYS_VAL (expected>=1)"$'\n'
-fi
-
-# ---------------------------
-# 4) PAM 적용 점검(system-auth, password-auth)
-# - pam_pwquality.so / pam_pwhistory.so 존재 여부 및 pam_unix.so 위에 위치
-# - 또한, pwquality/pwhistory가 conf에 없더라도 PAM에 설정되어 있으면 "설정됨"으로 인정
-# ---------------------------
+# PAM 적용 여부와 모듈 순서를 판정합니다.
 PAM_FILES=("$PAM_SYSTEM_AUTH" "$PAM_PASSWORD_AUTH")
 PAM_PWQ_OK="N"
 PAM_PWH_OK="N"
 PAM_ORDER_OK_ALL="Y"
 PAM_FOUND_ANY="N"
+PAM_PWQ_LINE_1=""
+PAM_PWH_LINE_1=""
+PAM_ORDER_UNKNOWN="N"
 
 for pf in "${PAM_FILES[@]}"; do
-    if [ -f "$pf" ]; then
-        PAM_FOUND_ANY="Y"
-        DETAIL_LINES+="[PAM] file=$pf"$'\n'
+  if [ -f "$pf" ]; then
+    PAM_FOUND_ANY="Y"
 
-        # 모듈 존재
-        if pam_has_module "$pf" "pam_pwquality\.so"; then
-            PAM_PWQ_OK="Y"
-            line="$(pam_get_line_text_first "$pf" "pam_pwquality\.so")"
-            DETAIL_LINES+="[PAM] pam_pwquality.so: present | ${line}"$'\n'
-
-            # PAM 라인에 enforce_for_root가 있으면 참고 표시(강제 판단은 conf 또는 pam 중 하나라도 있으면 OK)
-            echo "$line" | grep -q 'enforce_for_root' && DETAIL_LINES+="[PAM] pam_pwquality.so enforce_for_root: present"$'\n'
-        else
-            DETAIL_LINES+="[PAM] pam_pwquality.so: not_found"$'\n'
-        fi
-
-        if pam_has_module "$pf" "pam_pwhistory\.so"; then
-            PAM_PWH_OK="Y"
-            line="$(pam_get_line_text_first "$pf" "pam_pwhistory\.so")"
-            DETAIL_LINES+="[PAM] pam_pwhistory.so: present | ${line}"$'\n'
-            echo "$line" | grep -q 'enforce_for_root' && DETAIL_LINES+="[PAM] pam_pwhistory.so enforce_for_root: present"$'\n'
-        else
-            DETAIL_LINES+="[PAM] pam_pwhistory.so: not_found"$'\n'
-        fi
-
-        # 순서 점검
-        order_res="$(pam_order_ok "$pf" "pam_pwquality\.so" "pam_pwhistory\.so")"
-        if [ "$order_res" = "NO" ]; then
-            PAM_ORDER_OK_ALL="N"
-            DETAIL_LINES+="[PAM] FAIL: pam_pwquality/pwhistory must be above pam_unix.so"$'\n'
-        elif [ "$order_res" = "UNKNOWN" ]; then
-            DETAIL_LINES+="[PAM] WARN: pam_unix.so not found in password stack (order check skipped)"$'\n'
-        else
-            DETAIL_LINES+="[PAM] order: OK"$'\n'
-        fi
-    else
-        DETAIL_LINES+="[PAM] file=$pf not_found"$'\n'
+    if pam_has_module "$pf" "pam_pwquality\.so"; then
+      PAM_PWQ_OK="Y"
+      [ -z "$PAM_PWQ_LINE_1" ] && PAM_PWQ_LINE_1="$(pam_get_line_text_first "$pf" "pam_pwquality\.so")"
     fi
+    if pam_has_module "$pf" "pam_pwhistory\.so"; then
+      PAM_PWH_OK="Y"
+      [ -z "$PAM_PWH_LINE_1" ] && PAM_PWH_LINE_1="$(pam_get_line_text_first "$pf" "pam_pwhistory\.so")"
+    fi
+
+    order_res="$(pam_order_ok "$pf" "pam_pwquality\.so" "pam_pwhistory\.so")"
+    if [ "$order_res" = "NO" ]; then
+      PAM_ORDER_OK_ALL="N"
+    elif [ "$order_res" = "UNKNOWN" ]; then
+      PAM_ORDER_UNKNOWN="Y"
+    fi
+  fi
 done
 
-# PAM 파일이 하나도 없으면(드문 케이스) FAIL 처리
 if [ "$PAM_FOUND_ANY" = "N" ]; then
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[PAM] FAIL: no PAM policy file found (system-auth/password-auth)"$'\n'
-fi
-
-# 순서 불일치면 FAIL
-if [ "$PAM_ORDER_OK_ALL" = "N" ]; then
-    STATUS_FAIL="Y"
-fi
-
-# pwquality/pwhistory 정책 “존재” 판단:
-# - conf 기준 충족 또는 PAM에 모듈이 존재하면(가이드 주석 취지: 어느 한쪽에라도 설정되어 있으면) 정책 존재로 인정
-if [ "$PWQ_OK" = "Y" ] || [ "$PAM_PWQ_OK" = "Y" ]; then
-    DETAIL_LINES+="[pwquality 정책] configured_by=${PWQ_SRC:-none}, pam_present=${PAM_PWQ_OK}"$'\n'
+  STATUS_FAIL="Y"
+  append_summary "pam(files_not_found)"
 else
+  if [ "$PAM_ORDER_OK_ALL" = "N" ]; then
     STATUS_FAIL="Y"
-    DETAIL_LINES+="[pwquality 정책] FAIL: pwquality policy not configured (no valid pwquality.conf and no PAM module)"$'\n'
+    append_summary "pam(order_ok=N)"
+  fi
+  if [ "$PAM_PWQ_OK" != "Y" ] && [ "$PWQ_OK" != "Y" ]; then
+    STATUS_FAIL="Y"
+    append_summary "pam(pwquality_present=N)"
+  fi
+  if [ "$PAM_PWH_OK" != "Y" ] && [ "$PWH_OK" != "Y" ]; then
+    STATUS_FAIL="Y"
+    append_summary "pam(pwhistory_present=N)"
+  fi
 fi
 
-if [ "$PWH_OK" = "Y" ] || [ "$PAM_PWH_OK" = "Y" ]; then
-    DETAIL_LINES+="[pwhistory 정책] configured_by=${PWH_SRC:-none}, pam_present=${PAM_PWH_OK}"$'\n'
-else
-    STATUS_FAIL="Y"
-    DETAIL_LINES+="[pwhistory 정책] FAIL: pwhistory policy not configured (no valid pwhistory.conf and no PAM module)"$'\n'
-fi
-
-# ---------------------------
-# 최종 판단 및 평가 이유
-# ---------------------------
-if [ "$STATUS_FAIL" = "Y" ]; then
-    STATUS="FAIL"
-    REASON_LINE="비밀번호 복잡성(pwquality) 및 재사용 제한(pwhistory) 정책 또는 PAM 적용/순서, 비밀번호 유효기간(login.defs PASS_MAX_DAYS/PASS_MIN_DAYS) 설정이 가이드 기준을 충족하지 않거나 확인되지 않아 약한 비밀번호 사용·재사용 및 장기간 미변경으로 인한 계정 탈취 위험이 증가하므로 취약합니다. (pwquality: minlen>=8, credit=-1, enforce_for_root / pwhistory: remember>=4, file=/etc/security/opasswd, enforce_for_root / PAM: pwquality·pwhistory가 pam_unix 위 / login.defs: PASS_MAX_DAYS<=90, PASS_MIN_DAYS>=1)"
-else
-    STATUS="PASS"
-    REASON_LINE="비밀번호 복잡성(pwquality), 재사용 제한(pwhistory), PAM 적용/순서, 비밀번호 유효기간(PASS_MAX_DAYS/PASS_MIN_DAYS) 설정이 가이드 기준을 충족하여 약한 비밀번호 사용 및 장기간 미변경/재사용 위험이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
-fi
+# DETAIL_CONTENT는 양호/취약과 관계없이 현재 설정값을 모두 출력합니다.
+DETAIL_LINES+="pwquality.conf(minlen=${MINLEN_VAL:-not_set}, minclass=${MINCLASS_VAL:-not_set}, dcredit=${DCREDIT_VAL:-not_set}, ucredit=${UCREDIT_VAL:-not_set}, lcredit=${LCREDIT_VAL:-not_set}, ocredit=${OCREDIT_VAL:-not_set}, enforce_for_root=${PWQ_ENFORCE})"$'\n'
+DETAIL_LINES+="pwhistory.conf(remember=${REMEMBER_VAL:-not_set}, file=${OPASSWD_FILE_VAL:-not_set}, enforce_for_root=${PWH_ENFORCE})"$'\n'
+DETAIL_LINES+="login.defs(PASS_MAX_DAYS=${MAX_DAYS_VAL:-not_set}, PASS_MIN_DAYS=${MIN_DAYS_VAL:-not_set})"$'\n'
+DETAIL_LINES+="pam(pwquality_present=${PAM_PWQ_OK}, pwhistory_present=${PAM_PWH_OK}, order_ok=${PAM_ORDER_OK_ALL}, order_check=${PAM_ORDER_UNKNOWN:+UNKNOWN}${PAM_ORDER_UNKNOWN:+" "}${PAM_ORDER_UNKNOWN:-YES})"$'\n'
+DETAIL_LINES+="pam_line_pwquality=${PAM_PWQ_LINE_1:-not_found}"$'\n'
+DETAIL_LINES+="pam_line_pwhistory=${PAM_PWH_LINE_1:-not_found}"$'\n'
+DETAIL_LINES+="accounts(subject_users=${SUBJECT_USERS:-none}, excluded_users=${EXCLUDED_USERS:-none})"$'\n'
 
 DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# 최종 상태에 따라 reason(한 문장)과 detail(첫 줄 reason + 다음 줄부터 DETAIL_CONTENT)를 구성합니다.
+if [ "$STATUS_FAIL" = "Y" ]; then
+  STATUS="FAIL"
+  if [ -z "$VULN_SUMMARY" ]; then
+    VULN_SUMMARY="settings_not_verified"
+  fi
+  REASON_LINE="${VULN_SUMMARY}로 설정되어 있어 이 항목에 대해 취약합니다."
+else
+  STATUS="PASS"
+  REASON_LINE="pwquality.conf(minlen=${MINLEN_VAL:-not_set}, dcredit=${DCREDIT_VAL:-not_set}, ucredit=${UCREDIT_VAL:-not_set}, lcredit=${LCREDIT_VAL:-not_set}, ocredit=${OCREDIT_VAL:-not_set}, enforce_for_root=${PWQ_ENFORCE}), pwhistory.conf(remember=${REMEMBER_VAL:-not_set}, file=${OPASSWD_FILE_VAL:-not_set}, enforce_for_root=${PWH_ENFORCE}), login.defs(PASS_MAX_DAYS=${MAX_DAYS_VAL:-not_set}, PASS_MIN_DAYS=${MIN_DAYS_VAL:-not_set}), pam(pwquality_present=${PAM_PWQ_OK}, pwhistory_present=${PAM_PWH_OK}, order_ok=${PAM_ORDER_OK_ALL})로 설정되어 있어 이 항목에 대해 양호합니다."
+fi
+
+# 취약 시 자동 조치를 가정한 가이드와 주의사항을 제공합니다(양호 시에도 동일 형식 유지).
+GUIDE_LINE=$(cat <<'EOF'
+자동 조치: /etc/security/pwquality.conf에 minlen=8, minclass=3, dcredit=-1, ucredit=-1, lcredit=-1, ocredit=-1 및 enforce_for_root를 설정합니다.
+/etc/security/pwhistory.conf에 remember=4, file=/etc/security/opasswd 및 enforce_for_root를 설정합니다.
+/etc/login.defs에 PASS_MAX_DAYS=90 및 PASS_MIN_DAYS=1을 설정합니다.
+/etc/pam.d/system-auth 및 /etc/pam.d/password-auth에서 pam_pwquality.so와 pam_pwhistory.so 적용 여부를 확인하고 pam_unix.so 위에 위치하도록 정리합니다.
+주의사항: 
+정책 강화로 인해 사용자가 비밀번호 변경 시 조건을 충족하지 못하면 변경이 실패할 수 있습니다.
+서비스 계정/운영 절차가 단순 비밀번호 규칙을 전제로 하는 경우 인증 실패가 발생할 수 있습니다.
+authselect로 PAM이 관리되는 환경에서는 파일 직접 수정이 재적용 과정에서 덮어써져 변경이 유지되지 않을 수 있습니다.
+EOF
+)
+
+COMMAND_ONE_LINE="$(echo "$CHECK_COMMAND" | sed ':a;N;$!ba;s/\n/ /g' | sed 's/[[:space:]]\+/ /g' | sed 's/^ *//;s/ *$//')"
+
 RAW_EVIDENCE=$(cat <<EOF
 {
-  "command": "$(echo "$CHECK_COMMAND" | sed ':a;N;$!ba;s/\n/ /g' | sed 's/  */ /g')",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "command": "$COMMAND_ONE_LINE",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape_multiline "$RAW_EVIDENCE")"
 
-# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -14,13 +14,11 @@
 # @Description : SNMP Community String 복잡성 설정 여부 점검
 # @Criteria_Good : SNMP Community String 기본값인 "public", "private"이 아닌 영문자, 숫자 포함 10자리 이상 또는 영문자, 숫자, 특수문자 포함 8자리 이상인 경우
 # @Criteria_Bad :  아래의 내용 중 하나라도 해당되는 경우
-                   # 1. SNMP Community String 기본값인 "public", "private"일 경우
-                   # 2. 영문자, 숫자 포함 10자리 미만인 경우
-                   # 3. 영문자, 숫자, 특수문자 포함 8자리 미만인 경우
+#                1. SNMP Community String 기본값인 "public", "private"일 경우
+#                2. 영문자, 숫자 포함 10자리 미만인 경우
+#                3. 영문자, 숫자, 특수문자 포함 8자리 미만인 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
-
-# [진단] U-60 SNMP Community String 복잡성 설정
 
 # 기본 변수
 ID="U-60"
@@ -33,9 +31,15 @@ TARGET_FILE=""
 CHECK_COMMAND='systemctl is-active snmpd 2>/dev/null; systemctl is-enabled snmpd 2>/dev/null; pgrep -a -x snmpd 2>/dev/null; grep -nE "^[[:space:]]*(com2sec|rocommunity|rwcommunity|createUser)\b" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf /var/lib/net-snmp/snmpd.conf 2>/dev/null'
 
 DETAIL_LINES=""
+WEAK_REASON=""
 
 append_detail() {
-  [ -n "${1:-}" ] && DETAIL_LINES="${DETAIL_LINES}${DETAIL_LINES:+\\n}$1"
+  [ -z "${1:-}" ] && return 0
+  if [ -z "$DETAIL_LINES" ]; then
+    DETAIL_LINES="$1"
+  else
+    DETAIL_LINES="${DETAIL_LINES}"$'\n'"$1"
+  fi
 }
 
 add_target() {
@@ -55,7 +59,6 @@ mask_token() {
   fi
 }
 
-# 복잡성 판정(가이드 기준)
 # - 취약: public/private 또는 (길이<8) 또는 (영문+숫자만이고 길이<10)
 is_weak_token() {
   local s="${1:-}" low
@@ -66,7 +69,12 @@ is_weak_token() {
   return 1
 }
 
-# 1) SNMP 실행 여부
+set_weak_reason_once() {
+  [ -n "$WEAK_REASON" ] && return 0
+  WEAK_REASON="$1"
+}
+
+# 분기: SNMP 실행 여부 판단
 SNMP_RUNNING=0
 ACTIVE="N"; ENABLED="N"; PROC="N"
 
@@ -79,15 +87,15 @@ pgrep -x snmpd >/dev/null 2>&1 && PROC="Y" && SNMP_RUNNING=1
 append_detail "[systemd] snmpd_active=$ACTIVE snmpd_enabled=$ENABLED"
 append_detail "[process] snmpd_running=$PROC"
 
-# 2) 미실행이면 PASS(점검대상 없음)
+# 분기: SNMP 미실행(점검 대상 없음)
 if [ "$SNMP_RUNNING" -eq 0 ]; then
   STATUS="PASS"
-  REASON_LINE="SNMP 서비스가 비활성화되어 있어 점검 대상이 없으며, 이 항목에 대한 보안 위협이 없습니다."
+  REASON_LINE="snmpd_active=$ACTIVE snmpd_running=$PROC 로 이 항목에 대해 양호합니다."
   TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf, /var/lib/net-snmp/snmpd.conf"
   DETAIL_CONTENT="$DETAIL_LINES"
   [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 else
-  # 3) 설정 파싱(v1/v2c community + v3 createUser)
+  # 분기: 설정 파일에서 v1/v2c community 및 v3 createUser 파싱
   CONF_LIST="/etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf /var/lib/net-snmp/snmpd.conf"
   FOUND_ANY_CONF=0
   FOUND_V12=0
@@ -99,7 +107,6 @@ else
       FOUND_ANY_CONF=1
       add_target "$conf"
 
-      # 주석/공백 제외 후 필요한 키만
       LINES="$(grep -nEv '^[[:space:]]*#|^[[:space:]]*$' "$conf" 2>/dev/null | grep -nE '^[[:space:]]*(com2sec|rocommunity|rwcommunity|createUser)\b' || true)"
       if [ -z "$LINES" ]; then
         append_detail "[conf] $conf relevant_lines=NOT_FOUND"
@@ -109,11 +116,9 @@ else
       append_detail "[conf] $conf relevant_lines=FOUND (count=$(echo "$LINES" | wc -l | tr -d ' '))"
 
       while IFS= read -r line; do
-        # "N:내용" 형태 -> 내용만
         body="${line#*:}"
         key="$(echo "$body" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
 
-        # v1/v2c
         if [[ "$key" =~ ^(com2sec|rocommunity|rwcommunity)$ ]]; then
           FOUND_V12=1
           if [ "$key" = "com2sec" ]; then
@@ -125,22 +130,24 @@ else
 
           if is_weak_token "$comm"; then
             WEAK_FOUND=1
-            append_detail "[check] $conf | $key community=WEAK($(mask_token "$comm"))"
+            m="$(mask_token "$comm")"
+            set_weak_reason_once "$conf $key community=$m"
+            append_detail "[check] $conf | $key community=WEAK($m)"
           else
             append_detail "[check] $conf | $key community=OK($(mask_token "$comm"))"
           fi
 
-        # v3
         elif [ "$key" = "createuser" ]; then
           FOUND_V3=1
-          # createUser <user> <authproto> <authpass> [<privproto> <privpass>]
           authpass="$(echo "$body" | awk '{print $4}')"
           privpass="$(echo "$body" | awk '{print $6}')"
 
           if [ -n "${authpass:-}" ]; then
             if is_weak_token "$authpass"; then
               WEAK_FOUND=1
-              append_detail "[check] $conf | createUser authpass=WEAK($(mask_token "$authpass"))"
+              m="$(mask_token "$authpass")"
+              set_weak_reason_once "$conf createUser authpass=$m"
+              append_detail "[check] $conf | createUser authpass=WEAK($m)"
             else
               append_detail "[check] $conf | createUser authpass=OK($(mask_token "$authpass"))"
             fi
@@ -151,7 +158,9 @@ else
           if [ -n "${privpass:-}" ]; then
             if is_weak_token "$privpass"; then
               WEAK_FOUND=1
-              append_detail "[check] $conf | createUser privpass=WEAK($(mask_token "$privpass"))"
+              m="$(mask_token "$privpass")"
+              set_weak_reason_once "$conf createUser privpass=$m"
+              append_detail "[check] $conf | createUser privpass=WEAK($m)"
             else
               append_detail "[check] $conf | createUser privpass=OK($(mask_token "$privpass"))"
             fi
@@ -163,30 +172,41 @@ else
     fi
   done
 
-  # 4) 최종 판정 + 문구(요청 반영)
+  # 분기: 최종 판정
   if [ "$FOUND_ANY_CONF" -eq 0 ]; then
     STATUS="FAIL"
-    REASON_LINE="SNMP 서비스가 실행 중이나 설정 파일을 확인할 수 없어 취약합니다. (어디서 어떻게 설정되어 있는지 확인 불가) 조치: snmpd.conf 위치/권한을 확인한 뒤 Community String 또는 SNMPv3 인증 비밀번호를 복잡하게 설정하고 snmpd를 재시작하세요."
+    REASON_LINE="snmpd_active=$ACTIVE snmpd_running=$PROC snmp_conf=NOT_FOUND 로 이 항목에 대해 취약합니다."
+    TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf, /var/lib/net-snmp/snmpd.conf"
   elif [ "$FOUND_V12" -eq 0 ] && [ "$FOUND_V3" -eq 0 ]; then
     STATUS="FAIL"
-    REASON_LINE="SNMP 서비스가 실행 중이나 Community String(com2sec/rocommunity/rwcommunity) 및 SNMPv3(createUser) 설정을 확인할 수 없어 취약합니다. 조치: /etc/snmp/snmpd.conf 및 /var/lib/net-snmp/snmpd.conf에서 설정을 확인하고, 불필요 시 SNMP 비활성화 또는 인증정보를 복잡하게 설정하세요."
+    REASON_LINE="snmpd_active=$ACTIVE snmpd_running=$PROC directives=NOT_FOUND 로 이 항목에 대해 취약합니다."
   elif [ "$WEAK_FOUND" -eq 1 ]; then
     STATUS="FAIL"
-    REASON_LINE="SNMP 인증정보(Community String 또는 SNMPv3 인증 비밀번호)가 단순하거나 기본값(public/private)으로 설정되어 있어 취약합니다. 조치: 기본값을 제거하고 (영문+숫자 10자 이상) 또는 (영문/숫자/특수문자 포함 8자 이상)으로 변경 후 snmpd 재시작하세요."
+    REASON_LINE="${WEAK_REASON:-weak_setting_found} 로 이 항목에 대해 취약합니다."
   else
     STATUS="PASS"
-    REASON_LINE="설정 파일에서 SNMP 인증정보(Community String 또는 SNMPv3 인증 비밀번호)가 복잡성 기준을 충족하도록 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="snmpd_active=$ACTIVE snmpd_running=$PROC weak_setting=NO 로 이 항목에 대해 양호합니다."
   fi
 
   DETAIL_CONTENT="$DETAIL_LINES"
   [ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+# 분기: 최종 RAW_EVIDENCE(detail/guide) 구성
+if [ "$STATUS" = "PASS" ]; then
+  DETAIL_LINE="${REASON_LINE}"$'\n'"${DETAIL_CONTENT}"
+else
+  DETAIL_LINE="${REASON_LINE}"$'\n'"${DETAIL_CONTENT}"
+fi
+
+GUIDE_LINE="이 항목은 SNMP 연동 장비(NMS/모니터링/백업/자산관리 등)에서 Community String 또는 SNMPv3 인증정보를 동일하게 사용하고 있을 수 있어 자동으로 변경하면 모니터링 장애, 알람 누락, 자산 수집/장비 제어 실패 등 운영 중단 위험이 발생할 수 있어 수동 조치가 필요합니다.
+관리자가 직접 SNMP 사용 여부와 연동 대상(IP/장비/계정)을 확인한 뒤 /etc/snmp/snmpd.conf(또는 /var/lib/net-snmp/snmpd.conf)에서 public/private 및 단순 문자열을 제거하고 (영문+숫자 10자 이상) 또는 (영문/숫자/특수문자 포함 8자 이상)으로 변경한 후 연동 장비의 설정도 동일하게 갱신하고 snmpd를 재시작해 주시기 바랍니다."
+
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$DETAIL_LINE",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
 # @Last Updated: 2026-02-13
 # ============================================================================
@@ -17,7 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 # 기본 변수
 ID="U-09"
 STATUS="PASS"
@@ -32,6 +31,7 @@ CHECK_COMMAND='[ -f /etc/group ] && [ -f /etc/passwd ] && [ -f /etc/gshadow ] &&
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+GUIDE_LINE=""
 
 UNUSED_GROUPS=()
 MISMATCH_GROUPS=()
@@ -39,16 +39,14 @@ GHOST_MEMBERS=()
 
 GID_MIN=1000
 
-# FAIL 시 evidence에 추가할 확인 요청 문구
-CONFIRM_MSG="※ 확인 필요: 위 목록이 실제로 사용 중인 운영 정책/서비스/파일 소유(권한)와 연관되는지 운영 담당자가 확인 후 정리 여부를 결정하세요."
+# JSON escape (따옴표, 역슬래시, 줄바꿈)
+json_escape() {
+  echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g'
+}
 
-# 파일 존재 여부에 따른 분기
+# 파일 존재 여부 분기
 if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
-
-  # ---------------------------
-  # (1) /etc/group <-> /etc/gshadow 정합성 점검
-  # ---------------------------
-  # group에는 있는데 gshadow에는 없는 그룹
+  # /etc/group과 /etc/gshadow 간 그룹명 불일치 여부를 수집합니다.
   while IFS=: read -r GNAME _; do
     [ -z "$GNAME" ] && continue
     if ! grep -qE "^${GNAME}:" "$GSHADOW_FILE" 2>/dev/null; then
@@ -56,7 +54,6 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
     fi
   done < "$GROUP_FILE"
 
-  # gshadow에는 있는데 group에는 없는 그룹
   while IFS=: read -r GNAME _; do
     [ -z "$GNAME" ] && continue
     if ! grep -qE "^${GNAME}:" "$GROUP_FILE" 2>/dev/null; then
@@ -64,14 +61,11 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
     fi
   done < "$GSHADOW_FILE"
 
-  # ---------------------------
-  # (2) 유휴 그룹 점검 (기존 로직 유지: GID 1000+)
-  # (3) 유령 멤버 점검: /etc/group GMEM에 /etc/passwd에 없는 사용자
-  # ---------------------------
+  # /etc/group 멤버 목록에 존재하지 않는 계정이 포함되어 있는지(유령 멤버) 확인합니다.
+  # 동시에 GID 1000 이상에서 유휴 그룹(멤버 없음 + primary 사용자 없음)을 수집합니다.
   while IFS=: read -r GNAME GPASS GID GMEM; do
     [ -z "$GNAME" ] && continue
 
-    # 유령 멤버 점검 (GMEM)
     if [ -n "$GMEM" ]; then
       IFS=',' read -r -a MEMBERS <<< "$GMEM"
       for m in "${MEMBERS[@]}"; do
@@ -83,7 +77,6 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
       done
     fi
 
-    # 유휴 그룹 점검 (GID 1000+ & primary 사용자 없음 & GMEM 비어있음)
     [ -z "$GID" ] && continue
     case "$GID" in
       ''|*[!0-9]*) continue ;;
@@ -97,13 +90,19 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
     fi
   done < "$GROUP_FILE"
 
-  # ---------------------------
-  # 결과에 따른 PASS/FAIL 결정
-  # ---------------------------
+  # 점검 결과 분기
   if [ ${#MISMATCH_GROUPS[@]} -gt 0 ] || [ ${#GHOST_MEMBERS[@]} -gt 0 ] || [ ${#UNUSED_GROUPS[@]} -gt 0 ]; then
     STATUS="FAIL"
-    REASON_LINE="불필요/비정상 그룹 관리 상태가 확인되었습니다. (/etc/group, /etc/gshadow, /etc/passwd 정합성 불일치 또는 존재하지 않는 계정의 그룹 멤버 등록, 또는 유휴 그룹 존재) 불필요한 권한/리소스 관리 대상이 늘어나고 운영 정책 관리가 어려워질 수 있으므로 취약합니다. $CONFIRM_MSG"
 
+    # 취약 시: "어떠한 이유"는 취약한 설정값만으로 구성합니다.
+    VULN_REASON_PARTS=()
+    [ ${#MISMATCH_GROUPS[@]} -gt 0 ] && VULN_REASON_PARTS+=("mismatch_group_vs_gshadow=$(printf "%s," "${MISMATCH_GROUPS[@]}" | sed 's/,$//')")
+    [ ${#GHOST_MEMBERS[@]} -gt 0 ] && VULN_REASON_PARTS+=("ghost_members_in_group=$(printf "%s," "${GHOST_MEMBERS[@]}" | sed 's/,$//')")
+    [ ${#UNUSED_GROUPS[@]} -gt 0 ] && VULN_REASON_PARTS+=("unused_groups_gid_1000_plus=$(printf "%s," "${UNUSED_GROUPS[@]}" | sed 's/,$//')")
+
+    REASON_LINE="$(IFS='; '; echo "${VULN_REASON_PARTS[*]}")로 이 항목에 대해 취약합니다."
+
+    # DETAIL_CONTENT는 양호/취약과 관계 없이 현재 설정값(현재 수집 결과)만 표시합니다.
     DETAIL_CONTENT=""
     if [ ${#MISMATCH_GROUPS[@]} -gt 0 ]; then
       DETAIL_CONTENT="${DETAIL_CONTENT}mismatch_group_vs_gshadow:\n$(printf "%s\n" "${MISMATCH_GROUPS[@]}")\n"
@@ -123,39 +122,52 @@ if [ -f "$GROUP_FILE" ] && [ -f "$PASSWD_FILE" ] && [ -f "$GSHADOW_FILE" ]; then
       DETAIL_CONTENT="${DETAIL_CONTENT}unused_groups_gid_1000_plus:\nnone"
     fi
 
+    # 수동 조치 필요 안내(자동 조치 시 위험 + 조치 방법)
+    GUIDE_LINE="계정/그룹 정합성을 자동으로 변경하면 파일/디렉터리 소유권, ACL, 서비스 계정 정책, LDAP/SSSD 연동 구성에 영향을 줄 수 있어 위험이 존재하여 수동 조치가 필요합니다. 관리자가 직접 확인 후 불일치 그룹(/etc/group↔/etc/gshadow) 정리, 존재하지 않는 계정의 그룹 멤버 제거, 사용되지 않는 그룹 삭제 여부를 검토하여 조치해 주시기 바랍니다."
+
   else
     STATUS="PASS"
-    REASON_LINE="(/etc/group, /etc/gshadow, /etc/passwd) 간 그룹 정합성이 유지되고, 존재하지 않는 계정의 그룹 멤버 등록 및 유휴 그룹이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="no_mismatch_no_ghost_members_no_unused_groups_gid_1000_plus"
+
+    # 양호 시: "어떠한 이유"는 양호를 설명할 수 있는 현재 설정값 요약으로 구성합니다.
+    REASON_LINE="mismatch_group_vs_gshadow=none; ghost_members_in_group=none; unused_groups_gid_1000_plus=none로 이 항목에 대해 양호합니다."
+
+    DETAIL_CONTENT="mismatch_group_vs_gshadow:\nnone\nghost_members_in_group:\nnone\nunused_groups_gid_1000_plus:\nnone"
+
+    GUIDE_LINE="계정/그룹 정합성을 자동으로 변경하면 파일/디렉터리 소유권, ACL, 서비스 계정 정책, LDAP/SSSD 연동 구성에 영향을 줄 수 있어 위험이 존재하여 수동 조치가 필요합니다. 관리자가 직접 확인 후 불일치 그룹(/etc/group↔/etc/gshadow) 정리, 존재하지 않는 계정의 그룹 멤버 제거, 사용되지 않는 그룹 삭제 여부를 검토하여 조치해 주시기 바랍니다."
   fi
 
 else
   STATUS="FAIL"
-  REASON_LINE="그룹 또는 사용자 정보 파일(/etc/group, /etc/passwd, /etc/gshadow)이 존재하지 않아 유휴 그룹/정합성/유령 멤버 여부를 점검할 수 없으므로 취약합니다. 파일을 복구한 뒤 점검해야 합니다."
+
+  # 파일 누락 시 취약 이유(설정값 기반으로만 구성)
+  MISSING=()
+  [ ! -f "$GROUP_FILE" ] && MISSING+=("group_file_missing:/etc/group")
+  [ ! -f "$PASSWD_FILE" ] && MISSING+=("passwd_file_missing:/etc/passwd")
+  [ ! -f "$GSHADOW_FILE" ] && MISSING+=("gshadow_file_missing:/etc/gshadow")
+
+  REASON_LINE="$(IFS='; '; echo "${MISSING[*]}")로 이 항목에 대해 취약합니다."
 
   DETAIL_CONTENT=""
-  [ ! -f "$GROUP_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}group_not_found\n"
-  [ -f "$GROUP_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}group_exists\n"
-  [ ! -f "$PASSWD_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}passwd_not_found\n"
-  [ -f "$PASSWD_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}passwd_exists\n"
-  [ ! -f "$GSHADOW_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}gshadow_not_found"
-  [ -f "$GSHADOW_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}gshadow_exists"
+  [ ! -f "$GROUP_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}group_file:/etc/group=missing\n" || DETAIL_CONTENT="${DETAIL_CONTENT}group_file:/etc/group=exists\n"
+  [ ! -f "$PASSWD_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}passwd_file:/etc/passwd=missing\n" || DETAIL_CONTENT="${DETAIL_CONTENT}passwd_file:/etc/passwd=exists\n"
+  [ ! -f "$GSHADOW_FILE" ] && DETAIL_CONTENT="${DETAIL_CONTENT}gshadow_file:/etc/gshadow=missing" || DETAIL_CONTENT="${DETAIL_CONTENT}gshadow_file:/etc/gshadow=exists"
+
+  GUIDE_LINE="계정/그룹 정합성을 자동으로 변경하면 파일/디렉터리 소유권, ACL, 서비스 계정 정책, LDAP/SSSD 연동 구성에 영향을 줄 수 있어 위험이 존재하여 수동 조치가 필요합니다. 
+  관리자가 직접 확인 후 누락된 파일을 복구하고, /etc/group·/etc/gshadow·/etc/passwd 정합성을 점검한 뒤 불필요한 그룹/유령 멤버/유휴 그룹을 정리해 주시기 바랍니다."
 fi
 
-# raw_evidence 구성
+# raw_evidence 구성 (문장 단위 줄바꿈 유지)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED=$(json_escape "$RAW_EVIDENCE")
 
 # scan_history 저장용 JSON 출력
 echo ""

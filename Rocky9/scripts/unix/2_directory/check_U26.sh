@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.2
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -15,58 +15,67 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
 ID="U-26"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="/dev (exclude: /dev/mqueue, /dev/shm)"
-CHECK_COMMAND='find /dev -type f -exec ls -l {} \; (exclude: /dev/mqueue, /dev/shm)'
+TARGET_FILE="/dev"
+CHECK_COMMAND_MAIN='find /dev \( -path /dev/mqueue -o -path /dev/mqueue/\* -o -path /dev/shm -o -path /dev/shm/\* \) -prune -o -type f -print'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
 
-# /dev 디렉터리 내 일반 파일 탐색 (가이드 예외: /dev/mqueue, /dev/shm)
+# /dev 디렉터리 내 일반 파일 탐색(예외: /dev/mqueue, /dev/shm)
 INVALID_FILES=$(find /dev \
   \( -path /dev/mqueue -o -path /dev/mqueue/\* -o -path /dev/shm -o -path /dev/shm/\* \) -prune -o \
   -type f -print 2>/dev/null)
 
-# 결과 유무에 따른 PASS/FAIL 결정
+# 현재 설정값(양호/취약 모두 동일 포맷으로 제공)
 if [ -n "$INVALID_FILES" ]; then
-  STATUS="FAIL"
-  REASON_LINE="/dev 디렉터리에 정상적인 디바이스 노드가 아닌 일반 파일이 존재합니다. 이는 악성 파일이 디바이스 파일로 위장하거나 보안 정책을 우회할 위험이 있어 취약합니다. (가이드 예외 경로: /dev/mqueue, /dev/shm 제외)"
-
-  # 여러 경로는 줄바꿈이 아닌 쉼표로 구분(요구사항 반영)
   INVALID_FILES_CSV=$(echo "$INVALID_FILES" | paste -sd ", " -)
-
-  # 가이드 예시 반영: ls -l로 소유자/권한 근거 추가
   LS_INFO=$(echo "$INVALID_FILES" | xargs -r ls -l 2>/dev/null)
-
-  DETAIL_CONTENT="발견 파일(쉼표 구분): $INVALID_FILES_CSV
+  DETAIL_CONTENT="일반 파일(-type f) 목록(쉼표 구분): ${INVALID_FILES_CSV}
 ls -l 결과:
-$LS_INFO"
+${LS_INFO}"
 else
-  STATUS="PASS"
-  REASON_LINE="/dev 디렉터리에 일반 파일이 존재하지 않습니다. (가이드 예외 경로: /dev/mqueue, /dev/shm 제외)"
-  DETAIL_CONTENT="none"
+  INVALID_FILES_CSV="none"
+  DETAIL_CONTENT="일반 파일(-type f) 목록(쉼표 구분): none
+ls -l 결과:
+none"
 fi
 
-# raw_evidence 구성
+# 양호/취약 판단 및 detail 1문장(이유에는 가이드 문구 없이 '설정 값'만)
+if [ -n "$INVALID_FILES" ]; then
+  STATUS="FAIL"
+  REASON_LINE="/dev에 일반 파일(-type f)이 존재(${INVALID_FILES_CSV})하여 이 항목에 대해 취약합니다."
+else
+  STATUS="PASS"
+  REASON_LINE="/dev에 일반 파일(-type f)이 존재하지 않아 이 항목에 대해 양호합니다."
+fi
+
+# 수동 조치 안내(자동 조치 시 위험 + 조치 방법)
+GUIDE_LINE="이 항목에 대해서 /dev 경로에서 잘못된 파일을 자동으로 삭제할 경우 정상 동작 중인 구성요소에 영향을 줄 수 있는 위험이 존재하여 수동 조치가 필요합니다.
+관리자가 직접 확인 후 /dev에서 일반 파일을 점검하고 불필요하거나 존재하지 않는 파일을 rm로 삭제해 조치해 주시기 바랍니다."
+
+# raw_evidence 구성(각 값은 줄바꿈으로 문장 구분, detail은 1문장 + 줄바꿈 + 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
-  "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "command": "${CHECK_COMMAND_MAIN}
+예외: /dev/mqueue, /dev/shm",
+  "detail": "${REASON_LINE}
+${DETAIL_CONTENT}",
+  "target_file": "${TARGET_FILE}
+예외: /dev/mqueue, /dev/shm",
+  "guide": "${GUIDE_LINE}"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape(따옴표/줄바꿈) - Python/DB 저장 후 재조회 시 줄바꿈 복원 용이
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {

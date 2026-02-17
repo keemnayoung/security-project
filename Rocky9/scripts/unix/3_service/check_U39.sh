@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -17,7 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 # 기본 변수
 ID="U-39"
 STATUS="PASS"
@@ -25,7 +24,6 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="systemd(nfs-server, rpcbind 등), /etc/exports"
 
-# 가이드(예시) + 실제 판정에 필요한 핵심 커맨드 포함
 CHECK_COMMAND='
 systemctl list-units --type=service 2>/dev/null | egrep -i "(nfs|rpcbind)" || echo "no_nfs_related_services";
 for u in nfs-server.service rpcbind.service rpcbind.socket nfs-mountd.service nfs-idmapd.service rpc-statd.service nfsdcld.service; do
@@ -38,16 +36,7 @@ done;
 DETAIL_CONTENT=""
 REASON_LINE=""
 
-FOUND=0
-FOUND_LINES=()
-
-add_found() {
-  local msg="$1"
-  [ -n "$msg" ] && FOUND_LINES+=("$msg")
-}
-
-# 1) NFS 관련 unit 상태 점검 (서비스/소켓 포함)
-# - 불필요 NFS 서비스 비활성화(가이드 취지) 관점에서 active 또는 enabled이면 "취약" 신호로 판단
+# 점검 대상 유닛(서비스/소켓 포함)
 UNITS=(
   "nfs-server.service"
   "rpcbind.service"
@@ -58,56 +47,110 @@ UNITS=(
   "nfsdcld.service"
 )
 
-for u in "${UNITS[@]}"; do
-  ACTIVE_STATE="$(systemctl is-active "$u" 2>/dev/null || echo "unknown")"
-  ENABLED_STATE="$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")"
+# systemctl 출력값에서 disabled/inactive가 나와도 exit code 때문에 unknown이 덧붙는 현상을 방지
+get_is_enabled() {
+  local unit="$1"
+  local out
+  out="$(systemctl is-enabled "$unit" 2>/dev/null | head -n 1)"
+  [ -z "$out" ] && out="unknown"
+  echo "$out"
+}
 
-  # active이면 즉시 취약 신호
-  if [ "$ACTIVE_STATE" = "active" ] || [ "$ACTIVE_STATE" = "running" ] || [ "$ACTIVE_STATE" = "listening" ]; then
-    FOUND=1
-    add_found "systemd: $u 가 활성(active) 상태입니다. (is-active=$ACTIVE_STATE, is-enabled=$ENABLED_STATE)"
-    continue
-  fi
+get_is_active() {
+  local unit="$1"
+  local out
+  out="$(systemctl is-active "$unit" 2>/dev/null | head -n 1)"
+  [ -z "$out" ] && out="unknown"
+  echo "$out"
+}
 
-  # enabled이면 취약 신호 (masked/disabled는 양호로 간주, static은 enable 개념이 아니므로 단독으로는 취약 처리하지 않음)
-  if [ "$ENABLED_STATE" = "enabled" ] || [ "$ENABLED_STATE" = "enabled-runtime" ]; then
-    FOUND=1
-    add_found "systemd: $u 가 부팅 시 자동 시작(enabled) 상태입니다. (is-enabled=$ENABLED_STATE, is-active=$ACTIVE_STATE)"
-  else
-    add_found "systemd: $u 상태(참고) (is-enabled=$ENABLED_STATE, is-active=$ACTIVE_STATE)"
-  fi
-done
+# 현재 설정값(항상 출력)과, 판정 사유(양호/취약용)를 분리 관리
+CURRENT_LINES=()
+VULN_LINES=()
+GOOD_LINES=()
 
-# 2) /etc/exports 설정 존재 여부(참고/보조 신호)
-# - 데몬이 꺼져 있어도 exports가 구성되어 있으면 NFS 사용 흔적이므로 FAIL 판단에 참고로 포함
+add_current() { [ -n "$1" ] && CURRENT_LINES+=("$1"); }
+add_vuln()    { [ -n "$1" ] && VULN_LINES+=("$1"); }
+add_good()    { [ -n "$1" ] && GOOD_LINES+=("$1"); }
+
+# systemctl 사용 불가한 경우는 정확한 판정이 어려우므로 취약으로 간주하고, 현재값에 사유를 남김
+if ! command -v systemctl >/dev/null 2>&1; then
+  STATUS="FAIL"
+  add_current "systemctl=not_found"
+  add_vuln "systemctl=not_found"
+else
+  # 유닛별 활성/자동시작 상태를 수집하고, 활성(active/running/listening) 또는 enabled면 취약 신호로 분류
+  for u in "${UNITS[@]}"; do
+    en="$(get_is_enabled "$u")"
+    ac="$(get_is_active "$u")"
+    add_current "systemd:$u is-enabled=$en is-active=$ac"
+
+    if echo "$ac" | grep -qiE "^(active|running|listening)$"; then
+      STATUS="FAIL"
+      add_vuln "systemd:$u is-active=$ac"
+      continue
+    fi
+
+    if echo "$en" | grep -qiE "^(enabled|enabled-runtime)$"; then
+      STATUS="FAIL"
+      add_vuln "systemd:$u is-enabled=$en"
+      continue
+    fi
+
+    add_good "systemd:$u is-enabled=$en is-active=$ac"
+  done
+fi
+
+# /etc/exports는 주석/공백 제외 라인이 있으면 구성 흔적으로 판단(현재값은 항상 출력)
 if [ -f /etc/exports ]; then
   EXPORTS_ACTIVE="$(grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/exports 2>/dev/null || true)"
   if [ -n "$EXPORTS_ACTIVE" ]; then
-    FOUND=1
-    add_found "/etc/exports에 export 설정이 존재합니다(주석 제외). 예: $(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
+    STATUS="FAIL"
+    add_current "/etc/exports(active_lines)=$(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
+    add_vuln "/etc/exports(active_lines)=$(echo "$EXPORTS_ACTIVE" | head -n 5 | tr '\n' '; ' | sed 's/; $//')"
   else
-    add_found "/etc/exports는 존재하나 유효 export 설정(주석/공백 제외)은 없습니다."
+    add_current "/etc/exports=exports_empty"
+    add_good "/etc/exports=exports_empty"
   fi
 else
-  add_found "/etc/exports 파일이 존재하지 않습니다."
+  add_current "/etc/exports=exports_not_found"
+  add_good "/etc/exports=exports_not_found"
 fi
 
-# 결과 유무에 따른 PASS/FAIL 결정 + raw_evidence 문장 요구사항 반영
-if [ "$FOUND" -eq 1 ]; then
-  STATUS="FAIL"
-  REASON_LINE="systemd에서 NFS 관련 서비스/소켓이 활성(active) 또는 자동 시작(enabled) 상태로 확인되어 취약합니다. (불필요한 NFS 사용 시 비인가 파일 공유·접근 경로가 될 수 있습니다.) 조치: NFS를 사용하지 않으면 'systemctl stop <서비스명>' 후 'systemctl disable <서비스명>'을 적용하고, 필요 시 /etc/exports의 공유 설정을 제거한 뒤 재확인하세요."
-  DETAIL_CONTENT="$(printf "%s\n" "${FOUND_LINES[@]}")"
+# DETAIL_CONTENT는 양호/취약과 무관하게 "현재 설정값"만 출력
+DETAIL_CONTENT="$(printf "%s\n" "${CURRENT_LINES[@]}")"
+[ -z "$DETAIL_CONTENT" ] && DETAIL_CONTENT="none"
+
+# detail의 첫 문장(양호/취약)은 한 문장으로 만들고, 설정값만 포함
+if [ "$STATUS" = "FAIL" ]; then
+  REASON_CFG="$(printf "%s, " "${VULN_LINES[@]}" | sed 's/, $//')"
+  [ -z "$REASON_CFG" ] && REASON_CFG="relevant_settings_not_identified"
+  REASON_LINE="${REASON_CFG} 로 이 항목에 대해 취약합니다."
 else
-  STATUS="PASS"
-  REASON_LINE="systemd에서 NFS 관련 서비스/소켓이 활성화되어 있지 않고(disabled/masked 등), 불필요한 NFS 공유가 동작할 수 있는 상태가 아니므로 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="$(printf "%s\n" "${FOUND_LINES[@]}")"
+  REASON_CFG="$(printf "%s, " "${GOOD_LINES[@]}" | sed 's/, $//')"
+  [ -z "$REASON_CFG" ] && REASON_CFG="relevant_settings_not_identified"
+  REASON_LINE="${REASON_CFG} 로 이 항목에 대해 양호합니다."
 fi
+
+GUIDE_LINE=$(cat <<'EOF'
+자동 조치:
+NFS 관련 유닛이 존재하면 systemctl stop <unit> 후 systemctl disable <unit> 및 systemctl mask <unit>를 적용합니다.
+/etc/exports에 주석/공백이 아닌 라인이 있으면 해당 라인을 주석 처리하여 공유 구성을 비활성화합니다.
+주의사항: 
+NFS를 실제로 사용 중인 서버에서 서비스를 중지하거나 exports 구성을 변경하면 업무 서비스(공유 디렉터리, 백업, 배치 등)가 중단될 수 있습니다.
+rpcbind/socket 비활성화는 NFS 외 RPC 기반 기능에도 영향을 줄 수 있으므로 사전 영향도 확인이 필요합니다.
+mask 적용은 향후 정상 재가동을 막을 수 있으므로 운영 정책에 따라 disable까지만 적용할지 검토가 필요합니다.
+/etc/exports 변경 전 파일 백업 및 변경 후 점검(exportfs/서비스 상태 확인)을 수행하는 것이 안전합니다.
+EOF
+)
 
 # raw_evidence 구성 (첫 줄: 평가 문장 / 다음 줄부터: 현재 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.2
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -20,64 +20,125 @@ ID="U-21"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="/etc/syslog.conf /etc/rsyslog.conf"
-CHECK_COMMAND='for f in /etc/syslog.conf /etc/rsyslog.conf; do if [ -f "$f" ]; then stat -c "%n owner=%U perm=%a" "$f"; else echo "$f not_found"; fi; done'
-
 LOG_FILES=("/etc/syslog.conf" "/etc/rsyslog.conf")
 TARGET_FILES=()
 FOUND_ANY="N"
 FOUND_VULN="N"
-VULN_LINES=""
 
-REASON_LINE=""
+# 현재 설정값(양호/취약 공통 출력)
 DETAIL_CONTENT=""
 
-# 대상 파일을 순회하며 소유자/권한 점검
+# 취약 이유(취약인 경우에만: 취약 설정만 포함)
+VULN_REASON_ITEMS=""
+
+# 존재하지 않는 파일 표시(참고용)
+NOT_FOUND_ITEMS=""
+
+# target_file(존재 파일은 실제 존재 파일만, 없으면 빈 값)
+TARGET_FILE=""
+
+# 대시보드/DB 저장을 고려하여 multi-line command로 구성
+CHECK_COMMAND=$(cat <<'EOF'
+for f in /etc/syslog.conf /etc/rsyslog.conf; do
+  if [ -f "$f" ]; then
+    stat -c "%n owner=%U perm=%a" "$f"
+  else
+    echo "$f not_found"
+  fi
+done
+EOF
+)
+
+# 대상 파일을 순회하며 상태 수집
 for FILE in "${LOG_FILES[@]}"; do
-    if [ -f "$FILE" ]; then
-        FOUND_ANY="Y"
-        TARGET_FILES+=("$FILE")
+  if [ -f "$FILE" ]; then
+    FOUND_ANY="Y"
+    TARGET_FILES+=("$FILE")
 
-        OWNER=$(stat -c %U "$FILE" 2>/dev/null)
-        PERM=$(stat -c %a "$FILE" 2>/dev/null)
+    OWNER=$(stat -c %U "$FILE" 2>/dev/null)
+    PERM=$(stat -c %a "$FILE" 2>/dev/null)
 
-        if [[ "$OWNER" =~ ^(root|bin|sys)$ ]] && [ "$PERM" -le 640 ]; then
-            :
-        else
-            STATUS="FAIL"
-            FOUND_VULN="Y"
-            VULN_LINES+="$FILE owner=$OWNER perm=$PERM"$'\n'
-        fi
+    # 현재 설정값 누적(양호/취약 공통)
+    DETAIL_CONTENT="${DETAIL_CONTENT}file=$FILE
+owner=$OWNER
+perm=$PERM
+
+"
+
+    # 판정 기준 위반 시 취약으로 마킹
+    if ! [[ "$OWNER" =~ ^(root|bin|sys)$ ]] || [ -n "$PERM" ] && [ "$PERM" -gt 640 ]; then
+      STATUS="FAIL"
+      FOUND_VULN="Y"
+
+      # 취약 이유에는 취약 설정만(한 문장용) 누적
+      if [ -n "$VULN_REASON_ITEMS" ]; then
+        VULN_REASON_ITEMS="${VULN_REASON_ITEMS}, "
+      fi
+      VULN_REASON_ITEMS="${VULN_REASON_ITEMS}${FILE} owner=${OWNER} perm=${PERM}"
     fi
+  else
+    # 파일 미존재 정보(참고)
+    if [ -n "$NOT_FOUND_ITEMS" ]; then
+      NOT_FOUND_ITEMS="${NOT_FOUND_ITEMS}, "
+    fi
+    NOT_FOUND_ITEMS="${NOT_FOUND_ITEMS}${FILE}"
+  fi
 done
 
-# 대상 파일이 하나도 없으면: 가이드상 필수 취약 조건이 아니므로 PASS(점검대상 없음) 처리
+# 분기 1) 대상 파일이 하나도 없을 때(점검대상 없음 처리)
 if [ "$FOUND_ANY" = "N" ]; then
-    STATUS="PASS"
-    REASON_LINE="syslog 설정 파일(/etc/syslog.conf, /etc/rsyslog.conf)이 시스템에 존재하지 않습니다. 이는 rsyslog/syslog 구성이 다른 경로로 관리되거나 서비스가 미사용인 경우일 수 있으므로 본 항목은 점검대상 없음으로 판단합니다. (해당 서비스 사용 시 설정 파일 존재 여부 및 소유자(root/bin/sys), 권한 640 이하를 확인 필요)"
-    DETAIL_CONTENT="file_not_found"
-    TARGET_FILE=""
-else
-    # target_file은 실제 존재하는 파일만 공백으로 연결
-    TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}" | sed 's/[[:space:]]*$//')
+  STATUS="PASS"
+  TARGET_FILE=""
 
-    # 취약/양호에 따른 평가 이유 및 detail 구성
-    if [ "$FOUND_VULN" = "Y" ]; then
-        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys가 아니거나 권한이 640 초과로 설정되어 비인가 사용자가 로그 설정을 변경할 위험이 있으므로 취약합니다. 소유자를 root(또는 bin/sys)로 변경하고 권한을 640 이하로 설정해야 합니다."
-        DETAIL_CONTENT="$(printf "%s" "$VULN_LINES" | sed 's/[[:space:]]*$//')"
-    else
-        STATUS="PASS"
-        REASON_LINE="/etc/(r)syslog.conf 파일의 소유자가 root/bin/sys로 설정되어 있고 권한이 640 이하로 제한되어 로그 설정 파일의 임의 수정 위험이 없으므로 양호합니다."
-        DETAIL_CONTENT="all_files_ok"
-    fi
+  # 이유(1문장) + DETAIL_CONTENT(현재 설정값)
+  REASON_SENTENCE="/etc/syslog.conf 및 /etc/rsyslog.conf 파일이 존재하지 않아 점검대상 없음으로 판단되어 이 항목에 대해 양호합니다."
+  DETAIL_CONTENT="file_not_found: ${NOT_FOUND_ITEMS}"
+
+else
+  # 분기 2) 존재 파일 목록 구성(공백 연결)
+  TARGET_FILE=$(printf "%s " "${TARGET_FILES[@]}" | sed 's/[[:space:]]*$//')
+
+  # 양호/취약에 따른 이유 문장 구성(줄바꿈 없이 1문장)
+  if [ "$FOUND_VULN" = "Y" ]; then
+    # 취약: 취약 설정만 이유에 포함
+    REASON_SENTENCE="${VULN_REASON_ITEMS}로 설정되어 이 항목에 대해 취약합니다."
+
+  else
+    # 양호: 존재하는 파일들의 설정값을 이유에 포함(한 문장)
+    OK_ITEMS=""
+    for FILE in "${TARGET_FILES[@]}"; do
+      OWNER=$(stat -c %U "$FILE" 2>/dev/null)
+      PERM=$(stat -c %a "$FILE" 2>/dev/null)
+      if [ -n "$OK_ITEMS" ]; then
+        OK_ITEMS="${OK_ITEMS}, "
+      fi
+      OK_ITEMS="${OK_ITEMS}${FILE} owner=${OWNER} perm=${PERM}"
+    done
+    REASON_SENTENCE="${OK_ITEMS}로 설정되어 이 항목에 대해 양호합니다."
+  fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+    # 취약 시 자동 조치 가정 가이드 + 주의사항(줄바꿈 구분)
+GUIDE_LINE=$(cat <<EOF
+자동 조치:
+/etc/(r)syslog.conf 파일의 소유자를 root(또는 bin/sys는 유지)로 설정하고 권한을 640으로 변경합니다.
+주의사항: 
+일부 레거시 운영 스크립트나 관리 도구가 해당 설정 파일을 직접 수정·조회하는 환경에서는 권한 변경으로 접근 오류가 발생할 수 있으니 적용 전 사용 여부를 확인합니다.
+EOF
+)
+
+# detail은 "이유 1문장\n현재 설정값" 형태로 구성(줄바꿈 유지)
+REASON_LINE="${REASON_SENTENCE}"
+DETAIL_PAYLOAD="${REASON_LINE}
+${DETAIL_CONTENT}"
+
+# raw_evidence 구성(모든 값은 문장/항목 단위로 줄바꿈 가능)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "detail": "$DETAIL_PAYLOAD",
+  "target_file": "$TARGET_FILE",
+  "guide": "$GUIDE_LINE"
 }
 EOF
 )

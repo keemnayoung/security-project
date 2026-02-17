@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-16
 # ============================================================================
@@ -29,56 +29,81 @@ CHECK_COMMAND='stat -c "%U %G %a %n" /etc/sudoers 2>/dev/null || echo "sudoers_n
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+GUIDE_LINE=""
 VULNERABLE=0
 
+# 파일이 없으면: 점검 불가(환경 확인 필요)로 처리
 if [ ! -f "$TARGET_FILE" ]; then
   STATUS="PASS"
-  REASON_LINE="/etc/sudoers 파일이 존재하지 않아 sudo 설정 파일을 점검할 수 없습니다. (sudo 미설치 또는 별도 정책 적용 환경일 수 있어 확인이 필요하며, 해당 파일 기준으로는 보안 위협이 없습니다.)"
+  VULNERABLE=0
   DETAIL_CONTENT="확인 결과: /etc/sudoers 없음"
+  REASON_LINE="/etc/sudoers 파일이 존재하지 않아 이 항목을 점검할 수 없습니다."
 else
+  # 파일이 있으면: 소유자/그룹/권한 수집
   OWNER="$(stat -c '%U' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
   GROUP="$(stat -c '%G' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
   PERM_STR="$(stat -c '%a' "$TARGET_FILE" 2>/dev/null || echo "unknown")"
 
+  # 어떤 경우든 현재 설정은 DETAIL_CONTENT에 고정 표기
   DETAIL_CONTENT="현재 설정: owner=${OWNER}, group=${GROUP}, perm=${PERM_STR}"
 
+  # 기준 판정: owner=root 이고 perm<=640
   OWNER_OK=0
   PERM_OK=0
 
   [ "$OWNER" = "root" ] && OWNER_OK=1
 
   if echo "$PERM_STR" | grep -Eq '^[0-7]{3,4}$'; then
-    PERM_DEC=$((8#$PERM_STR))
-    BASE_DEC=$((8#640))
-    [ "$PERM_DEC" -le "$BASE_DEC" ] && PERM_OK=1
+    [ "$PERM_STR" -le 640 ] && PERM_OK=1
   fi
 
   if [ "$OWNER_OK" -ne 1 ] || [ "$PERM_OK" -ne 1 ]; then
     VULNERABLE=1
-  fi
-
-  if [ "$VULNERABLE" -eq 1 ]; then
     STATUS="FAIL"
-    REASON_LINE="/etc/sudoers 파일이 owner=${OWNER}, perm=${PERM_STR} 로 설정되어 있어(소유자 root가 아니거나 권한이 640을 초과) 취약합니다. 조치: chown root /etc/sudoers && chmod 640 /etc/sudoers"
   else
+    VULNERABLE=0
     STATUS="PASS"
-    REASON_LINE="/etc/sudoers 파일이 소유자 root이고 권한이 640 이하로 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
   fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+# PASS/FAIL에 따른 detail 문장 구성
+if [ "$STATUS" = "PASS" ]; then
+  # 양호 사유(설정 값만 사용)
+  if [ ! -f "$TARGET_FILE" ]; then
+    REASON_LINE="/etc/sudoers 파일이 존재하지 않아 이 항목을 점검할 수 없어 이 항목에 대해 양호합니다."
+  else
+    REASON_LINE="/etc/sudoers 파일이 owner=root이고 perm=${PERM_STR}로 설정되어 있어 이 항목에 대해 양호합니다."
+  fi
+else
+  # 취약 사유(취약한 설정만 노출)
+  if [ "$OWNER" != "root" ] && echo "$PERM_STR" | grep -Eq '^[0-7]{3,4}$' && [ "$PERM_STR" -gt 640 ]; then
+    REASON_LINE="/etc/sudoers 파일이 owner=${OWNER}이고 perm=${PERM_STR}로 설정되어 있어 이 항목에 대해 취약합니다."
+  elif [ "$OWNER" != "root" ]; then
+    REASON_LINE="/etc/sudoers 파일이 owner=${OWNER}로 설정되어 있어 이 항목에 대해 취약합니다."
+  else
+    REASON_LINE="/etc/sudoers 파일이 perm=${PERM_STR}로 설정되어 있어 이 항목에 대해 취약합니다."
+  fi
+
+  # 취약 시 가이드(자동 조치 가정)
+  GUIDE_LINE="자동 조치:
+  /etc/sudoers 파일 소유자를 root로 변경하고 권한을 640으로 조정합니다.
+  주의사항: 
+  sudoers 권한/소유자 변경 중 설정 오류나 파일 손상 시 sudo 사용이 제한될 수 있으므로 콘솔 접속/복구 경로를 확보한 뒤 적용하는 것이 안전합니다."
+fi
+
+# raw_evidence 구성 (줄바꿈이 DB 저장/재조회 시 유지되도록 \\n로 escape)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE
 $DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON 저장을 위한 escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g; :a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/\\/\\\\/g; s/"/\\"/g; :a;N;$!ba;s/\n/\\n/g')
 
 # scan_history 저장용 JSON 출력
 echo ""

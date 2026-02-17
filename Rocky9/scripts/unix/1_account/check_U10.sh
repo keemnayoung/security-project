@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
 # @Last Updated: 2026-02-13
 # ============================================================================
@@ -23,7 +23,7 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/etc/passwd"
-CHECK_COMMAND='[ -f /etc/passwd -a -r /etc/passwd ] && cut -d: -f3 /etc/passwd | sort -n | uniq -d || echo "passwd_not_found_or_not_readable"'
+CHECK_COMMAND='[ -f /etc/passwd -a -r /etc/passwd ] && cut -d: -f1,3 /etc/passwd | sort -t: -k2,2n || echo "passwd_not_found_or_not_readable"'
 
 REASON_LINE=""
 DETAIL_CONTENT=""
@@ -31,66 +31,70 @@ DETAIL_CONTENT=""
 DUPS=""
 DUPLICATE_LINES=""
 
-# 파일 존재 여부에 따른 분기
+GUIDE_LINE="자동 조치 시 UID 변경으로 인해 파일/디렉터리 소유권 불일치, 서비스 계정 권한 문제, 로그인/프로세스 권한 오동작이 발생할 수 있어 수동 조치가 필요합니다.\n관리자가 직접 중복 UID 계정을 확인한 뒤, 중복 계정 중 하나의 UID를 변경하고 해당 UID로 소유된 파일/디렉터리의 소유권을 올바른 계정으로 재설정해 주시기 바랍니다."
+
+# 분기 1) /etc/passwd 파일 존재 여부 확인
 if [ -f "$TARGET_FILE" ]; then
-    # (필수 추가) 파일이 존재하지만 읽을 수 없는 경우: 점검 불가이므로 FAIL
-    if [ ! -r "$TARGET_FILE" ]; then
-        STATUS="FAIL"
-        REASON_LINE="사용자 정보 파일(/etc/passwd)이 존재하지만 읽기 권한이 없어 UID 중복 여부를 점검할 수 없으므로 취약합니다. 파일 권한/ACL을 확인하여 점검 가능 상태로 만든 뒤 재점검해야 합니다."
-        DETAIL_CONTENT="passwd_not_readable"
-    else
-        # UID 목록이 비정상적으로 비어있는 경우도 점검 불가로 처리
-        UID_LIST="$(cut -d: -f3 "$TARGET_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d')"
-        if [ -z "$UID_LIST" ]; then
-            STATUS="FAIL"
-            REASON_LINE="사용자 정보 파일(/etc/passwd)에서 UID를 추출할 수 없어 점검을 수행할 수 없으므로 취약합니다. 파일 형식 이상 여부를 확인하고 복구 후 재점검해야 합니다."
-            DETAIL_CONTENT="passwd_parse_failed"
-        else
-            # 중복 UID 값 추출
-            DUPS=$(printf "%s\n" "$UID_LIST" | sort -n | uniq -d)
-
-            if [ -z "$DUPS" ]; then
-                STATUS="PASS"
-                REASON_LINE="모든 계정이 고유한 UID를 사용하고 있어 계정 간 권한 충돌 및 추적 혼선 위험이 없으므로 이 항목에 대한 보안 위협이 없습니다."
-                DETAIL_CONTENT="no_duplicate_uids"
-            else
-                STATUS="FAIL"
-                REASON_LINE="동일한 UID를 공유하는 계정이 존재하여 권한 경계가 무너지고 감사 추적이 어려워질 수 있으므로 취약합니다. 중복 계정 중 하나의 UID를 변경하고 해당 UID로 소유된 파일의 소유권도 함께 재설정해야 합니다."
-
-                # 중복 UID별 계정 매칭(반복문)
-                for uid in $DUPS; do
-                    ACCOUNTS=$(awk -F: -v u="$uid" '$3 == u {print $1}' "$TARGET_FILE" 2>/dev/null | xargs | sed 's/ /, /g')
-                    DUPLICATE_LINES+="uid=$uid accounts=$ACCOUNTS"$'\n'
-                done
-
-                DETAIL_CONTENT="$(printf "%s" "$DUPLICATE_LINES" | sed 's/[[:space:]]*$//')"
-            fi
-        fi
-    fi
-else
+  # 분기 2) /etc/passwd 읽기 가능 여부 확인(읽기 불가 시 점검 불가 처리)
+  if [ ! -r "$TARGET_FILE" ]; then
     STATUS="FAIL"
-    REASON_LINE="사용자 정보 파일(/etc/passwd)이 존재하지 않아 UID 중복 여부를 점검할 수 없으므로 취약합니다. /etc/passwd 파일을 복구한 뒤 UID 중복 여부를 점검해야 합니다."
-    DETAIL_CONTENT="passwd_not_found"
+    REASON_LINE="/etc/passwd 읽기 권한이 없어 점검할 수 있어 이 항목에 대해 취약합니다."
+    DETAIL_CONTENT="$(ls -l "$TARGET_FILE" 2>/dev/null || echo "ls_failed")"
+  else
+    # 분기 3) 현재 설정값 수집(사용자:UID 목록)
+    PASSWD_UID_LINES="$(cut -d: -f1,3 "$TARGET_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d')"
+    if [ -z "$PASSWD_UID_LINES" ]; then
+      STATUS="FAIL"
+      REASON_LINE="/etc/passwd에서 사용자:UID 값을 추출하지 못해 점검할 수 있어 이 항목에 대해 취약합니다."
+      DETAIL_CONTENT="passwd_uid_extract_failed"
+    else
+      # 분기 4) 중복 UID 탐지 및 결과 구성
+      DUPS="$(printf "%s\n" "$PASSWD_UID_LINES" | cut -d: -f2 | sort -n | uniq -d)"
+
+      if [ -z "$DUPS" ]; then
+        STATUS="PASS"
+        REASON_LINE="/etc/passwd에 중복 UID가 존재하지 않아 이 항목에 대해 양호합니다."
+        DETAIL_CONTENT="$PASSWD_UID_LINES"
+      else
+        STATUS="FAIL"
+
+        for uid in $DUPS; do
+          ACCOUNTS="$(awk -F: -v u="$uid" '$3==u{print $1}' "$TARGET_FILE" 2>/dev/null | xargs)"
+          DUPLICATE_LINES+="uid=$uid accounts=$ACCOUNTS"$'\n'
+        done
+        DUPLICATE_LINES="$(printf "%s" "$DUPLICATE_LINES" | sed 's/[[:space:]]*$//')"
+
+        REASON_LINE="$DUPLICATE_LINES 이 설정으로 UID가 중복되어 있어 이 항목에 대해 취약합니다."
+        DETAIL_CONTENT="$PASSWD_UID_LINES"
+      fi
+    fi
+  fi
+else
+  # 분기 5) /etc/passwd 파일이 없는 경우(점검 불가 처리)
+  STATUS="FAIL"
+  REASON_LINE="/etc/passwd 파일이 없어 점검할 수 있어 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="passwd_not_found"
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# RAW_EVIDENCE 구성(각 문장은 줄바꿈으로 구분)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+# JSON escape 처리(따옴표, 줄바꿈)
+RAW_EVIDENCE_ESCAPED="$(printf "%s" "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+  | sed ':a;N;$!ba;s/\n/\\n/g')"
 
-# scan_history 저장용 JSON 출력
+# scan_history JSON 출력
 echo ""
-cat << EOF
+cat <<EOF
 {
     "item_code": "$ID",
     "status": "$STATUS",

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -16,8 +16,6 @@
 # @Criteria_Bad : 공유 서비스에 대해 익명 접근을 허용한 경우
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
-
-# [진단] U-35 공유 서비스에 대한 익명 접근 제한 설정
 
 # 기본 변수
 ID="U-35"
@@ -34,144 +32,169 @@ SERVICE_EXISTS=0
 VULNERABLE=0
 
 DETAIL_LINES=""
+VULN_REASON_LINES=""
 
-# /etc/passwd 계정 기반(기본 FTP/anonymous 계정 존재 여부)
+append_line() {
+  # 첫 번째 인자: 변수명, 두 번째 인자: 추가할 한 줄 문자열
+  if [ -n "${!1}" ]; then
+    eval "$1=\"\${$1}\n$2\""
+  else
+    eval "$1=\"$2\""
+  fi
+}
+
+# /etc/passwd: ftp/anonymous 계정 존재 여부에 따라 익명 접근 가능성 판단
 if [ -f /etc/passwd ]; then
-    FTP_ACC=$(grep -nE "^ftp:" /etc/passwd 2>/dev/null | head -n 1)
-    ANON_ACC=$(grep -nE "^anonymous:" /etc/passwd 2>/dev/null | head -n 1)
+  FTP_ACC=$(grep -nE "^ftp:" /etc/passwd 2>/dev/null | head -n 1)
+  ANON_ACC=$(grep -nE "^anonymous:" /etc/passwd 2>/dev/null | head -n 1)
 
-    if [ -n "$FTP_ACC" ]; then
-        SERVICE_EXISTS=1
-        VULNERABLE=1
-        DETAIL_LINES+="/etc/passwd: ftp 계정이 존재하여 익명/공유 서비스 접근이 허용될 수 있습니다. (${FTP_ACC})"$'\n'
-    else
-        DETAIL_LINES+="/etc/passwd: ftp 계정 미존재."$'\n'
-    fi
+  if [ -n "$FTP_ACC" ]; then
+    SERVICE_EXISTS=1
+    VULNERABLE=1
+    append_line DETAIL_LINES "/etc/passwd: ${FTP_ACC}"
+    append_line VULN_REASON_LINES "/etc/passwd ftp 계정 존재(${FTP_ACC})"
+  else
+    append_line DETAIL_LINES "/etc/passwd: ftp 계정 미존재"
+  fi
 
-    if [ -n "$ANON_ACC" ]; then
-        SERVICE_EXISTS=1
-        VULNERABLE=1
-        DETAIL_LINES+="/etc/passwd: anonymous 계정이 존재하여 익명 접근이 허용될 수 있습니다. (${ANON_ACC})"$'\n'
-    else
-        DETAIL_LINES+="/etc/passwd: anonymous 계정 미존재."$'\n'
-    fi
+  if [ -n "$ANON_ACC" ]; then
+    SERVICE_EXISTS=1
+    VULNERABLE=1
+    append_line DETAIL_LINES "/etc/passwd: ${ANON_ACC}"
+    append_line VULN_REASON_LINES "/etc/passwd anonymous 계정 존재(${ANON_ACC})"
+  else
+    append_line DETAIL_LINES "/etc/passwd: anonymous 계정 미존재"
+  fi
 else
-    DETAIL_LINES+="/etc/passwd: 파일이 존재하지 않습니다."$'\n'
+  append_line DETAIL_LINES "/etc/passwd: 파일 미존재"
 fi
 
-# vsftpd 설정(anonymous_enable=YES 여부)
+# vsftpd: anonymous_enable=YES 여부에 따라 익명 FTP 허용 여부 판단
 VSFTPD_CONF=""
 if [ -f "/etc/vsftpd.conf" ]; then
-    VSFTPD_CONF="/etc/vsftpd.conf"
+  VSFTPD_CONF="/etc/vsftpd.conf"
 elif [ -f "/etc/vsftpd/vsftpd.conf" ]; then
-    VSFTPD_CONF="/etc/vsftpd/vsftpd.conf"
+  VSFTPD_CONF="/etc/vsftpd/vsftpd.conf"
 fi
 
 if [ -n "$VSFTPD_CONF" ]; then
-    SERVICE_EXISTS=1
-    VS_ANON_LINE=$(grep -nEv "^[[:space:]]*#" "$VSFTPD_CONF" 2>/dev/null | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=" | tail -n 1)
-    if echo "$VS_ANON_LINE" | grep -qiE "=[[:space:]]*YES([[:space:]]|$)"; then
-        VULNERABLE=1
-        DETAIL_LINES+="${VSFTPD_CONF}: anonymous_enable=YES 로 설정되어 익명 FTP가 허용됩니다. (${VS_ANON_LINE})"$'\n'
+  SERVICE_EXISTS=1
+  VS_ANON_LINE=$(grep -nEv "^[[:space:]]*#" "$VSFTPD_CONF" 2>/dev/null | grep -niE "^[[:space:]]*anonymous_enable[[:space:]]*=" | tail -n 1)
+
+  if echo "$VS_ANON_LINE" | grep -qiE "=[[:space:]]*YES([[:space:]]|$)"; then
+    VULNERABLE=1
+    append_line DETAIL_LINES "${VSFTPD_CONF}: ${VS_ANON_LINE}"
+    append_line VULN_REASON_LINES "${VSFTPD_CONF} anonymous_enable=YES(${VS_ANON_LINE})"
+  else
+    if [ -n "$VS_ANON_LINE" ]; then
+      append_line DETAIL_LINES "${VSFTPD_CONF}: ${VS_ANON_LINE}"
     else
-        if [ -n "$VS_ANON_LINE" ]; then
-            DETAIL_LINES+="${VSFTPD_CONF}: ${VS_ANON_LINE} (anonymous_enable=YES 미확인)."$'\n'
-        else
-            DETAIL_LINES+="${VSFTPD_CONF}: anonymous_enable 설정 라인 미확인(기본값/미설정 가능)."$'\n'
-        fi
+      append_line DETAIL_LINES "${VSFTPD_CONF}: anonymous_enable 설정 라인 미확인"
     fi
+  fi
 else
-    DETAIL_LINES+="vsftpd: 설정 파일 미존재(/etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf)."$'\n'
+  append_line DETAIL_LINES "vsftpd: 설정 파일 미존재(/etc/vsftpd.conf, /etc/vsftpd/vsftpd.conf)"
 fi
 
-# proftpd 설정(<Anonymous> 블록 / User,UserAlias 활성 여부)
+# proftpd: <Anonymous> 블록 및 User/UserAlias 활성 여부에 따라 익명 접근 가능성 판단
 PROFTPD_CONF=""
 if [ -f "/etc/proftpd.conf" ]; then
-    PROFTPD_CONF="/etc/proftpd.conf"
+  PROFTPD_CONF="/etc/proftpd.conf"
 elif [ -f "/etc/proftpd/proftpd.conf" ]; then
-    PROFTPD_CONF="/etc/proftpd/proftpd.conf"
+  PROFTPD_CONF="/etc/proftpd/proftpd.conf"
 fi
 
 if [ -n "$PROFTPD_CONF" ]; then
-    SERVICE_EXISTS=1
+  SERVICE_EXISTS=1
 
-    # 1) 주석 제외 후 <Anonymous> 블록 내용이 있으면 활성으로 판단
-    ANON_BLOCK=$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -Ev '^[[:space:]]*#' | sed '/^[[:space:]]*$/d')
-    if [ -n "$ANON_BLOCK" ]; then
-        VULNERABLE=1
-        ANON_SAMPLE=$(printf "%s\n" "$ANON_BLOCK" | head -n 10)
-        DETAIL_LINES+="${PROFTPD_CONF}: <Anonymous> 블록이 활성화되어 익명 접근이 허용될 수 있습니다."$'\n'
-        DETAIL_LINES+="${ANON_SAMPLE}"$'\n'
-    else
-        DETAIL_LINES+="${PROFTPD_CONF}: <Anonymous> 블록 활성 내용 미확인(없음 또는 주석 처리됨)."$'\n'
-    fi
+  ANON_BLOCK=$(sed -n '/<Anonymous/,/<\/Anonymous>/p' "$PROFTPD_CONF" 2>/dev/null | grep -Ev '^[[:space:]]*#' | sed '/^[[:space:]]*$/d')
+  if [ -n "$ANON_BLOCK" ]; then
+    VULNERABLE=1
+    ANON_SAMPLE=$(printf "%s\n" "$ANON_BLOCK" | head -n 10)
+    append_line DETAIL_LINES "${PROFTPD_CONF}: <Anonymous> 블록(주석 제외) 감지"
+    append_line DETAIL_LINES "${ANON_SAMPLE}"
+    append_line VULN_REASON_LINES "${PROFTPD_CONF} <Anonymous> 블록 활성"
+  else
+    append_line DETAIL_LINES "${PROFTPD_CONF}: <Anonymous> 블록 활성 내용 미확인"
+  fi
 
-    # 2) (가이드 반영) User / UserAlias 옵션이 주석이 아닌 상태로 존재하면 익명 접근 활성로 간주
-    PROFTPD_USER_ALIAS=$(grep -nEv '^[[:space:]]*#' "$PROFTPD_CONF" 2>/dev/null | grep -niE '^[[:space:]]*(User|UserAlias)[[:space:]]+' | head -n 5)
-    if [ -n "$PROFTPD_USER_ALIAS" ]; then
-        VULNERABLE=1
-        DETAIL_LINES+="${PROFTPD_CONF}: User/UserAlias 옵션이 활성화되어 익명 접근이 허용될 수 있습니다."$'\n'
-        DETAIL_LINES+="${PROFTPD_USER_ALIAS}"$'\n'
-    else
-        DETAIL_LINES+="${PROFTPD_CONF}: User/UserAlias 활성 설정 미확인."$'\n'
-    fi
+  PROFTPD_USER_ALIAS=$(grep -nEv '^[[:space:]]*#' "$PROFTPD_CONF" 2>/dev/null | grep -niE '^[[:space:]]*(User|UserAlias)[[:space:]]+' | head -n 5)
+  if [ -n "$PROFTPD_USER_ALIAS" ]; then
+    VULNERABLE=1
+    append_line DETAIL_LINES "${PROFTPD_CONF}: User/UserAlias 라인(주석 제외) 감지"
+    append_line DETAIL_LINES "${PROFTPD_USER_ALIAS}"
+    append_line VULN_REASON_LINES "${PROFTPD_CONF} User/UserAlias 활성(${PROFTPD_USER_ALIAS})"
+  else
+    append_line DETAIL_LINES "${PROFTPD_CONF}: User/UserAlias 활성 설정 미확인"
+  fi
 else
-    DETAIL_LINES+="proftpd: 설정 파일 미존재(/etc/proftpd.conf, /etc/proftpd/proftpd.conf)."$'\n'
+  append_line DETAIL_LINES "proftpd: 설정 파일 미존재(/etc/proftpd.conf, /etc/proftpd/proftpd.conf)"
 fi
 
-# NFS exports(anonuid/anongid 여부)
+# NFS: /etc/exports의 anonuid/anongid 존재 여부에 따라 익명 매핑 접근 가능성 판단
 if [ -f "/etc/exports" ]; then
-    SERVICE_EXISTS=1
-    NFS_ANON=$(grep -nEv "^[[:space:]]*#" /etc/exports 2>/dev/null | grep -nE "(anonuid|anongid)" | head -n 5)
-    if [ -n "$NFS_ANON" ]; then
-        VULNERABLE=1
-        DETAIL_LINES+="/etc/exports: anonuid/anongid 설정이 있어 익명 매핑 기반 접근이 허용됩니다."$'\n'
-        DETAIL_LINES+="${NFS_ANON}"$'\n'
-    else
-        DETAIL_LINES+="/etc/exports: anonuid/anongid 설정 미확인."$'\n'
-    fi
+  SERVICE_EXISTS=1
+  NFS_ANON=$(grep -nEv "^[[:space:]]*#" /etc/exports 2>/dev/null | grep -nE "(anonuid|anongid)" | head -n 5)
+  if [ -n "$NFS_ANON" ]; then
+    VULNERABLE=1
+    append_line DETAIL_LINES "/etc/exports: anonuid/anongid 라인(주석 제외) 감지"
+    append_line DETAIL_LINES "${NFS_ANON}"
+    append_line VULN_REASON_LINES "/etc/exports anonuid/anongid 존재(${NFS_ANON})"
+  else
+    append_line DETAIL_LINES "/etc/exports: anonuid/anongid 미확인"
+  fi
 else
-    DETAIL_LINES+="NFS: /etc/exports 파일이 존재하지 않습니다."$'\n'
+  append_line DETAIL_LINES "NFS: /etc/exports 파일 미존재"
 fi
 
-# Samba guest ok = yes 여부
+# Samba: guest ok = yes 여부에 따라 게스트(익명) 접근 허용 여부 판단
 if [ -f "/etc/samba/smb.conf" ]; then
-    SERVICE_EXISTS=1
-    SMB_GUEST=$(grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -niE "guest[[:space:]]*ok[[:space:]]*=" | tail -n 1)
-    if echo "$SMB_GUEST" | grep -qiE "=[[:space:]]*yes([[:space:]]|$)"; then
-        VULNERABLE=1
-        DETAIL_LINES+="/etc/samba/smb.conf: guest ok = yes 로 설정되어 익명(게스트) 접근이 허용됩니다. (${SMB_GUEST})"$'\n'
+  SERVICE_EXISTS=1
+  SMB_GUEST=$(grep -nEv "^[[:space:]]*#" /etc/samba/smb.conf 2>/dev/null | grep -niE "guest[[:space:]]*ok[[:space:]]*=" | tail -n 1)
+  if echo "$SMB_GUEST" | grep -qiE "=[[:space:]]*yes([[:space:]]|$)"; then
+    VULNERABLE=1
+    append_line DETAIL_LINES "/etc/samba/smb.conf: ${SMB_GUEST}"
+    append_line VULN_REASON_LINES "/etc/samba/smb.conf guest ok=yes(${SMB_GUEST})"
+  else
+    if [ -n "$SMB_GUEST" ]; then
+      append_line DETAIL_LINES "/etc/samba/smb.conf: ${SMB_GUEST}"
     else
-        if [ -n "$SMB_GUEST" ]; then
-            DETAIL_LINES+="/etc/samba/smb.conf: ${SMB_GUEST} (guest ok=yes 미확인)."$'\n'
-        else
-            DETAIL_LINES+="/etc/samba/smb.conf: guest ok 설정 라인 미확인."$'\n'
-        fi
+      append_line DETAIL_LINES "/etc/samba/smb.conf: guest ok 설정 라인 미확인"
     fi
+  fi
 else
-    DETAIL_LINES+="Samba: /etc/samba/smb.conf 파일이 존재하지 않습니다."$'\n'
+  append_line DETAIL_LINES "Samba: /etc/samba/smb.conf 파일 미존재"
 fi
 
-# detail(줄바꿈 유지)
-DETAIL_CONTENT="$(printf "%s" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
+# DETAIL_CONTENT: 양호/취약과 관계 없이 현재 설정 값만 출력
+DETAIL_CONTENT="$(printf "%b" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
-# 최종 판정 + raw_evidence 문구(요구사항 반영)
+# PASS/FAIL 판정에 따라 detail 첫 문장(이유)을 구성
 if [ "$SERVICE_EXISTS" -eq 0 ]; then
-    STATUS="PASS"
-    REASON_LINE="FTP/NFS/Samba 관련 설정 파일이 확인되지 않아 익명 접근이 구성되어 있을 가능성이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
+  STATUS="PASS"
+  REASON_LINE="익명 접근 허용 설정이 확인되지 않아 이 항목에 대해 양호합니다."
 elif [ "$VULNERABLE" -eq 1 ]; then
-    STATUS="FAIL"
-    REASON_LINE="공유 서비스 설정에서 익명 접근이 허용되는 설정이 확인되어 취약합니다. 조치: FTP는 ftp/anonymous 계정 제거 및 vsftpd는 anonymous_enable=NO로 설정하고 재시작, ProFTPd는 <Anonymous> 블록 및 User/UserAlias 익명 관련 설정을 비활성화, NFS는 exports에서 anonuid/anongid 제거, Samba는 guest ok = no로 변경 후 설정을 재적용하십시오."
+  STATUS="FAIL"
+  REASON_LINE="$(printf "%b" "$VULN_REASON_LINES" | tr '\n' '; ' | sed 's/[[:space:]]*$//; s/;[[:space:]]*$//')로 설정되어 이 항목에 대해 취약합니다."
 else
-    STATUS="PASS"
-    REASON_LINE="공유 서비스 설정에서 익명 접근 허용 설정이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+  STATUS="PASS"
+  REASON_LINE="익명 접근 허용 설정이 확인되지 않아 이 항목에 대해 양호합니다."
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# guide: 자동 조치 시 운영 영향 가능성 + 관리자가 수행할 조치 방법 안내
+GUIDE_LINE=$(cat <<'EOF'
+이 항목에 대해서 공유 서비스 설정을 자동으로 변경하면 정상 업무용 공유/접속이 중단되거나 서비스 연동(클라이언트, 배치, 마운트, 접근 권한 정책)에 장애가 발생할 위험이 존재하여 수동 조치가 필요합니다.
+관리자가 직접 확인 후 FTP는 익명 접속을 비활성화(ftp/anonymous 계정 사용 여부 확인 및 필요 시 제거, vsftpd는 anonymous_enable=NO로 설정), ProFTPd는 <Anonymous> 블록 및 User/UserAlias 기반 익명 설정을 비활성화, NFS는 /etc/exports에서 anonuid/anongid를 제거, Samba는 smb.conf에서 guest ok = no로 변경하고 설정 반영/재기동해 주시기 바랍니다.
+EOF
+)
+
+# raw_evidence: 각 값은 줄바꿈으로 문장 구분 가능하도록 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

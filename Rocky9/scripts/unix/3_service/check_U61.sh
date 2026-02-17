@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-16
 # ============================================================================
@@ -17,11 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] U-61 SNMP Access Control 설정
-
-set -u
-set -o pipefail
-
 # 기본 변수
 ID="U-61"
 STATUS="PASS"
@@ -32,7 +27,12 @@ DETAIL_CONTENT=""
 TARGET_FILE=""
 CHECK_COMMAND='(command -v systemctl >/dev/null 2>&1 && systemctl is-active snmpd 2>/dev/null || echo "systemctl_or_snmpd_not_found"); (command -v systemctl >/dev/null 2>&1 && systemctl is-enabled snmpd 2>/dev/null || true); (pgrep -a -x snmpd 2>/dev/null || echo "snmpd_process_not_found"); (grep -nE "^[[:space:]]*(agentAddress|com2sec|rocommunity|rwcommunity|rouser|rwuser|createUser)\b" /etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf 2>/dev/null || echo "snmpd_conf_not_found_or_no_directives")'
 
-# 1) SNMP 실행 여부
+GUIDE_LINE="이 항목에 대해서 자동 조치 시 허용 네트워크/호스트를 잘못 제한하면 모니터링 장애가 발생하거나 반대로 과도한 허용으로 정보 노출 위험이 커질 수 있어 수동 조치가 필요합니다.
+관리자가 직접 운영 정책(관리망/허용 대상)을 확인 후 /etc/snmp/snmpd.conf의 com2sec 또는 rocommunity/rwcommunity에 허용 네트워크(source)를 명시하고 snmpd를 재시작해 주시기 바랍니다."
+
+append_detail() { DETAIL_CONTENT="${DETAIL_CONTENT:+$DETAIL_CONTENT\n}$1"; }
+
+# SNMP 실행 여부 판단 분기
 SNMP_RUNNING=0
 ACTIVE="N"; ENABLED="N"; PROC="N"
 
@@ -40,25 +40,31 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet snmpd 2>/
 if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet snmpd 2>/dev/null; then ENABLED="Y"; fi
 if pgrep -x snmpd >/dev/null 2>&1; then PROC="Y"; SNMP_RUNNING=1; fi
 
-DETAIL_CONTENT="[systemd] snmpd_active=${ACTIVE} snmpd_enabled=${ENABLED}\n[process] snmpd_running=${PROC}"
+append_detail "[systemd] snmpd_active=${ACTIVE} snmpd_enabled=${ENABLED}"
+append_detail "[process] snmpd_running=${PROC}"
 
-# 2) SNMP 미사용이면 PASS
+REASON_OK=""
+REASON_BAD=""
+
+# SNMP 미사용 분기(PASS)
 if [ "$SNMP_RUNNING" -eq 0 ]; then
   STATUS="PASS"
-  REASON_LINE="systemd/프로세스 기준으로 SNMP 서비스가 비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
+  REASON_OK="systemd/프로세스 기준 snmpd_active=${ACTIVE}, snmpd_running=${PROC}로 비활성화되어"
   TARGET_FILE="/etc/snmp/snmpd.conf, /usr/share/snmp/snmpd.conf"
 else
-  # 3) 설정 파일 점검(가이드 핵심: 접근 제어 설정 여부)
+  # 설정 파일 확인 분기
   CONF_FILES=(/etc/snmp/snmpd.conf /usr/share/snmp/snmpd.conf)
   FOUND=0
 
-  OK_HINT=0
   VULN=0
+  OK_HINT=0
 
-  COM2SEC_OK=0; COM2SEC_WIDE=0
-  COMM_OK=0; COMM_WIDE=0; COMM_NO_SRC=0
-  V3_OK=0
-  AGENT_WIDE=0
+  # 설정값 기반 이유(양호/취약) 생성용
+  OK_ITEMS=""
+  BAD_ITEMS=""
+
+  add_ok(){ OK_ITEMS="${OK_ITEMS:+$OK_ITEMS; }$1"; }
+  add_bad(){ BAD_ITEMS="${BAD_ITEMS:+$BAD_ITEMS; }$1"; VULN=1; }
 
   for f in "${CONF_FILES[@]}"; do
     [ -f "$f" ] || continue
@@ -67,13 +73,29 @@ else
 
     CLEAN="$(grep -Ev '^[[:space:]]*#|^[[:space:]]*$' "$f" 2>/dev/null || true)"
 
-    # agentAddress(참고): 0.0.0.0/::/udp:161 등 광범위 리슨은 위험도 상승
-    AG="$(echo "$CLEAN" | grep -E '^[[:space:]]*agentAddress\b' || true)"
-    if [ -n "$AG" ] && echo "$AG" | grep -qE '0\.0\.0\.0|::|udp:161|udp6:161'; then
-      AGENT_WIDE=1
+    # 현재 설정값(라인)만 DETAIL_CONTENT에 기록
+    LINES="$(echo "$CLEAN" | grep -nE '^[[:space:]]*(agentAddress|com2sec|rocommunity|rwcommunity|rouser|rwuser|createUser)\b' 2>/dev/null || true)"
+    if [ -n "$LINES" ]; then
+      append_detail "[conf:$f]"
+      while IFS= read -r line; do
+        append_detail "$line"
+      done <<< "$LINES"
+    else
+      append_detail "[conf:$f] (no_directives_found)"
     fi
 
-    # com2sec <secname> <source> <community>
+    # agentAddress 광범위 리슨 여부(취약 근거는 설정값으로만)
+    AG="$(echo "$CLEAN" | grep -E '^[[:space:]]*agentAddress\b' || true)"
+    if [ -n "$AG" ]; then
+      if echo "$AG" | grep -qE '0\.0\.0\.0|::|udp:161|udp6:161'; then
+        add_bad "agentAddress=${AG#agentAddress }"
+      else
+        add_ok "agentAddress=${AG#agentAddress }"
+        OK_HINT=1
+      fi
+    fi
+
+    # com2sec source 점검
     C2="$(echo "$CLEAN" | grep -E '^[[:space:]]*com2sec\b' || true)"
     if [ -n "$C2" ]; then
       OK_HINT=1
@@ -81,78 +103,79 @@ else
         src="$(echo "$line" | awk '{print $3}')"
         comm="$(echo "$line" | awk '{print $4}')"
         if echo "$src" | grep -qE '^(default|0\.0\.0\.0(/0)?|::(/0)?)$'; then
-          COM2SEC_WIDE=1
-          [ "$comm" = "public" ] || [ "$comm" = "private" ] && COM2SEC_WIDE=1
+          add_bad "com2sec_source=${src} community=${comm}"
         else
-          COM2SEC_OK=1
+          add_ok "com2sec_source=${src}"
         fi
       done <<< "$C2"
     fi
 
-    # rocommunity/rwcommunity <community> [source[/mask]]
+    # rocommunity/rwcommunity source 점검
     CR="$(echo "$CLEAN" | grep -E '^[[:space:]]*(rocommunity|rwcommunity)\b' || true)"
     if [ -n "$CR" ]; then
       OK_HINT=1
       while IFS= read -r line; do
-        nf="$(echo "$line" | awk '{print NF}')"
+        kind="$(echo "$line" | awk '{print $1}')"
         comm="$(echo "$line" | awk '{print $2}')"
         src="$(echo "$line" | awk '{print $3}')"
+        nf="$(echo "$line" | awk '{print NF}')"
         if [ -z "$nf" ] || [ "$nf" -le 2 ]; then
-          COMM_NO_SRC=1
+          add_bad "${kind}=${comm} source=NOT_SET"
         else
           if echo "$src" | grep -qE '^(default|0\.0\.0\.0(/0)?|::(/0)?)$'; then
-            COMM_WIDE=1
+            add_bad "${kind}=${comm} source=${src}"
           else
-            COMM_OK=1
+            add_ok "${kind}=${comm} source=${src}"
           fi
-        fi
-        if [ "$comm" = "public" ] || [ "$comm" = "private" ]; then
-          # public/private 자체는 즉시 취약이라기보다, 제한이 없거나 광범위면 취약 근거 강화
-          [ "$nf" -le 2 ] && COMM_NO_SRC=1
         fi
       done <<< "$CR"
     fi
 
-    # SNMPv3 사용자(rouser/rwuser/createUser) 존재 시 접근 제어 힌트로 인정
+    # SNMPv3 사용자(양호 힌트)
     V3="$(echo "$CLEAN" | grep -E '^[[:space:]]*(rouser|rwuser|createUser)\b' || true)"
     if [ -n "$V3" ]; then
       OK_HINT=1
-      V3_OK=1
+      add_ok "snmpv3_user=FOUND"
     fi
   done
 
+  # 설정 파일을 확인할 수 없는 분기(FAIL)
   if [ "$FOUND" -eq 0 ]; then
     STATUS="FAIL"
-    REASON_LINE="SNMP 서비스가 실행 중이나 snmpd.conf를 확인할 수 없어(파일 미존재/경로 상이) 접근 제어 설정을 검증할 수 있어 취약합니다."
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n[conf] /etc/snmp/snmpd.conf,/usr/share/snmp/snmpd.conf=NOT_FOUND"
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n[조치] /etc/snmp/snmpd.conf에 com2sec 또는 rocommunity/rwcommunity에 '허용 네트워크'를 지정하고 snmpd를 재시작하세요. (예: com2sec <sec> <허용대역> <community> / rocommunity <community> <허용대역>)"
+    REASON_BAD="snmpd_active=${ACTIVE}, snmpd_running=${PROC}인데 snmpd.conf를 확인할 수 없어"
+    append_detail "[conf] /etc/snmp/snmpd.conf,/usr/share/snmp/snmpd.conf=NOT_FOUND"
   else
-    # 취약 조건(가이드 핵심: 접근 제어 미설정/미흡)
-    [ "$OK_HINT" -eq 0 ] && VULN=1
-    [ "$COM2SEC_WIDE" -eq 1 ] && VULN=1
-    [ "$COMM_NO_SRC" -eq 1 ] && VULN=1
-    [ "$COMM_WIDE" -eq 1 ] && VULN=1
-    [ "$AGENT_WIDE" -eq 1 ] && VULN=1
-
-    # 상세 요약(짧게)
-    DETAIL_CONTENT="${DETAIL_CONTENT}\n[summary] com2sec_ok=${COM2SEC_OK} com2sec_wide=${COM2SEC_WIDE} ro_rw_ok=${COMM_OK} ro_rw_no_src=${COMM_NO_SRC} ro_rw_wide=${COMM_WIDE} snmpv3_user=${V3_OK} agentAddress_wide=${AGENT_WIDE}"
+    # 접근 제어 힌트 자체가 없으면 FAIL
+    if [ "$OK_HINT" -eq 0 ]; then
+      STATUS="FAIL"
+      VULN=1
+      BAD_ITEMS="${BAD_ITEMS:+$BAD_ITEMS; }access_control_directives=NOT_FOUND"
+    fi
 
     if [ "$VULN" -eq 1 ]; then
       STATUS="FAIL"
-      REASON_LINE="snmpd.conf에서 com2sec/rocommunity/rwcommunity 접근 제어가 없거나(source 미지정), default(전체) 등으로 광범위 허용되어 취약합니다."
-      DETAIL_CONTENT="${DETAIL_CONTENT}\n[조치] (Redhat계열) com2sec의 source를 관리망/특정 호스트로 제한하세요. (Debian계열) rocommunity/rwcommunity 뒤에 <허용 네트워크>를 추가하세요. 적용 후 'systemctl restart snmpd'로 재시작하세요."
+      REASON_BAD="${BAD_ITEMS:-접근 제어 설정이 미흡하여}"
     else
       STATUS="PASS"
-      REASON_LINE="snmpd.conf에서 com2sec 또는 rocommunity/rwcommunity(또는 SNMPv3 사용자)가 확인되고 허용 대상(source)이 제한되어 있어 이 항목에 대한 보안 위협이 없습니다."
+      REASON_OK="${OK_ITEMS:-접근 제어 설정이 확인되어}"
     fi
   fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+# RAW_EVIDENCE.detail 문장 구성 분기
+if [ "$STATUS" = "PASS" ]; then
+  REASON_LINE="${REASON_OK} 로 이 항목에 대해 양호합니다."
+else
+  REASON_LINE="${REASON_BAD:-${BAD_ITEMS}} 로 이 항목에 대해 취약합니다."
+fi
+
+# raw_evidence 구성 (detail은 1문장 + 줄바꿈 + 현재 설정값)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "detail": "$REASON_LINE
+  $DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

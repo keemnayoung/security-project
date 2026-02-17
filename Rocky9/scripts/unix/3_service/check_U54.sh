@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -17,9 +17,6 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [진단] 암호화되지 않는 FTP 서비스 비활성화
-
-# 기본 변수
 ID="U-54"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -27,87 +24,119 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 REASON_LINE=""
 DETAIL_CONTENT=""
 TARGET_FILE=""
-CHECK_COMMAND='grep -nE "^[[:space:]]*ftp\b" /etc/inetd.conf 2>/dev/null; grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b" /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp 2>/dev/null; systemctl list-unit-files 2>/dev/null | grep -Ei "^(vsftpd|proftpd|pure-ftpd)\.service"; systemctl is-active vsftpd proftpd pure-ftpd 2>/dev/null; systemctl is-enabled vsftpd proftpd pure-ftpd 2>/dev/null'
+
+CHECK_COMMAND=$'grep -nE "^[[:space:]]*ftp\\b" /etc/inetd.conf 2>/dev/null\n'\
+$'grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\\b" /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp 2>/dev/null\n'\
+$'systemctl list-unit-files 2>/dev/null | grep -Ei "^(vsftpd|proftpd|pure-ftpd)\\.service"\n'\
+$'systemctl is-active vsftpd proftpd pure-ftpd 2>/dev/null\n'\
+$'systemctl is-enabled vsftpd proftpd pure-ftpd 2>/dev/null'
 
 VULNERABLE=0
 DETAIL_LINES=""
+REASON_FACTS=""
 
 add_detail() { [ -n "${1:-}" ] && DETAIL_LINES="${DETAIL_LINES}${DETAIL_LINES:+\n}$1"; }
-add_file()   { [ -n "${1:-}" ] && TARGET_FILE="${TARGET_FILE}${TARGET_FILE:+, }$1"; }
+add_reason() { [ -n "${1:-}" ] && REASON_FACTS="${REASON_FACTS}${REASON_FACTS:+; }$1"; }
+add_file() { [ -n "${1:-}" ] && TARGET_FILE="${TARGET_FILE}${TARGET_FILE:+, }$1"; }
 
-# 1) inetd: /etc/inetd.conf 에서 ftp 라인이 주석 없이 존재하면 취약
+# inetd 설정 점검: /etc/inetd.conf 내 ftp 활성 라인(주석 제외) 존재 여부
 INETD="/etc/inetd.conf"
 if [ -f "$INETD" ]; then
   add_file "$INETD"
-  if grep -nEv '^[[:space:]]*#' "$INETD" 2>/dev/null | grep -nEq '^[[:space:]]*ftp\b'; then
+  INETD_ACTIVE_LINES="$(grep -nEv '^[[:space:]]*#' "$INETD" 2>/dev/null | grep -nE '^[[:space:]]*ftp([[:space:]]|$)' || true)"
+  if [ -n "$INETD_ACTIVE_LINES" ]; then
     VULNERABLE=1
-    add_detail "[inetd] $INETD 에서 ftp 서비스가 주석 없이 설정되어 활성화 상태입니다."
+    add_reason "/etc/inetd.conf 에 ftp 활성 라인이 존재함"
+    add_detail "[inetd] active_ftp_lines:\n$INETD_ACTIVE_LINES"
   else
-    add_detail "[inetd] $INETD 에서 ftp 서비스가 주석 처리(또는 미설정)되어 비활성화 상태입니다."
+    add_detail "[inetd] active_ftp_lines: none"
   fi
 else
-  add_detail "[inetd] $INETD 파일이 없어 inetd 기반 FTP 설정이 확인되지 않습니다."
+  add_detail "[inetd] file: not_found (/etc/inetd.conf)"
 fi
 
-# 2) xinetd: /etc/xinetd.d/* 에서 disable = no 이면 취약 (ftp/proftp/vsftp)
+# xinetd 설정 점검: /etc/xinetd.d/{ftp,proftp,vsftp} 내 disable=no 여부
 if [ -d "/etc/xinetd.d" ]; then
   for f in /etc/xinetd.d/ftp /etc/xinetd.d/proftp /etc/xinetd.d/vsftp; do
     if [ -f "$f" ]; then
       add_file "$f"
-      if grep -vi '^[[:space:]]*#' "$f" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no\b'; then
+      X_DISABLE_LINE="$(grep -nEvi '^[[:space:]]*#' "$f" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1 || true)"
+      X_DISABLE_NO="$(grep -nEvi '^[[:space:]]*#' "$f" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)' | head -n 1 || true)"
+      if [ -n "$X_DISABLE_NO" ]; then
         VULNERABLE=1
-        add_detail "[xinetd] $f 에서 disable=no 로 설정되어 FTP 서비스가 활성화 상태입니다."
+        add_reason "$(basename "$f") 에 disable=no 설정이 존재함"
+        add_detail "[xinetd] file=$f disable_line: $X_DISABLE_LINE"
       else
-        add_detail "[xinetd] $f 에서 disable=no 설정이 없어(대개 disable=yes) 비활성화 상태입니다."
+        [ -z "$X_DISABLE_LINE" ] && X_DISABLE_LINE="disable_line_not_found"
+        add_detail "[xinetd] file=$f disable_line: $X_DISABLE_LINE"
       fi
+    else
+      add_detail "[xinetd] file: not_found ($f)"
     fi
   done
 else
-  add_detail "[xinetd] /etc/xinetd.d 디렉터리가 없어 xinetd 기반 FTP 설정이 확인되지 않습니다."
+  add_detail "[xinetd] dir: not_found (/etc/xinetd.d)"
 fi
 
-# 3) systemd: vsftpd/proftpd/pure-ftpd 가 active 또는 enabled면 취약
+# systemd 점검: vsftpd/proftpd/pure-ftpd 의 active/enabled 여부
 if command -v systemctl >/dev/null 2>&1; then
   for s in vsftpd proftpd pure-ftpd; do
     if systemctl list-unit-files 2>/dev/null | grep -qE "^${s}\.service"; then
       add_file "systemd:${s}.service"
-      systemctl is-active --quiet "$s" 2>/dev/null && { VULNERABLE=1; add_detail "[systemd] ${s}.service 가 active(실행 중) 상태입니다."; } \
-                                              || add_detail "[systemd] ${s}.service 는 active 상태가 아닙니다."
-      systemctl is-enabled --quiet "$s" 2>/dev/null && { VULNERABLE=1; add_detail "[systemd] ${s}.service 가 enabled(부팅 시 자동 시작) 상태입니다."; } \
-                                               || add_detail "[systemd] ${s}.service 는 enabled 상태가 아닙니다."
+      S_ACTIVE="$(systemctl is-active "$s" 2>/dev/null || echo "unknown")"
+      S_ENABLED="$(systemctl is-enabled "$s" 2>/dev/null || echo "unknown")"
+      add_detail "[systemd] ${s}.service active=$S_ACTIVE enabled=$S_ENABLED"
+      if [ "$S_ACTIVE" = "active" ] || [ "$S_ENABLED" = "enabled" ]; then
+        VULNERABLE=1
+        [ "$S_ACTIVE" = "active" ] && add_reason "${s}.service 가 active 임"
+        [ "$S_ENABLED" = "enabled" ] && add_reason "${s}.service 가 enabled 임"
+      fi
+    else
+      add_detail "[systemd] ${s}.service unit: not_found"
     fi
   done
 else
-  add_detail "[systemd] systemctl 명령을 사용할 수 없어 systemd 서비스 상태를 확인하지 못했습니다."
-fi
-
-# 최종 판정/문구(요청 톤)
-if [ "$VULNERABLE" -eq 1 ]; then
-  STATUS="FAIL"
-  REASON_LINE="점검 결과, 위 상세와 같이 암호화되지 않은 FTP 서비스가 설정/활성화되어 있어 취약합니다. 조치 방법: (1) /etc/inetd.conf의 ftp 라인을 주석 처리, (2) /etc/xinetd.d/ftp(해당 파일)에서 disable=yes로 변경 후 xinetd 재시작, (3) vsftpd/proftpd 등은 systemctl stop 및 systemctl disable로 비활성화하고 파일 전송은 SFTP/FTPS 등 암호화된 방식으로 전환하세요."
-else
-  STATUS="PASS"
-  REASON_LINE="점검 결과, 위 상세와 같이 /etc/inetd.conf에서 ftp 서비스가 주석 처리(또는 미설정)되어 있고, /etc/xinetd.d/*에서도 disable=no 설정이 없으며, systemd 기반 FTP 데몬도 비활성화 상태로 확인되어 이 항목에 대한 보안 위협이 없습니다."
+  add_detail "[systemd] systemctl: not_available"
 fi
 
 DETAIL_CONTENT="${DETAIL_LINES:-none}"
 [ -z "$TARGET_FILE" ] && TARGET_FILE="/etc/inetd.conf, /etc/xinetd.d/{ftp,proftp,vsftp}, systemd:{vsftpd,proftpd,pure-ftpd}.service"
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 상세 증적)
+# 최종 판정 및 detail(첫 문장 1줄 + 다음 줄부터 현재 설정 값들)
+if [ "$VULNERABLE" -eq 1 ]; then
+  STATUS="FAIL"
+  [ -z "$REASON_FACTS" ] && REASON_FACTS="암호화되지 않은 FTP 관련 설정/서비스가 활성 상태로 확인됨"
+  REASON_LINE="${REASON_FACTS}로 이 항목에 대해 취약합니다."
+else
+  STATUS="PASS"
+  REASON_LINE="/etc/inetd.conf 에 ftp 활성 라인이 없고 /etc/xinetd.d 에서 disable=no 설정이 없으며 systemd 의 FTP 데몬이 active/enabled 가 아니어서 이 항목에 대해 양호합니다."
+fi
+
+GUIDE_LINE=$(cat <<'EOF'
+자동 조치:
+inetd 환경이면 /etc/inetd.conf 의 ftp 관련 라인을 주석 처리합니다.
+xinetd 환경이면 /etc/xinetd.d 의 ftp 계열 설정에서 disable 값을 yes 로 표준화하고 필요 시 xinetd 를 재시작합니다.
+systemd 환경이면 vsftpd/proftpd/pure-ftpd 서비스를 stop 하고 disable 및 mask 처리합니다.
+주의사항:
+FTP 서비스를 업무적으로 사용 중인 시스템에서는 중지/비활성화로 파일 전송 업무가 중단될 수 있으니 영향도를 확인한 뒤 적용해야 합니다.
+inetd/xinetd 재시작 또는 systemd 서비스 변경은 관련 서비스 구성이 있는 경우 연결이 끊길 수 있으므로 유지보수 시간대에 적용하는 것이 안전합니다.
+EOF
+)
+
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE
 $DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# escape(백슬래시/따옴표/줄바꿈)
+# JSON 저장을 위한 escape 처리 (백슬래시/따옴표/줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# scan_history JSON 출력
 echo ""
 cat <<EOF
 {

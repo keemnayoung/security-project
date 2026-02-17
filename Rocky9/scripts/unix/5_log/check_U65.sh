@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.2
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-16
 # ============================================================================
@@ -11,7 +11,7 @@
 # @Platform    : Rocky Linux
 # @Importance  : 중
 # @Title       : NTP 및 시각 동기화 설정
-# @Description : NTP 및 시각 동기화 설정 여부 점검
+# @Description : NTP/Chrony 서비스 활성 및 동기화 여부 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
@@ -20,132 +20,135 @@ ID="U-65"
 STATUS="FAIL"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-TARGET_FILE="/etc/ntp.conf /etc/chrony.conf /etc/chrony/chrony.conf"
+TARGET_FILE_NTP="/etc/ntp.conf"
+TARGET_FILE_CHRONY1="/etc/chrony.conf"
+TARGET_FILE_CHRONY2="/etc/chrony/chrony.conf"
+TARGET_FILE="${TARGET_FILE_NTP} ${TARGET_FILE_CHRONY1} ${TARGET_FILE_CHRONY2}"
+TARGET_FILE_NL="${TARGET_FILE_NTP}\n${TARGET_FILE_CHRONY1}\n${TARGET_FILE_CHRONY2}"
+
 CHECK_COMMAND='
-(systemctl is-active ntp 2>/dev/null || true);
-(systemctl is-active ntpd 2>/dev/null || true);
-(systemctl is-active chrony 2>/dev/null || true);
-(systemctl is-active chronyd 2>/dev/null || true);
-(command -v ntpq >/dev/null 2>&1 && ntpq -pn 2>/dev/null | head -n 30 || echo "ntpq_cmd_not_found");
-(command -v chronyc >/dev/null 2>&1 && chronyc sources -v 2>/dev/null | head -n 40 || echo "chronyc_cmd_not_found");
-( [ -f /etc/ntp.conf ] && grep -nE "^[[:space:]]*(server|pool)[[:space:]]+" /etc/ntp.conf 2>/dev/null | head -n 20 || echo "ntp_conf_no_server_pool_or_not_found");
+systemctl list-units --type=service | grep -E "ntp|chrony" || echo "no_ntp_or_chrony_unit";
+command -v ntpq >/dev/null 2>&1 && ntpq -pn 2>/dev/null | head -n 30 || echo "ntpq_cmd_not_found";
+command -v chronyc >/dev/null 2>&1 && chronyc sources 2>/dev/null | head -n 40 || echo "chronyc_cmd_not_found";
+[ -f /etc/ntp.conf ] && grep -nE "^[[:space:]]*(server|pool)[[:space:]]+" /etc/ntp.conf | head -n 20 || echo "ntp_conf_no_server_pool_or_not_found";
 for f in /etc/chrony.conf /etc/chrony/chrony.conf; do
-  [ -f "$f" ] && (echo "### $f"; grep -nE "^[[:space:]]*(server|pool)[[:space:]]+" "$f" 2>/dev/null | head -n 20) || true;
+  [ -f "$f" ] && (echo "### $f"; grep -nE "^[[:space:]]*(server|pool)[[:space:]]+" "$f" | head -n 20) || true;
 done
 '
-
-REASON_LINE=""
-DETAIL_CONTENT=""
 
 json_escape() {
   echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g'
 }
 
-active_unit() { # first active unit name among args
-  for u in "$@"; do
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-active "$u" >/dev/null 2>&1; then
-      echo "$u"
-      return 0
-    fi
-  done
-  echo ""
-  return 1
-}
+conf_path() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; echo ""; return 1; }
+has_server_pool() { [ -n "$1" ] && grep -qE '^[[:space:]]*(server|pool)[[:space:]]+' "$1" 2>/dev/null; }
 
-conf_path() { # first existing file among args
-  for f in "$@"; do
-    [ -f "$f" ] && { echo "$f"; return 0; }
-  done
-  echo ""
-  return 1
-}
-
-has_server_pool() {
-  local f="$1"
-  [ -n "$f" ] && grep -qE '^[[:space:]]*(server|pool)[[:space:]]+' "$f" 2>/dev/null
-}
-
-# ---- NTP 점검 ----
-NTP_UNIT="$(active_unit ntp ntpd)"
-NTP_CONF="$(conf_path /etc/ntp.conf)"
-NTP_SYNC="no"
+# NTP 상태 수집
+NTP_UNIT_STATE="inactive"
+NTP_CONF="$(conf_path "$TARGET_FILE_NTP")"
 NTP_CONF_OK="no"
-NTP_SUMMARY=""
+NTP_SYNC="no"
+NTP_CONF_LINES=""
 
-if [ -n "$NTP_UNIT" ]; then
-  NTP_SUMMARY+="ntp_service=active($NTP_UNIT)\n"
-  if command -v ntpq >/dev/null 2>&1; then
-    if ntpq -pn 2>/dev/null | grep -Eq '^[\*\+]'; then NTP_SYNC="yes"; fi
-    NTP_SUMMARY+="ntp_sync=${NTP_SYNC}\n"
-  else
-    NTP_SUMMARY+="ntpq_cmd=missing\n"
-  fi
-else
-  NTP_SUMMARY+="ntp_service=inactive\n"
+if systemctl list-units --type=service 2>/dev/null | grep -qE 'ntp|ntpd'; then
+  NTP_UNIT_STATE="active"
 fi
 
 if [ -n "$NTP_CONF" ] && has_server_pool "$NTP_CONF"; then
   NTP_CONF_OK="yes"
-  NTP_SUMMARY+="ntp_conf=${NTP_CONF} (server/pool=present)\n"
-  NTP_SUMMARY+="ntp_conf_lines:\n$(grep -nE '^[[:space:]]*(server|pool)[[:space:]]+' "$NTP_CONF" 2>/dev/null | head -n 10)\n"
-else
-  NTP_SUMMARY+="ntp_conf=${NTP_CONF:-not_found} (server/pool=missing)\n"
+  NTP_CONF_LINES="$(grep -nE '^[[:space:]]*(server|pool)[[:space:]]+' "$NTP_CONF" 2>/dev/null | head -n 10)"
 fi
 
-NTP_OK=0
-[ -n "$NTP_UNIT" ] && [ "$NTP_CONF_OK" = "yes" ] && [ "$NTP_SYNC" = "yes" ] && NTP_OK=1
+if command -v ntpq >/dev/null 2>&1; then
+  ntpq -pn 2>/dev/null | grep -Eq '^[[:space:]]*[\*\+]' && NTP_SYNC="yes"
+fi
 
-# ---- Chrony 점검 ----
-CHRONY_UNIT="$(active_unit chrony chronyd)"
-CHRONY_CONF="$(conf_path /etc/chrony.conf /etc/chrony/chrony.conf)"
-CHRONY_SYNC="no"
+# Chrony 상태 수집
+CHRONY_UNIT_STATE="inactive"
+CHRONY_CONF="$(conf_path "$TARGET_FILE_CHRONY1" "$TARGET_FILE_CHRONY2")"
 CHRONY_CONF_OK="no"
-CHRONY_SUMMARY=""
+CHRONY_SYNC="no"
+CHRONY_CONF_LINES=""
 
-if [ -n "$CHRONY_UNIT" ]; then
-  CHRONY_SUMMARY+="chrony_service=active($CHRONY_UNIT)\n"
-  if command -v chronyc >/dev/null 2>&1; then
-    if chronyc sources -v 2>/dev/null | grep -Eq '^\^\*'; then CHRONY_SYNC="yes"; fi
-    CHRONY_SUMMARY+="chrony_sync=${CHRONY_SYNC}\n"
-  else
-    CHRONY_SUMMARY+="chronyc_cmd=missing\n"
-  fi
-else
-  CHRONY_SUMMARY+="chrony_service=inactive\n"
+if systemctl list-units --type=service 2>/dev/null | grep -qE 'chrony|chronyd'; then
+  CHRONY_UNIT_STATE="active"
 fi
 
 if [ -n "$CHRONY_CONF" ] && has_server_pool "$CHRONY_CONF"; then
   CHRONY_CONF_OK="yes"
-  CHRONY_SUMMARY+="chrony_conf=${CHRONY_CONF} (server/pool=present)\n"
-  CHRONY_SUMMARY+="chrony_conf_lines:\n$(grep -nE '^[[:space:]]*(server|pool)[[:space:]]+' "$CHRONY_CONF" 2>/dev/null | head -n 10)\n"
-else
-  CHRONY_SUMMARY+="chrony_conf=${CHRONY_CONF:-not_found} (server/pool=missing)\n"
+  CHRONY_CONF_LINES="$(grep -nE '^[[:space:]]*(server|pool)[[:space:]]+' "$CHRONY_CONF" 2>/dev/null | head -n 10)"
 fi
 
-CHRONY_OK=0
-[ -n "$CHRONY_UNIT" ] && [ "$CHRONY_CONF_OK" = "yes" ] && [ "$CHRONY_SYNC" = "yes" ] && CHRONY_OK=1
+if command -v chronyc >/dev/null 2>&1; then
+  chronyc sources 2>/dev/null | grep -Eq '^[[:space:]]*\^(\*|\+)' && CHRONY_SYNC="yes"
+fi
 
-# ---- 최종 판단/문구(요청 반영) ----
+# 현재 설정값(DETAIL_CONTENT) 구성: 양호/취약 관계없이 현재값만 표시
+DETAIL_CONTENT="NTP
+service(list-units): ${NTP_UNIT_STATE}
+conf: ${NTP_CONF:-not_found} (server/pool=${NTP_CONF_OK})
+sync(ntpq -pn *|+): ${NTP_SYNC}"
+[ -n "$NTP_CONF_LINES" ] && DETAIL_CONTENT="${DETAIL_CONTENT}
+conf_lines:
+${NTP_CONF_LINES}"
+
+DETAIL_CONTENT="${DETAIL_CONTENT}
+
+Chrony
+service(list-units): ${CHRONY_UNIT_STATE}
+conf: ${CHRONY_CONF:-not_found} (server/pool=${CHRONY_CONF_OK})
+sync(chronyc sources ^*|^+): ${CHRONY_SYNC}"
+[ -n "$CHRONY_CONF_LINES" ] && DETAIL_CONTENT="${DETAIL_CONTENT}
+conf_lines:
+${CHRONY_CONF_LINES}"
+
+# 최종 판정
+# PASS 조건: (NTP active + conf ok + sync ok) 또는 (Chrony active + conf ok + sync ok)
+NTP_OK=0
+CHRONY_OK=0
+[ "$NTP_UNIT_STATE" = "active" ] && [ "$NTP_CONF_OK" = "yes" ] && [ "$NTP_SYNC" = "yes" ] && NTP_OK=1
+[ "$CHRONY_UNIT_STATE" = "active" ] && [ "$CHRONY_CONF_OK" = "yes" ] && [ "$CHRONY_SYNC" = "yes" ] && CHRONY_OK=1
+
+# 이유 문장 생성
+# 양호: 만족한 쪽의 "설정값"만으로 한 문장
+# 취약: 취약한 부분의 "설정값"만으로 한 문장
+REASON_SENTENCE=""
+
 if [ "$NTP_OK" -eq 1 ] || [ "$CHRONY_OK" -eq 1 ]; then
   STATUS="PASS"
   if [ "$CHRONY_OK" -eq 1 ]; then
-    REASON_LINE="(Chrony) $CHRONY_UNIT 서비스가 활성화되어 있고($CHRONY_UNIT=active), $CHRONY_CONF 에 server/pool 설정이 존재하며(라인 확인), chronyc sources -v 에서 동기화 소스(^*)가 확인되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_SENTENCE="chrony_service=${CHRONY_UNIT_STATE}, chrony_conf=${CHRONY_CONF:-not_found} server/pool=${CHRONY_CONF_OK}, chrony_sync=${CHRONY_SYNC} 로 설정되어 있어 이 항목에 대해 양호합니다."
   else
-    REASON_LINE="(NTP) $NTP_UNIT 서비스가 활성화되어 있고($NTP_UNIT=active), $NTP_CONF 에 server/pool 설정이 존재하며(라인 확인), ntpq -pn 에서 동기화 대상(* 또는 +)이 확인되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_SENTENCE="ntp_service=${NTP_UNIT_STATE}, ntp_conf=${NTP_CONF:-not_found} server/pool=${NTP_CONF_OK}, ntp_sync=${NTP_SYNC}로 이 항목에 대해 양호합니다."
   fi
 else
   STATUS="FAIL"
-  REASON_LINE="NTP/Chrony가 비활성(inactive)이거나, 설정 파일($TARGET_FILE)에서 server/pool 설정 또는 동기화 상태(ntpq/chronyc)가 확인되지 않아 로그 시간 신뢰성이 떨어질 수 있어 취약합니다. 조치: (1) Chrony 또는 NTP 중 하나 설치/활성화, (2) /etc/chrony.conf 또는 /etc/chrony/chrony.conf(또는 /etc/ntp.conf)에 'server|pool <NTP서버>' 추가, (3) systemctl restart chronyd(또는 ntpd/ntp) 후 chronyc sources -v(또는 ntpq -pn)로 동기화 확인."
+  FAIL_BITS=""
+  # 취약 사유는 "취약한 설정값만" 보여주기
+  [ "$NTP_UNIT_STATE" != "active" ] && FAIL_BITS="${FAIL_BITS}ntp_service=${NTP_UNIT_STATE}\n"
+  [ "$NTP_CONF_OK" != "yes" ] && FAIL_BITS="${FAIL_BITS}ntp_conf=${NTP_CONF:-not_found} server/pool=${NTP_CONF_OK}\n"
+  [ "$NTP_SYNC" != "yes" ] && FAIL_BITS="${FAIL_BITS}ntp_sync=${NTP_SYNC}\n"
+  [ "$CHRONY_UNIT_STATE" != "active" ] && FAIL_BITS="${FAIL_BITS}chrony_service=${CHRONY_UNIT_STATE}\n"
+  [ "$CHRONY_CONF_OK" != "yes" ] && FAIL_BITS="${FAIL_BITS}chrony_conf=${CHRONY_CONF:-not_found} server/pool=${CHRONY_CONF_OK}\n"
+  [ "$CHRONY_SYNC" != "yes" ] && FAIL_BITS="${FAIL_BITS}chrony_sync=${CHRONY_SYNC}\n"
+  FAIL_BITS="$(echo -e "$FAIL_BITS" | sed '/^[[:space:]]*$/d' | paste -sd ', ' -)"
+  REASON_SENTENCE="${FAIL_BITS} 로 설정되어 있어 이 항목에 대해 취약합니다."
 fi
 
-DETAIL_CONTENT="NTP:\n${NTP_SUMMARY}\nChrony:\n${CHRONY_SUMMARY}"
+# guide 문장(줄바꿈으로 구분)
+GUIDE_LINE="시간 동기화 설정을 자동으로 변경하면 시간 의존 서비스(인증/로그/배치/모니터링 등)에 영향이 발생할 수 있는 위험이 존재하여 수동 조치가 필요합니다.
+관리자가 직접 허용된 NTP 서버 목록과 동기화 정책을 확인 후 NTP 또는 Chrony 설정 파일에 server/pool 값을 반영해 주시기 바랍니다.
+설정 적용 후 systemctl restart ntp 또는 systemctl restart chrony를 수행하고 ntpq -pn 또는 chronyc sources로 동기화 상태를 확인해 주시기 바랍니다.
+동기화 주기 조정이 필요하면 환경 정책에 맞게 minpoll/maxpoll 등 관련 값을 검토해 주시기 바랍니다."
 
+# RAW_EVIDENCE 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE
+  "detail": "$REASON_SENTENCE
 $DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "guide": "$GUIDE_LINE",
+  "target_file": "$TARGET_FILE_NL"
 }
 EOF
 )

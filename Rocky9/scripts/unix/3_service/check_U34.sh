@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 이가영
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -18,7 +18,6 @@
 # ============================================================================
 
 # [진단] U-34 Finger 서비스 비활성화
-
 
 # 기본 변수
 ID="U-34"
@@ -38,85 +37,191 @@ DETAIL_CONTENT=""
 VULN=0
 DETAIL_LINES=""
 
-# 1) inetd 기반 점검: finger 라인이 주석 없이 존재하면 취약
+# 1) inetd 기반 점검: 주석 제외 영역에서 finger 라인이 존재하면 취약
 if [ -f "$INETD_CONF" ]; then
   INETD_ACTIVE_LINES=$(grep -nEv "^[[:space:]]*#" "$INETD_CONF" 2>/dev/null | grep -nE "^[[:space:]]*finger([[:space:]]|$)" || true)
   if [ -n "$INETD_ACTIVE_LINES" ]; then
     VULN=1
-    DETAIL_LINES+="$INETD_CONF: finger 서비스가 주석 처리되지 않고 설정되어 있습니다.\n"
-    DETAIL_LINES+="(활성 라인)\n$INETD_ACTIVE_LINES\n"
+    DETAIL_LINES+="$INETD_CONF: finger 활성 라인 확인\n"
+    DETAIL_LINES+="$INETD_ACTIVE_LINES\n"
   else
-    DETAIL_LINES+="$INETD_CONF: finger 서비스 활성 설정이 확인되지 않습니다(없음 또는 주석 처리).\n"
+    DETAIL_LINES+="$INETD_CONF: finger 활성 라인 없음(없음 또는 주석)\n"
   fi
 else
-  DETAIL_LINES+="$INETD_CONF: 파일이 존재하지 않습니다.\n"
+  DETAIL_LINES+="$INETD_CONF: 파일 없음\n"
 fi
 
-# 2) xinetd 기반 점검:
-#    - /etc/xinetd.d/finger 가 존재할 때 disable = yes 가 명시되어 있지 않으면 취약(= disable=no 또는 disable 미설정 포함)
+# 2) xinetd 기반 점검: 파일이 존재할 때 disable=yes가 명시되지 않으면 취약
 if [ -f "$XINETD_FINGER" ]; then
-  # 주석 제외한 disable 라인(마지막 기준)
-  DISABLE_LINE_RAW=$(grep -nEv '^[[:space:]]*#' "$XINETD_FINGER" 2>/dev/null | tr -d '\r' < /etc/xinetd.d/finger | grep -nEv '^[[:space:]]*#' | grep -niE '[[:space:]]*disable[[:space:]]*=' | tail -n 1 || true)
+  # CRLF(\r) 제거 후 검사
+  DISABLE_LINE_RAW=$(
+    tr -d '\r' < "$XINETD_FINGER" \
+      | grep -nEv '^[[:space:]]*#' \
+      | grep -niE '^[[:space:]]*disable[[:space:]]*=' \
+      | tail -n 1 || true
+  )
   DISABLE_VAL=$(printf "%s" "$DISABLE_LINE_RAW" | awk -F= '{gsub(/[[:space:]]/,"",$2); print tolower($2)}')
 
   if [ -z "$DISABLE_LINE_RAW" ]; then
-    # disable 라인이 없으면 기본값으로 활성화될 수 있으므로 취약 처리
     VULN=1
-    DETAIL_LINES+="$XINETD_FINGER: disable 설정 라인이 없어 finger 서비스가 활성화될 수 있습니다(취약).\n"
-    DETAIL_LINES+="(조치 권장) disable = yes 를 명시하세요.\n"
+    DETAIL_LINES+="$XINETD_FINGER: disable 라인 없음\n"
   else
-    if [ "$DISABLE_VAL" = "yes" ]; then
-      DETAIL_LINES+="$XINETD_FINGER: $DISABLE_LINE_RAW (비활성화 설정 확인).\n"
-    else
+    DETAIL_LINES+="$XINETD_FINGER: $DISABLE_LINE_RAW\n"
+    if [ "$DISABLE_VAL" != "yes" ]; then
       VULN=1
-      DETAIL_LINES+="$XINETD_FINGER: $DISABLE_LINE_RAW (disable=yes가 아니어서 활성화 상태로 판단, 취약).\n"
-      DETAIL_LINES+="(조치 권장) disable = yes 로 변경하세요.\n"
     fi
   fi
 else
-  DETAIL_LINES+="$XINETD_FINGER: 파일이 존재하지 않습니다.\n"
+  DETAIL_LINES+="$XINETD_FINGER: 파일 없음\n"
 fi
 
-# 3) systemd 유닛 기반 점검(환경에 따라 존재 가능): enabled/active면 취약
+# 3) systemd 기반 점검: finger 유닛이 enabled/active면 취약
 if command -v systemctl >/dev/null 2>&1; then
-  # 유닛 존재 여부
   HAS_FINGER_UNIT=$(systemctl list-unit-files 2>/dev/null | awk 'tolower($1) ~ /^finger\.(socket|service)$/{print $1}' | head -n 1 || true)
   if [ -n "$HAS_FINGER_UNIT" ]; then
     for u in finger.socket finger.service; do
       if systemctl list-unit-files 2>/dev/null | awk '{print tolower($1)}' | grep -qx "$(echo "$u" | tr 'A-Z' 'a-z')"; then
         ENA=$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")
         ACT=$(systemctl is-active "$u" 2>/dev/null || echo "unknown")
-        DETAIL_LINES+="systemd: $u (is-enabled=$ENA, is-active=$ACT)\n"
+        DETAIL_LINES+="systemd: $u\n"
+        DETAIL_LINES+="is-enabled=$ENA\n"
+        DETAIL_LINES+="is-active=$ACT\n"
         if [ "$ENA" = "enabled" ] || [ "$ACT" = "active" ]; then
           VULN=1
         fi
       fi
     done
   else
-    DETAIL_LINES+="systemd: finger.socket/finger.service 유닛이 확인되지 않습니다.\n"
+    DETAIL_LINES+="systemd: finger 유닛 없음\n"
   fi
 else
-  DETAIL_LINES+="systemctl: 명령을 사용할 수 없습니다.\n"
+  DETAIL_LINES+="systemctl: 사용 불가\n"
 fi
 
-# 최종 판정 및 문구(요청하신 형태)
-if [ "$VULN" -eq 1 ]; then
-  STATUS="FAIL"
-  REASON_LINE="(취약) $INETD_CONF 또는 $XINETD_FINGER 또는 systemd에서 Finger 서비스가 활성화(또는 활성화될 수 있도록) 설정되어 있어 취약합니다. 조치: inetd는 finger 라인을 주석 처리하고, xinetd는 $XINETD_FINGER에 disable = yes 로 설정 후 xinetd를 재시작(systemctl restart xinetd)하세요."
-else
-  STATUS="PASS"
-  REASON_LINE="(양호) $INETD_CONF 및 $XINETD_FINGER, systemd에서 Finger 서비스가 비활성화(또는 미구성)로 설정되어 있어 이 항목에 대한 보안 위협이 없습니다."
-fi
-
-# detail 정리(끝 공백 제거)
+# DETAIL_CONTENT: 양호/취약과 관계 없이 현재 설정값 전체
 DETAIL_CONTENT="$(printf "%b" "$DETAIL_LINES" | sed 's/[[:space:]]*$//')"
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# REASON_LINE: 첫 문장에 들어갈 "어떠한 이유"(양호=양호 설정만, 취약=취약 설정만)
+if [ "$VULN" -eq 1 ]; then
+  STATUS="FAIL"
+  REASON_PARTS=""
+
+  # 취약 근거(취약한 설정만)
+  if [ -f "$INETD_CONF" ]; then
+    INETD_ACTIVE_LINES=$(grep -nEv "^[[:space:]]*#" "$INETD_CONF" 2>/dev/null | grep -nE "^[[:space:]]*finger([[:space:]]|$)" || true)
+    if [ -n "$INETD_ACTIVE_LINES" ]; then
+      REASON_PARTS+="$INETD_CONF: finger 활성 라인\n$INETD_ACTIVE_LINES\n"
+    fi
+  fi
+
+  if [ -f "$XINETD_FINGER" ]; then
+    DISABLE_LINE_RAW=$(
+      tr -d '\r' < "$XINETD_FINGER" \
+        | grep -nEv '^[[:space:]]*#' \
+        | grep -niE '^[[:space:]]*disable[[:space:]]*=' \
+        | tail -n 1 || true
+    )
+    if [ -z "$DISABLE_LINE_RAW" ]; then
+      REASON_PARTS+="$XINETD_FINGER: disable 라인 없음\n"
+    else
+      DISABLE_VAL=$(printf "%s" "$DISABLE_LINE_RAW" | awk -F= '{gsub(/[[:space:]]/,"",$2); print tolower($2)}')
+      if [ "$DISABLE_VAL" != "yes" ]; then
+        REASON_PARTS+="$XINETD_FINGER: $DISABLE_LINE_RAW\n"
+      fi
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    for u in finger.socket finger.service; do
+      if systemctl list-unit-files 2>/dev/null | awk '{print tolower($1)}' | grep -qx "$(echo "$u" | tr 'A-Z' 'a-z')"; then
+        ENA=$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")
+        ACT=$(systemctl is-active "$u" 2>/dev/null || echo "unknown")
+        if [ "$ENA" = "enabled" ] || [ "$ACT" = "active" ]; then
+          REASON_PARTS+="systemd: $u (is-enabled=$ENA, is-active=$ACT)\n"
+        fi
+      fi
+    done
+  fi
+
+  REASON_LINE="$(printf "%b" "$REASON_PARTS" | sed 's/[[:space:]]*$//')"
+  [ -z "$REASON_LINE" ] && REASON_LINE="취약 설정이 확인됨"
+
+else
+  STATUS="PASS"
+  GOOD_PARTS=""
+
+  # 양호 근거(양호 설정만)
+  if [ -f "$INETD_CONF" ]; then
+    INETD_ACTIVE_LINES=$(grep -nEv "^[[:space:]]*#" "$INETD_CONF" 2>/dev/null | grep -nE "^[[:space:]]*finger([[:space:]]|$)" || true)
+    if [ -z "$INETD_ACTIVE_LINES" ]; then
+      GOOD_PARTS+="$INETD_CONF: finger 활성 라인 없음(없음 또는 주석)\n"
+    fi
+  else
+    GOOD_PARTS+="$INETD_CONF: 파일 없음\n"
+  fi
+
+  if [ -f "$XINETD_FINGER" ]; then
+    DISABLE_LINE_RAW=$(
+      tr -d '\r' < "$XINETD_FINGER" \
+        | grep -nEv '^[[:space:]]*#' \
+        | grep -niE '^[[:space:]]*disable[[:space:]]*=' \
+        | tail -n 1 || true
+    )
+    DISABLE_VAL=$(printf "%s" "$DISABLE_LINE_RAW" | awk -F= '{gsub(/[[:space:]]/,"",$2); print tolower($2)}')
+    if [ -n "$DISABLE_LINE_RAW" ] && [ "$DISABLE_VAL" = "yes" ]; then
+      GOOD_PARTS+="$XINETD_FINGER: $DISABLE_LINE_RAW\n"
+    else
+      GOOD_PARTS+="$XINETD_FINGER: disable=yes 확인 안됨\n"
+    fi
+  else
+    GOOD_PARTS+="$XINETD_FINGER: 파일 없음\n"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    HAS_FINGER_UNIT=$(systemctl list-unit-files 2>/dev/null | awk 'tolower($1) ~ /^finger\.(socket|service)$/{print $1}' | head -n 1 || true)
+    if [ -z "$HAS_FINGER_UNIT" ]; then
+      GOOD_PARTS+="systemd: finger 유닛 없음\n"
+    else
+      for u in finger.socket finger.service; do
+        if systemctl list-unit-files 2>/dev/null | awk '{print tolower($1)}' | grep -qx "$(echo "$u" | tr 'A-Z' 'a-z')"; then
+          ENA=$(systemctl is-enabled "$u" 2>/dev/null || echo "unknown")
+          ACT=$(systemctl is-active "$u" 2>/dev/null || echo "unknown")
+          GOOD_PARTS+="systemd: $u (is-enabled=$ENA, is-active=$ACT)\n"
+        fi
+      done
+    fi
+  else
+    GOOD_PARTS+="systemctl: 사용 불가\n"
+  fi
+
+  REASON_LINE="$(printf "%b" "$GOOD_PARTS" | sed 's/[[:space:]]*$//')"
+  [ -z "$REASON_LINE" ] && REASON_LINE="양호 설정이 확인됨"
+
+fi
+
+# detail 첫 문장: 어떠한 이유 때문에 양호/취약합니다. (한 문장, 줄바꿈 없음)
+# REASON_LINE은 내부에 줄바꿈이 있을 수 있으므로 첫 문장에서는 공백으로 정리
+REASON_ONE_LINE="$(printf "%s" "$REASON_LINE" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/[[:space:]]*$//')"
+if [ "$STATUS" = "PASS" ]; then
+  DETAIL_HEAD="${REASON_ONE_LINE} 때문에 이 항목에 대해 양호합니다."
+else
+  DETAIL_HEAD="${REASON_ONE_LINE} 때문에 이 항목에 대해 취약합니다."
+fi
+
+GUIDE_LINE="$(cat <<EOF
+자동 조치:
+$INETD_CONF 에서 finger 활성 라인을 주석 처리하고 $XINETD_FINGER 에 disable = yes 를 표준화하며 finger.socket/finger.service 가 있으면 stop/disable/mask 합니다.
+주의사항: 
+서비스 관리 정책에 따라 설정 변경 및 재시작이 다른 서비스에 미약한 영향을 줄 수 있으므로 적용 전 백업과 변경 이력 관리가 필요합니다.
+EOF
+)"
+
+# raw_evidence 구성 (문장 단위 줄바꿈 유지되도록 \n 포함)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE
-$DETAIL_CONTENT",
+  "detail": "$DETAIL_HEAD\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF

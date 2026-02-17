@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-15
 # ============================================================================
@@ -22,66 +22,75 @@ SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/etc/passwd"
 
-# (수정) UID 조건 제거 + 로그인 불가 쉘 제외 로직 반영
-CHECK_COMMAND='while IFS=: read -r u _ uid _ _ h s; do \
-  case "$s" in */nologin|*/false) continue ;; esac; \
-  echo "$u:$h:$s"; \
-done < /etc/passwd'
+CHECK_COMMAND='while IFS=: read -r u _ _ _ _ h s; do case "$s" in */nologin|*/false) continue ;; esac; echo "$u:$h:$s"; done < /etc/passwd'
+
+FOUND_VULN="N"
+REASON_LINE=""
+DETAIL_CONTENT=""
 
 MISSING_HOME_USERS=()
-FOUND_VULN="N"
-DETAIL_CONTENT=""
-REASON_LINE=""
+ALL_LOGIN_USERS=()
 
-# /etc/passwd를 순회하며 홈 디렉터리 존재 여부 점검
-# (추가) 로그인 불가 쉘(/sbin/nologin, /bin/false 등) 계정은 제외
-# (추가) homedir가 비어있거나(-), 절대경로가 아니면 취약 처리
-while IFS=: read -r username _ uid _ _ homedir shell; do
-    # 로그인 불가 계정 제외
+json_escape() {
+  # 백슬래시 → 따옴표 → 줄바꿈 순으로 escape (DB 저장/재조회 시 \n 유지 목적)
+  echo "$1" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g'
+}
+
+# 분기: 점검 대상 파일 존재 여부 확인
+if [ ! -f "$TARGET_FILE" ]; then
+  STATUS="FAIL"
+  FOUND_VULN="Y"
+  REASON_LINE="(/etc/passwd) 파일이 없어 현재 설정을 확인할 수 있어 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="passwd_file_missing"
+else
+  # 분기: /etc/passwd 기준 로그인 가능 계정의 홈 디렉터리 설정 및 실제 존재 여부 점검
+  while IFS=: read -r username _ uid _ _ homedir shell; do
     case "$shell" in
-        */nologin|*/false) continue ;;
+      */nologin|*/false) continue ;;
     esac
 
-    # 홈 디렉터리 값 자체가 비정상인 경우도 취약
+    # 현재 설정값(로그인 가능 계정)은 양호/취약과 관계 없이 모두 DETAIL_CONTENT에 포함
+    state="exists"
     if [ -z "$homedir" ] || [ "$homedir" = "-" ] || [[ "$homedir" != /* ]]; then
-        STATUS="FAIL"
-        FOUND_VULN="Y"
-        MISSING_HOME_USERS+=("$username:$homedir(비정상경로)")
-        continue
+      state="invalid_home"
+      FOUND_VULN="Y"
+      MISSING_HOME_USERS+=("$username:$homedir")
+    elif [ ! -d "$homedir" ]; then
+      state="missing_home"
+      FOUND_VULN="Y"
+      MISSING_HOME_USERS+=("$username:$homedir")
     fi
 
-    # 홈 디렉터리 실제 존재 여부 점검
-    if [ ! -d "$homedir" ]; then
-        STATUS="FAIL"
-        FOUND_VULN="Y"
-        MISSING_HOME_USERS+=("$username:$homedir")
-    fi
-done < "$TARGET_FILE"
+    ALL_LOGIN_USERS+=("$username:$homedir:$shell:$state")
+  done < "$TARGET_FILE"
 
-# 결과에 따른 평가 이유 및 detail 구성
-if [ "$FOUND_VULN" = "Y" ]; then
-    REASON_LINE="로그인 가능한 계정 중 홈 디렉터리가 존재하지 않거나 비정상으로 지정된 계정이 있어 로그인 시 루트(/) 등 임의 디렉터리를 기준으로 동작할 위험이 있으므로 취약합니다. 해당 계정에 홈 디렉터리를 생성하여 할당하거나 불필요한 계정은 제거해야 합니다."
-    DETAIL_CONTENT="$(printf "%s\n" "${MISSING_HOME_USERS[@]}" | sed 's/[[:space:]]*$//')"
-else
+  DETAIL_CONTENT="$(printf "%s\n" "${ALL_LOGIN_USERS[@]}" | sed 's/[[:space:]]*$//')"
+
+  # 분기: 취약/양호에 따른 reason 문장(1문장) 구성
+  if [ "$FOUND_VULN" = "Y" ]; then
+    STATUS="FAIL"
+    IFS=", " VULN_JOINED="${MISSING_HOME_USERS[*]}" ; unset IFS
+    REASON_LINE="(/etc/passwd)에서 홈 디렉터리가 없거나 비정상으로 지정된 계정($VULN_JOINED)이 있어 이 항목에 대해 취약합니다."
+  else
     STATUS="PASS"
-    REASON_LINE="로그인 가능한 계정이 모두 존재하는 홈 디렉터리를 사용하도록 설정되어 있어 로그인 환경과 파일 권한 관리가 정상적으로 동작하므로 이 항목에 대한 보안 위협이 없습니다."
-    DETAIL_CONTENT="all_users_have_home"
+    REASON_LINE="(/etc/passwd)에서 로그인 가능한 계정의 홈 디렉터리 경로가 모두 정상(절대경로)이며 실제 디렉터리가 존재하여 이 항목에 대해 양호합니다."
+  fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄부터: 현재 설정값)
+# raw_evidence 구성: 각 값은 문장/라인 단위 줄바꿈 가능하도록 \n 포함
+GUIDE_LINE="이 항목에 대해서 잘못된 홈 디렉터리 조치(계정 삭제, 홈 디렉터리 임의 생성/소유권 변경)로 서비스 계정이나 배치 작업 경로가 바뀌어 장애가 발생할 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 해당 계정의 사용 여부를 확인한 후 불필요하면 userdel로 계정을 제거하고, 사용 중이면 홈 디렉터리를 생성/할당하거나 /etc/passwd의 홈 경로를 올바르게 수정해 주시기 바랍니다."
+
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED="$(json_escape "$RAW_EVIDENCE")"
 
 # scan_history 저장용 JSON 출력
 echo ""

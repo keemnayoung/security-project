@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -19,16 +19,12 @@
 ID="U-14"
 STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-
 CHECK_COMMAND="su - root -c 'echo \$PATH'"
 
-# 1) root 로그인 쉘 확인 + 쉘별 환경설정 파일 목록 구성
-#    (가이드: /etc/profile -> root 환경설정 파일 순차 확인)
 ROOT_SHELL=$(getent passwd root | cut -d: -f7)
 SHELL_NAME=$(basename "$ROOT_SHELL")
 
 TARGET_FILES=()
-
 case "$SHELL_NAME" in
   sh)
     TARGET_FILES=(/etc/profile /root/.profile)
@@ -43,18 +39,13 @@ case "$SHELL_NAME" in
     TARGET_FILES=(/etc/profile /etc/bash.bashrc /root/.bash_profile /root/.bashrc)
     ;;
   *)
-    # 쉘이 예상 밖이어도 최소로 /etc/profile, /root/.profile는 확인
     TARGET_FILES=(/etc/profile /root/.profile)
     ;;
 esac
 
-# TARGET_FILE 문자열(증적용)
 TARGET_FILE="$(printf "%s, " "${TARGET_FILES[@]}")"
 TARGET_FILE="${TARGET_FILE%, }"
 
-# 2) root 최종 PATH 수집 및 '.' 위치 판정 (판단 기준)
-#    - 양호: '.'이 맨 앞/중간에 없음(없거나, 맨 마지막만 존재)
-#    - 취약: '.'이 맨 앞 또는 중간에 존재
 ROOT_PATH=$(su - root -c 'echo $PATH' 2>/dev/null)
 
 IFS=':' read -ra PATH_ITEMS <<< "$ROOT_PATH"
@@ -79,29 +70,9 @@ for ITEM in "${PATH_ITEMS[@]}"; do
   INDEX=$((INDEX + 1))
 done
 
-if [ "$DOT_FOUND" = "N" ]; then
-  STATUS="PASS"
-  REASON_LINE="root PATH에 '.'이 포함되어 있지 않습니다. (양호)"
-elif [ "$DOT_AT_END" = "Y" ] && [ "$DOT_AT_START" = "N" ] && [ "$DOT_IN_MIDDLE" = "N" ]; then
-  STATUS="PASS"
-  REASON_LINE="root PATH에서 '.'이 맨 마지막에만 존재합니다. (양호)"
-else
-  STATUS="FAIL"
-  if [ "$DOT_AT_START" = "Y" ]; then
-    REASON_LINE="root PATH에서 '.'이 맨 앞에 존재합니다. (취약)"
-  else
-    REASON_LINE="root PATH에서 '.'이 중간에 존재합니다. (취약)"
-  fi
-fi
-
-
-# 3) 원인(설정 파일) 추적 증적 추가
-#    - /etc/profile -> root 환경설정 파일 순차적으로 PATH 정의 라인 확인
-#    - 주석 제외 PATH= / export PATH= 라인 수집
 FILE_TRACE=""
 
 classify_path_dot_position() {
-  # 입력: PATH 문자열(예: .:/usr/bin:/bin or /usr/bin:/bin:.)
   local p="$1"
   IFS=':' read -ra parts <<< "$p"
   local n=${#parts[@]}
@@ -136,14 +107,12 @@ for F in "${TARGET_FILES[@]}"; do
     continue
   fi
 
-  # 주석 제외 PATH 정의 라인들
   LINES=$(grep -E '^[[:space:]]*(export[[:space:]]+)?PATH=' "$F" 2>/dev/null | grep -v '^[[:space:]]*#')
   if [ -z "$LINES" ]; then
     FILE_TRACE+="[INFO] $F (no PATH definition)\n"
     continue
   fi
 
-  # 각 라인에 대해 PATH 값 부분만 뽑아서 '.' 위치 분류
   while IFS= read -r line; do
     val=$(echo "$line" | sed -E 's/^[[:space:]]*(export[[:space:]]+)?PATH=//')
     val=$(echo "$val" | sed 's/"//g')
@@ -152,24 +121,58 @@ for F in "${TARGET_FILES[@]}"; do
   done <<< "$LINES"
 done
 
-DETAIL_CONTENT="root_shell=$SHELL_NAME, root_path=$ROOT_PATH"
+DETAIL_CONTENT=$(cat <<EOF
+root_shell=$SHELL_NAME
+root_path=$ROOT_PATH
+dot_found=$DOT_FOUND
+dot_at_start=$DOT_AT_START
+dot_in_middle=$DOT_IN_MIDDLE
+dot_at_end=$DOT_AT_END
 
-# raw_evidence 구성 (평가 이유 + 현재 값 + 파일 추적)
+[config_file_trace]
+$FILE_TRACE
+EOF
+)
+
+if [ "$DOT_FOUND" = "N" ]; then
+  STATUS="PASS"
+  REASON_LINE="root_path=$ROOT_PATH 에서 '.' 항목이 존재하지 않아 이 항목에 대해 양호합니다."
+elif [ "$DOT_AT_END" = "Y" ] && [ "$DOT_AT_START" = "N" ] && [ "$DOT_IN_MIDDLE" = "N" ]; then
+  STATUS="PASS"
+  REASON_LINE="root_path=$ROOT_PATH 에서 '.'이 마지막 항목에만 위치해 이 항목에 대해 양호합니다."
+else
+  STATUS="FAIL"
+  if [ "$DOT_AT_START" = "Y" ]; then
+    REASON_LINE="root_path 설정에서 '.'이 '.:’ 형태로 맨 앞에 위치해 이 항목에 대해 취약합니다."
+  else
+    REASON_LINE="root_path 설정에서 '.'이 ':.:’ 형태로 중간에 위치해 이 항목에 대해 취약합니다."
+  fi
+fi
+
+GUIDE_LINE=$(cat <<'EOF'
+이 항목에 대해서 PATH 탐색 순서가 의도치 않게 변경될 위험이 존재하여 수동 조치가 필요합니다.
+자동 조치로 여러 환경설정 파일의 PATH 라인을 일괄 수정하면 로그인/비로그인 쉘 반영 시점 차이로 인해 작업 절차에 혼선이 생기거나, PATH 재구성 과정에서 오타·중복·누락이 발생해 관리자 작업 및 일부 스크립트 실행에 영향을 줄 수 있습니다.
+관리자가 /etc/profile 및 root 계정 환경설정 파일에서 PATH 정의 라인을 직접 확인한 후 '.'이 맨 앞 또는 중간에 있으면 제거하고, 필요한 경우에만 '.'을 PATH의 맨 마지막에만 위치하도록 설정해 주시기 바랍니다.
+변경 후에는 root로 새 로그인 세션에서 echo $PATH 결과를 확인하여 '.'이 맨 앞/중간에 존재하지 않는지 재검증해 주시기 바랍니다.
+EOF
+)
+
+RAW_DETAIL="${REASON_LINE}\n${DETAIL_CONTENT}"
+
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE\n$DETAIL_CONTENT\n\n[config_file_trace]\n$FILE_TRACE",
+  "detail": "$RAW_DETAIL",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# scan_history 저장용 JSON 출력
 echo ""
 cat << EOF
 {

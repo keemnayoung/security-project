@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 권순형
 # @Last Updated: 2026-02-14
 # ============================================================================
@@ -15,7 +15,6 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 # 기본 변수
 ID="U-18"
 STATUS="PASS"
@@ -26,61 +25,85 @@ CHECK_COMMAND='stat -c "%U %a" /etc/shadow'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
+GUIDE_LINE=""
 
-# 파일 존재 여부에 따른 분기
+# 권한 판정(400 이하) 함수: 3자리 0-padding 후 u(4/0), g(0), o(0)만 허용
+is_perm_ok() {
+  local perm_raw="$1"
+  [ -z "$perm_raw" ] && return 1
+  local perm3 u g o
+  perm3="$(printf "%03d" "$perm_raw" 2>/dev/null)" || return 1
+  u="${perm3:0:1}"; g="${perm3:1:1}"; o="${perm3:2:1}"
+  { [ "$u" = "4" ] || [ "$u" = "0" ]; } && [ "$g" = "0" ] && [ "$o" = "0" ]
+}
+
+# 1) 파일 존재 여부 분기
 if [ ! -f "$TARGET_FILE" ]; then
-    STATUS="FAIL"
-    REASON_LINE="/etc/shadow 파일이 존재하지 않아 패스워드 해시 정보 보호와 접근 통제가 보장되지 않으므로 취약합니다. /etc/shadow 파일을 생성(복구)하고 소유자를 root, 권한을 400 이하로 설정해야 합니다."
-    DETAIL_CONTENT="file_not_found"
+  STATUS="FAIL"
+  REASON_LINE="파일이 존재하지 않아 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="file_not_found"
+  GUIDE_LINE="자동 조치:
+  /etc/shadow 파일을 복구한 뒤 소유자를 root로 변경(chown root /etc/shadow)하고 권한을 400으로 설정(chmod 400 /etc/shadow)합니다.
+  주의사항: 
+  권한/소유자 설정이 잘못되면 인증 관련 서비스에서 로그인 오류가 발생할 수 있으므로 조치 후 즉시 상태를 재확인해야 합니다."
 else
-    FILE_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
-    FILE_PERM_RAW=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
+  # 2) stat 정보 수집 및 실패 방어
+  FILE_OWNER="$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)"
+  FILE_PERM_RAW="$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)"
 
-    # stat 실패/빈값 방어
-    if [ -z "$FILE_OWNER" ] || [ -z "$FILE_PERM_RAW" ]; then
-        STATUS="FAIL"
-        REASON_LINE="/etc/shadow 파일의 소유자/권한 정보를 확인할 수 없어 점검에 실패했습니다(stat 실행 오류)."
-        DETAIL_CONTENT="stat_failed"
+  if [ -z "$FILE_OWNER" ] || [ -z "$FILE_PERM_RAW" ]; then
+    STATUS="FAIL"
+    REASON_LINE="소유자/권한 값을 확인하지 못해 이 항목에 대해 취약합니다."
+    DETAIL_CONTENT="stat_failed"
+    GUIDE_LINE="자동 조치:
+    /etc/shadow 파일의 소유자를 root로 변경(chown root /etc/shadow)하고 권한을 400으로 설정(chmod 400 /etc/shadow)합니다.
+    주의사항: 
+    권한/소유자 설정이 잘못되면 인증 관련 서비스에서 로그인 오류가 발생할 수 있으므로 조치 전후로 상태 수집(stat)이 가능한지부터 확인해야 합니다."
+  else
+    # 3) 권한 정규화 및 판정
+    FILE_PERM="$(printf "%03d" "$FILE_PERM_RAW" 2>/dev/null)"
+
+    PERM_OK=0
+    if is_perm_ok "$FILE_PERM_RAW"; then PERM_OK=1; fi
+
+    # 4) DETAIL_CONTENT는 양호/취약 관계없이 현재 설정값 전체 표시
+    DETAIL_CONTENT="owner=$FILE_OWNER\nperm=$FILE_PERM"
+
+    # 5) 기준 충족 여부 분기(양호/취약 문장 1문장, 설정값 기반)
+    if [ "$FILE_OWNER" = "root" ] && [ "$PERM_OK" -eq 1 ]; then
+      STATUS="PASS"
+      REASON_LINE="owner=$FILE_OWNER, perm=$FILE_PERM로 설정되어 있어 이 항목에 대해 양호합니다."
     else
-        # 권한을 3자리(0-padding)로 정규화하여 자리수 오판 방지
-        FILE_PERM=$(printf "%03d" "$FILE_PERM_RAW")
-        U_PERM="${FILE_PERM:0:1}"
-        G_PERM="${FILE_PERM:1:1}"
-        O_PERM="${FILE_PERM:2:1}"
-
-        # '400 이하'를 "소유자: 읽기만(4 또는 0), 그룹/기타: 0"로 해석하여 오판 방지
-        # - U_PERM: 4(읽기만) 또는 0(권한 없음) 허용
-        # - G_PERM/O_PERM: 반드시 0이어야 함
-        PERM_OK=0
-        if { [ "$U_PERM" = "4" ] || [ "$U_PERM" = "0" ]; } && [ "$G_PERM" = "0" ] && [ "$O_PERM" = "0" ]; then
-            PERM_OK=1
-        fi
-
-        # 소유자/권한 기준에 따른 분기
-        if [ "$FILE_OWNER" = "root" ] && [ "$PERM_OK" -eq 1 ]; then
-            STATUS="PASS"
-            REASON_LINE="/etc/shadow 파일의 소유자가 root이고 권한이 $FILE_PERM(400 이하: 그룹/기타 권한 없음)로 설정되어 있으므로 패스워드 해시 정보에 대한 비인가 접근 위험이 없고 이 항목에 대한 보안 위협이 없습니다."
-        else
-            STATUS="FAIL"
-            REASON_LINE="/etc/shadow 파일의 소유자가 $FILE_OWNER 이거나 권한이 $FILE_PERM(기준 미충족)로 설정되어 비인가 사용자가 패스워드 해시 정보를 열람할 위험이 있으므로 취약합니다. 소유자를 root로 변경하고 권한을 400 이하로 설정해야 합니다."
-        fi
-
-        # 소유자/권한은 한 줄로 출력
-        DETAIL_CONTENT="owner=$FILE_OWNER perm=$FILE_PERM"
+      STATUS="FAIL"
+      VULN_PARTS=""
+      if [ "$FILE_OWNER" != "root" ]; then
+        VULN_PARTS="owner=$FILE_OWNER"
+      fi
+      if [ "$PERM_OK" -ne 1 ]; then
+        [ -n "$VULN_PARTS" ] && VULN_PARTS="${VULN_PARTS}, "
+        VULN_PARTS="${VULN_PARTS}perm=$FILE_PERM"
+      fi
+      REASON_LINE="${VULN_PARTS}로 설정되어 있어 이 항목에 대해 취약합니다."
+      GUIDE_LINE="자동 조치:
+      /etc/shadow 파일의 소유자를 root로 변경(chown root /etc/shadow)하고 권한을 400으로 설정(chmod 400 /etc/shadow)합니다.
+      주의사항: 
+      권한/소유자 설정이 잘못되면 인증 관련 서비스에서 로그인 오류가 발생할 수 있으므로 조치 후 즉시 owner/perm 값을 재검증해야 합니다."
     fi
+  fi
 fi
 
-# raw_evidence 구성 (첫 줄: 평가 이유 / 다음 줄: 현재 설정값)
+# raw_evidence 구성: 문장/항목을 줄바꿈으로 구분(대시보드에서 줄바꿈 유지 목적)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리(따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
