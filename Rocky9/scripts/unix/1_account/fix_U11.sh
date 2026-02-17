@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
-# @Last Updated: 2026-02-13
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID : U-11
@@ -15,7 +15,7 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 설정
 ID="U-11"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -35,7 +35,7 @@ SYSTEM_ACCOUNTS=("daemon" "bin" "sys" "adm" "listen" "nobody" "nobody4" "noacces
 MODIFIED=0
 FAIL_FLAG=0
 
-# (추가) 허용 로그인 제한 쉘 목록 (/usr/sbin/nologin 고려)
+# 로그인 제한 쉘 유효성 검증 함수
 ALLOWED_SHELLS=("/bin/false" "/sbin/nologin" "/usr/sbin/nologin")
 
 is_allowed_shell() {
@@ -46,7 +46,7 @@ is_allowed_shell() {
   return 1
 }
 
-# (추가) 조치에 사용할 쉘 자동 선택 (/sbin/nologin 우선, 없으면 /usr/sbin/nologin, 없으면 /bin/false)
+# 시스템 환경에 맞는 로그인 제한 쉘 선택 함수
 pick_target_shell() {
   if [ -x /sbin/nologin ]; then
     echo "/sbin/nologin"
@@ -59,14 +59,12 @@ pick_target_shell() {
 
 TARGET_LOGIN_SHELL="$(pick_target_shell)"
 
-# 조치 수행(백업 없음)
+# 조치 수행 및 시스템 계정 쉘 변경 분기점
 if [ -f "$PASSWD_FILE" ]; then
   for acc in "${SYSTEM_ACCOUNTS[@]}"; do
     if id "$acc" >/dev/null 2>&1; then
       CURRENT_SHELL=$(awk -F: -v u="$acc" '$1==u {print $7}' "$PASSWD_FILE" 2>/dev/null | head -n 1)
 
-      # (수정) 허용 쉘 목록에 없으면 취약으로 보고 조치
-      # (CURRENT_SHELL이 비어도 허용 목록에 없으므로 조치 대상이 됨)
       if [ -n "$CURRENT_SHELL" ] || [ -z "$CURRENT_SHELL" ]; then
         if ! is_allowed_shell "$CURRENT_SHELL"; then
           if usermod -s "$TARGET_LOGIN_SHELL" "$acc" >/dev/null 2>&1; then
@@ -79,7 +77,7 @@ if [ -f "$PASSWD_FILE" ]; then
     fi
   done
 
-  # 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+  # 조치 완료 후 상태 수집 및 결과 분석 분기점
   STILL_VULN_LIST=""
   AFTER_LIST=""
 
@@ -88,8 +86,6 @@ if [ -f "$PASSWD_FILE" ]; then
       SHELL_AFTER=$(awk -F: -v u="$acc" '$1==u {print $7}' "$PASSWD_FILE" 2>/dev/null | head -n 1)
       AFTER_LIST="${AFTER_LIST}${acc}:${SHELL_AFTER}
 "
-
-      # (수정) 허용 쉘 목록 기준으로 잔존 취약 판단
       if ! is_allowed_shell "$SHELL_AFTER"; then
         STILL_VULN_LIST="${STILL_VULN_LIST}${acc}:${SHELL_AFTER}
 "
@@ -102,25 +98,21 @@ if [ -f "$PASSWD_FILE" ]; then
 
   DETAIL_CONTENT="$AFTER_LIST"
 
-  # 최종 판정
+  # 최종 성공 여부 판정 및 REASON_LINE 구성 분기점
   if [ -z "$STILL_VULN_LIST" ] && [ "$FAIL_FLAG" -eq 0 ]; then
     IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ]; then
-      REASON_LINE="시스템 계정의 로그인 쉘이 로그인 제한 쉘(${TARGET_LOGIN_SHELL})로 설정되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      REASON_LINE="모든 시스템 계정의 로그인 제한 설정이 이미 적용되어 있어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
+    REASON_LINE="로그인이 불필요한 시스템 계정에 로그인 제한 쉘(${TARGET_LOGIN_SHELL})을 부여하여 조치를 완료하여 이 항목에 대해 양호합니다."
   else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 일부 시스템 계정의 로그인 쉘이 제한 값으로 설정되지 않아 조치가 완료되지 않았습니다."
+    REASON_LINE="시스템 계정에 로그인 제한 쉘을 설정하는 과정에서 권한 문제나 usermod 명령어 오류가 발생한 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     if [ -n "$STILL_VULN_LIST" ]; then
       DETAIL_CONTENT="$STILL_VULN_LIST"
     fi
   fi
 else
   IS_SUCCESS=0
-  REASON_LINE="조치 대상 파일(/etc/passwd)이 존재하지 않아 조치가 완료되지 않았습니다."
-  DETAIL_CONTENT=""
+  REASON_LINE="/etc/passwd 파일이 시스템에 존재하지 않는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="대상 파일 미존재"
 fi
 
 # raw_evidence 구성
@@ -133,12 +125,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 결과 데이터 출력
 echo ""
 cat << EOF
 {

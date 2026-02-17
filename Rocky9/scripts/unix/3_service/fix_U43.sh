@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [보완 항목 상세]
 # @Check_ID : U-43
@@ -15,71 +15,54 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-43 NIS, NIS+ 점검
-
-# 1. 항목 정보 정의
+# 기본 변수 설정 분기점
 ID="U-43"
 CATEGORY="서비스 관리"
 TITLE="NIS, NIS+ 점검"
 IMPORTANCE="상"
-TARGET_FILE="N/A"
-
-# 2. 보완 로직
+TARGET_FILE="systemd(NIS related services)"
 STATUS="PASS"
 ACTION_LOG=""
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# 점검/조치 대상 유닛(가이드 기준)
 NIS_UNITS=("ypserv.service" "ypbind.service" "ypxfrd.service" "rpc.yppasswdd.service" "rpc.ypupdated.service")
+CHECK_COMMAND="systemctl is-active/is-enabled (NIS units)"
 
-CHECK_COMMAND="systemctl list-units --type=service | grep -E 'ypserv|ypbind|ypxfrd|rpc.yppasswdd|rpc.ypupdated'; systemctl is-active/is-enabled <unit>"
-
-# systemctl 사용 가능 여부 확인
+# 조치 수행 분기점
 if ! command -v systemctl >/dev/null 2>&1; then
   STATUS="ERROR"
   ACTION_LOG="systemctl 명령을 사용할 수 없어 NIS 관련 서비스 조치를 수행하지 못했습니다."
 else
-  # (참고) 현재 active인 유닛 목록(로그용)
-  NIS_SERVICES_ACTIVE="$(systemctl list-units --type=service 2>/dev/null | awk '{print $1}' | grep -E 'ypserv|ypbind|ypxfrd|rpc\.yppasswdd|rpc\.ypupdated' | tr '\n' ' ')"
-
-  # [Step 2~3] stop/disable 수행 (active 뿐 아니라 enabled도 함께 처리)
   for unit in "${NIS_UNITS[@]}"; do
-    # enabled 여부(부팅 자동 시작)
     en_state="$(systemctl is-enabled "$unit" 2>/dev/null | tr -d '\r')"
-    # active 여부(현재 실행)
     ac_state="$(systemctl is-active "$unit" 2>/dev/null | tr -d '\r')"
 
     if [ "$ac_state" = "active" ]; then
-      if systemctl stop "$unit" >/dev/null 2>&1; then
-        ACTION_LOG="${ACTION_LOG}${unit} 중지; "
-      else
-        ACTION_LOG="${ACTION_LOG}${unit} 중지 실패; "
-      fi
+      systemctl stop "$unit" >/dev/null 2>&1 || ACTION_LOG="${ACTION_LOG}${unit} 중지 실패; "
     fi
 
     if [ "$en_state" = "enabled" ]; then
-      if systemctl disable "$unit" >/dev/null 2>&1; then
-        ACTION_LOG="${ACTION_LOG}${unit} 비활성화; "
-      else
-        ACTION_LOG="${ACTION_LOG}${unit} 비활성화 실패; "
-      fi
+      systemctl disable "$unit" >/dev/null 2>&1 || ACTION_LOG="${ACTION_LOG}${unit} 비활성화 실패; "
     fi
   done
 
-  # [최종 검증] 조치 후 active/enabled 잔존 여부로 PASS/FAIL 결정
+  # 조치 후 상태 검증 및 수집 분기점
   AFTER_ACTIVE=""
   AFTER_ENABLED=""
+  SUMMARY_DETAIL=""
 
   for unit in "${NIS_UNITS[@]}"; do
     ac_after="$(systemctl is-active "$unit" 2>/dev/null | tr -d '\r')"
     en_after="$(systemctl is-enabled "$unit" 2>/dev/null | tr -d '\r')"
+    
+    # 설정 값 정보 수집
+    if [ -z "$ac_after" ]; then ac_after="not_found"; fi
+    if [ -z "$en_after" ]; then en_after="not_found"; fi
+    
+    SUMMARY_DETAIL="${SUMMARY_DETAIL}${unit}: enabled=${en_after}, active=${ac_after}\n"
 
-    if [ "$ac_after" = "active" ]; then
-      AFTER_ACTIVE+="${unit} "
-    fi
-    if [ "$en_after" = "enabled" ]; then
-      AFTER_ENABLED+="${unit} "
-    fi
+    if [ "$ac_after" = "active" ]; then AFTER_ACTIVE+="${unit} "; fi
+    if [ "$en_after" = "enabled" ]; then AFTER_ENABLED+="${unit} "; fi
   done
 
   if [ -n "$AFTER_ACTIVE" ] || [ -n "$AFTER_ENABLED" ]; then
@@ -89,24 +72,25 @@ else
   fi
 fi
 
-# raw_evidence 구성: REASON_LINE + DETAIL_CONTENT (2줄 구조)
+# 최종 REASON_LINE 및 DETAIL_CONTENT 확정 분기점
 REASON_LINE=""
-DETAIL_CONTENT=""
+DETAIL_CONTENT="$SUMMARY_DETAIL"
 
 if [ "$STATUS" = "PASS" ]; then
-  REASON_LINE="NIS 관련 서비스가 중지/비활성화되어 있어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(조치 로그) ${ACTION_LOG:-'조치 대상 없음(이미 양호)'}\n(조치 후) active: 없음\n(조치 후) enabled: 없음"
+  REASON_LINE="NIS 관련 서비스를 모두 중지하고 비활성화하여 조치를 완료하여 이 항목에 대해 양호합니다."
 elif [ "$STATUS" = "FAIL" ]; then
-  REASON_LINE="NIS 관련 서비스가 조치 이후에도 active 또는 enabled로 남아 있어 취약합니다."
-  DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(조치 로그) ${ACTION_LOG:-'조치 시도 없음'}\n(조치 후) active: ${AFTER_ACTIVE:-없음}\n(조치 후) enabled: ${AFTER_ENABLED:-없음}\n(간단 조치) 남아있는 서비스에 대해 'systemctl stop <unit> && systemctl disable <unit>' 수행 후 재점검"
+  REASON_LINE="일부 NIS 서비스가 여전히 활성화(enabled)되어 있거나 실행(active) 중인 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
 else
-  # ERROR
   REASON_LINE="$ACTION_LOG"
-  DETAIL_CONTENT="(점검 명령) ${CHECK_COMMAND}\n(조치 후) 상태 확인 불가"
 fi
 
+# 에러 로그가 있을 경우 DETAIL 하단에 추가
+if [ -n "$ACTION_LOG" ]; then
+  DETAIL_CONTENT="${DETAIL_CONTENT}[Error_Log] ${ACTION_LOG}"
+fi
+
+# 결과 데이터 구성 및 출력 분기점
 json_escape() {
-  # 백슬래시/따옴표/줄바꿈 escape
   printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/\n/\\n/g;s/"/\\"/g'
 }
 

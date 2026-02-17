@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-29
@@ -15,7 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 초기화 분기점
 ID="U-29"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -28,21 +28,21 @@ TARGET_FILE=""
 TARGET_FILE="/etc/hosts.lpd"
 CHECK_COMMAND="stat -c '%F %U %G %a %n' /etc/hosts.lpd 2>/dev/null"
 
-# 조치 프로세스
+# 파일 존재 여부 확인 및 정보 수집 분기점
 if [ ! -e "$TARGET_FILE" ]; then
   IS_SUCCESS=1
-  REASON_LINE="/etc/hosts.lpd 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT=""
+  REASON_LINE="대상 파일이 존재하지 않아 조치를 완료하여 이 항목에 대해 양호합니다."
+  DETAIL_CONTENT="상태: 파일 없음"
 else
-  # [추가] 파일 타입 확인: 일반 파일이 아니면 자동 조치 대상에서 제외(수동 조치 필요)
+  # 파일 타입 확인 분기점
   FILE_TYPE=$(stat -c "%F" "$TARGET_FILE" 2>/dev/null)
   if [ -z "$FILE_TYPE" ]; then
     IS_SUCCESS=0
-    REASON_LINE="/etc/hosts.lpd 파일은 존재하나 파일 정보 조회(stat) 실패로 조치를 수행할 수 없습니다. 수동 확인이 필요합니다."
+    REASON_LINE="파일 정보를 확인할 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     DETAIL_CONTENT="stat_failed"
   elif [ "$FILE_TYPE" != "regular file" ]; then
     IS_SUCCESS=0
-    REASON_LINE="/etc/hosts.lpd 경로가 일반 파일이 아닌 형태($FILE_TYPE)로 존재하여 자동으로 소유자/권한 조치를 수행할 수 없습니다. 비정상 타입(링크/디렉터리 등) 제거 후 재시도하거나 수동 조치가 필요합니다."
+    REASON_LINE="일반 파일이 아닌 비정상적인 형태로 존재하는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     DETAIL_CONTENT="type=$FILE_TYPE"
   else
     MODIFIED=0
@@ -51,12 +51,13 @@ else
     GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
     PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    # [추가] 조회 값 유효성 검사
+    # 조회 값 유효성 검사 분기점
     if [ -z "$OWNER" ] || [ -z "$GROUP" ] || [ -z "$PERM" ] || ! [[ "$PERM" =~ ^[0-9]+$ ]]; then
       IS_SUCCESS=0
-      REASON_LINE="/etc/hosts.lpd 파일은 존재하나 소유자/그룹/권한 값 조회에 실패하여 자동 조치를 수행할 수 없습니다. 수동 확인이 필요합니다."
+      REASON_LINE="소유자나 권한 값을 확인할 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
       DETAIL_CONTENT="owner=$OWNER group=$GROUP perm=$PERM"
     else
+      # 소유자 및 권한 조치 수행 분기점
       if [ "$OWNER" != "root" ] || [ "$GROUP" != "root" ]; then
         chown root:root "$TARGET_FILE" 2>/dev/null
         MODIFIED=1
@@ -67,6 +68,7 @@ else
         MODIFIED=1
       fi
 
+      # 조치 후 최종 상태 수집 분기점
       AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
       AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
       AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
@@ -76,26 +78,22 @@ owner=$AFTER_OWNER
 group=$AFTER_GROUP
 perm=$AFTER_PERM"
 
-      # [추가] 조치 후 값 유효성 검사
+      # 결과 판정 및 REASON_LINE 확정 분기점
       if [ -z "$AFTER_OWNER" ] || [ -z "$AFTER_GROUP" ] || [ -z "$AFTER_PERM" ] || ! [[ "$AFTER_PERM" =~ ^[0-9]+$ ]]; then
         IS_SUCCESS=0
-        REASON_LINE="조치를 수행했으나 조치 후 소유자/그룹/권한 값 확인에 실패하여 완료 여부를 판단할 수 없습니다. 수동 확인이 필요합니다."
+        REASON_LINE="조치 후 상태 정보를 확인할 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
       elif [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ "$AFTER_PERM" -le 600 ]; then
         IS_SUCCESS=1
-        if [ "$MODIFIED" -eq 1 ]; then
-          REASON_LINE="/etc/hosts.lpd 파일의 소유자/그룹이 root로 설정되고 권한이 600 이하로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        else
-          REASON_LINE="/etc/hosts.lpd 파일의 소유자/그룹이 root이고 권한이 600 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-        fi
+        REASON_LINE="소유자를 root로 변경하고 권한을 600 이하로 설정하여 조치를 완료하여 이 항목에 대해 양호합니다."
       else
         IS_SUCCESS=0
-        REASON_LINE="조치를 수행했으나 /etc/hosts.lpd 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+        REASON_LINE="관리자 외 쓰기 권한이 있거나 소유자가 허용된 계정이 아닌 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
       fi
     fi
   fi
 fi
 
-# raw_evidence 구성
+# RAW_EVIDENCE 작성을 위한 JSON 구조 생성 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -105,12 +103,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON 데이터 이스케이프 처리 분기점
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 JSON 결과 출력 분기점
 echo ""
 cat << EOF
 {

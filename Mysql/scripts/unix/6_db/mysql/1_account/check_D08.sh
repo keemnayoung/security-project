@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 한은결
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-08
@@ -20,71 +20,75 @@ STATUS="FAIL"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="mysql.user.plugin"
-EVIDENCE="N/A"
 
-# TIMEOUT_BIN이 비어 있으면 timeout을 사용하지 않고 mysql만 실행
-TIMEOUT_BIN=""
-MYSQL_TIMEOUT=5
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
-# mysql.user의 plugin 값을 조회하여 계정별 인증 플러그인(암호화/인증 방식)을 확인합니다.
-QUERY="
-SELECT user, host, plugin
-FROM mysql.user
-;
-"
+# 계정별로 설정된 인증 플러그인(암호화 방식) 정보를 수집하기 위한 쿼리
+QUERY="SELECT user, host, plugin FROM mysql.user;"
 
-if [[ -n "$TIMEOUT_BIN" ]]; then
-    RESULT=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
-else
-    RESULT=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
-fi
+# 데이터베이스 응답 지연을 방지하기 위해 5초의 타임아웃을 적용하여 쿼리 실행
+run_mysql_query() {
+    timeout 5s $MYSQL_CMD "$QUERY" 2>/dev/null
+}
+
+RESULT=$(run_mysql_query)
+RET_CODE=$?
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+# 자동 조치 시 애플리케이션 접속 라이브러리 호환성 문제로 인한 서비스 중단 위험성 정의
+GUIDE_LINE="이 항목에 대해서 인증 플러그인을 자동으로 변경할 경우, SHA-256 방식을 지원하지 않는 구버전 클라이언트나 애플리케이션 라이브러리에서 DB 접속 서버 연결이 차단되는 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 사용 중인 애플리케이션의 커넥터 버전을 점검하고, ALTER USER 명령을 통해 caching_sha2_password와 같은 안전한 알고리즘으로 변경하여 조치해 주시기 바랍니다."
 
-if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
+# 쿼리 실행 결과(성공, 타임아웃, 접속 에러)에 따른 판정 분기점
+if [ $RET_CODE -eq 124 ]; then
     STATUS="FAIL"
-    REASON_LINE="계정의 암호화 알고리즘 정보를 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 진단에 실패했습니다. DB 응답 상태 및 접속 환경을 확인해주시기 바랍니다.\n조치 방법은 DB 상태/부하를 점검하신 후 재시도해주시기 바랍니다."
-    DETAIL_CONTENT="제한 시간은 ${MYSQL_TIMEOUT}초로 설정되어 있습니다(timeout_sec=${MYSQL_TIMEOUT})."
-elif [[ "$RESULT" == "ERROR" ]]; then
+    REASON_LINE="데이터베이스 응답 지연으로 인해 암호화 알고리즘 정보를 조회할 수 없어 점검을 완료하지 못했습니다."
+    DETAIL_CONTENT="timeout_error(5s)"
+elif [ $RET_CODE -ne 0 ]; then
     STATUS="FAIL"
-    REASON_LINE="MySQL 접속 실패로 인해 암호화 알고리즘 사용 여부를 확인할 수 없습니다. 진단 계정 권한 또는 접속 정보를 점검해주시기 바랍니다.\n조치 방법은 접속 계정의 권한과 인증 정보를 확인해주시기 바랍니다."
-    DETAIL_CONTENT="MySQL 접속 상태는 실패로 확인되었습니다(mysql_access=FAILED)."
+    REASON_LINE="데이터베이스 접속 정보가 올바르지 않거나 권한이 부족하여 암호화 알고리즘 점검을 수행할 수 없습니다."
+    DETAIL_CONTENT="connection_error"
 else
-    # caching_sha2_password(MySQL 8 기본, SHA-256 기반)가 아닌 계정을 약한 알고리즘 사용 계정으로 간주합니다(원본 판정 기준 유지).
-    WEAK_USERS=$(echo "$RESULT" | awk '$3!="caching_sha2_password"{print $1"@"$2"("$3")"}')
+    # SHA-256 기반이 아닌 인증 플러그인을 사용하는 계정을 식별
+    # MySQL 8.0 기준 권고 방식인 caching_sha2_password를 양호 기준으로 설정
+    WEAK_USERS=$(echo "$RESULT" | awk '$3!="caching_sha2_password"{print $1"@"$2"["$3"]"}')
+    
+    # 전체 계정 설정 현황 생성 (DETAIL_CONTENT용)
+    ALL_USERS_INFO=$(echo "$RESULT" | awk '{print "- "$1"@"$2"["$3"]"}' | sed ':a;N;$!ba;s/\n/\\n/g')
+    DETAIL_CONTENT="[현재 계정별 인증 플러그인 설정 현황]\n${ALL_USERS_INFO}"
 
+    # 점검 기준에 따른 양호/취약 판정 및 사유 작성
     if [[ -z "$WEAK_USERS" ]]; then
         STATUS="PASS"
-        REASON_LINE="모든 DB 계정이 SHA-256 기반의 안전한 암호화 알고리즘을 사용하고 있어 비밀번호 탈취 및 무차별 대입 공격 위험이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
-        DETAIL_CONTENT="약한 알고리즘 사용 계정 수는 0건입니다(weak_user_count=0)."
+        REASON_LINE="모든 계정이 caching_sha2_password 플러그인을 사용하여 SHA-256 이상의 암호화 알고리즘으로 설정되어 있어 이 항목에 대해 양호합니다."
     else
-        COUNT=$(echo "$WEAK_USERS" | wc -l | tr -d ' ')
-        SAMPLE=$(echo "$WEAK_USERS" | head -n 1)
         STATUS="FAIL"
-        REASON_LINE="SHA-256 미만의 암호화 알고리즘을 사용하는 계정이 ${COUNT}건 확인되어 비밀번호 유출 및 계정 탈취 위험이 있습니다.\n조치 방법은 해당 계정의 인증 플러그인을 SHA-256 기반(caching_sha2_password 등)으로 변경해주시기 바라며, 변경 후 적용 여부를 재확인해주시기 바랍니다."
-        DETAIL_CONTENT="약한 알고리즘 사용 계정 예시는 ${SAMPLE} 이며, 전체 목록은 $(echo "$WEAK_USERS" | tr '\n' ' ' | sed 's/[[:space:]]*$//') 입니다."
+        WEAK_LIST=$(echo "$WEAK_USERS" | tr '\n' ',' | sed 's/,$//')
+        REASON_LINE="${WEAK_LIST} 계정들이 SHA-256 미만의 알고리즘으로 설정되어 있어 이 항목에 대해 취약합니다."
     fi
 fi
 
-CHECK_COMMAND="mysql -N -s -B -e \"SELECT user, host, plugin FROM mysql.user;\""
+# 증적 데이터를 JSON 형식으로 구조화
+CHECK_COMMAND="mysql -N -s -B -e \"$QUERY\""
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
+# 파이썬 대시보드 및 DB에서 줄바꿈(\n)이 정상적으로 유지되도록 이스케이프 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
+# 최종 결과값 출력
 echo ""
 cat << EOF
 {

@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 1.0.0
+# @Version: 2.1.0
 # @Author: 윤영아
-# @Last Updated: 2026-02-05
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-18
@@ -14,7 +14,6 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
 # shellcheck disable=SC1090
 . "$COMMON_FILE"
@@ -25,13 +24,12 @@ STATUS="FAIL"
 EVIDENCE="N/A"
 GUIDE_MSG="N/A"
 
-# NOTE:
-# PostgreSQL은 object privilege에는 PUBLIC grantee를 지원하지만,
-# role membership(ROLE을 PUBLIC에 부여)은 환경에 따라 불가/비표준이라 점검 신뢰도가 낮습니다.
-# 본 점검은 "PUBLIC에 스키마 CREATE 권한이 남아있는지"를 점검합니다.
-# (특히 schema public의 CREATE 권한은 권한 확산의 대표 원인)
+# 파이썬 대시보드 및 DB 연동 시 줄바꿈(\n)을 유지하기 위한 이스케이프 함수
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-# PUBLIC(grantee=0)에 부여된 비시스템 스키마(public 포함) CREATE/USAGE 권한 조회
+# PUBLIC(grantee=0)에 부여된 스키마 권한 정보 조회 쿼리 실행
 PUBLIC_SCHEMA_CREATE=$(run_psql "
 SELECT n.nspname || ':' || e.privilege_type
 FROM pg_namespace n
@@ -45,43 +43,50 @@ WHERE e.grantee = 0
   )
 ORDER BY 1;
 ")
+RC=$?
 
-if [ $? -ne 0 ]; then
+REASON_LINE=""
+DETAIL_CONTENT=""
+# 자동 조치 시 권한 회수로 인한 응용 프로그램 장애 위험 및 수동 조치 방법 정의
+GUIDE_LINE="이 항목에 대해서 PUBLIC 권한을 자동으로 회수할 경우, 해당 권한을 통해 임시 테이블을 생성하거나 스키마를 사용하던 기존 응용 프로그램의 쿼리가 즉시 실패하여 서비스 장애가 발생할 수 있는 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 REVOKE CREATE ON SCHEMA public FROM PUBLIC; 명령을 사용하여 불필요한 PUBLIC 권한을 수동으로 회수해 주시기 바랍니다."
+
+# 쿼리 실행 결과 및 권한 존재 여부에 따른 판정 분기점
+if [ $RC -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="PUBLIC 대상 스키마 권한을 조회하지 못하여 점검을 수행할 수 없습니다.\n조치 방법은 DB 접속 정보와 pg_namespace/aclexplode 조회 권한을 확인해주시기 바랍니다."
-  GUIDE_MSG="접속 정보 및 권한을 점검해주시기 바랍니다."
+  REASON_LINE="데이터베이스 권한 정보(pg_namespace)를 조회하지 못하여 PUBLIC 권한 점검을 수행할 수 없습니다."
+  DETAIL_CONTENT="database_query_error(check_psql_connection_or_privilege)"
 elif [ -z "$PUBLIC_SCHEMA_CREATE" ]; then
   STATUS="PASS"
-  EVIDENCE="PUBLIC 대상 스키마 권한이 확인되지 않아 권한 확산 위험이 낮으므로 이 항목에 대한 보안 위협이 없습니다."
-  GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
+  REASON_LINE="비시스템 스키마에서 PUBLIC에 부여된 CREATE 또는 USAGE 권한이 확인되지 않아 이 항목에 대해 양호합니다."
+  # 양호 시에도 현재 설정 상태를 명시
+  DETAIL_CONTENT="PUBLIC 권한 설정 현황: 발견된 위험 권한 없음"
 else
   STATUS="FAIL"
-  EVIDENCE="PUBLIC 대상 스키마 권한이 확인되어 비인가 사용자의 객체 생성 또는 권한 확산 위험이 있습니다.\n조치 방법은 schema public에서 PUBLIC의 CREATE 권한을 회수하고, 비시스템 스키마에 부여된 불필요한 PUBLIC 권한을 정리해주시기 바랍니다."
-  GUIDE_MSG="확인된 항목은 $(echo "$PUBLIC_SCHEMA_CREATE" | tr '\n' ',' | sed 's/,$//') 입니다. 예) REVOKE CREATE ON SCHEMA public FROM PUBLIC; 적용 후 재점검해주시기 바랍니다."
+  # 취약 시 확인된 설정 값들을 콤마로 연결하여 문장 구성
+  VULN_VALS=$(echo "$PUBLIC_SCHEMA_CREATE" | tr '\n' ',' | sed 's/,$//')
+  REASON_LINE="${VULN_VALS} 권한이 PUBLIC에 부여되어 있어 이 항목에 대해 취약합니다."
+  # 현재의 모든 설정 값들을 상세 정보로 구성
+  DETAIL_CONTENT="[현재 PUBLIC 부여 권한 목록]\n$(echo "$PUBLIC_SCHEMA_CREATE" | sed 's/^/- /')"
 fi
 
-# ===== 표준 출력(scan_history) =====
-CHECK_COMMAND="aclexplode 기반 PUBLIC(grantee=0) 스키마 권한(CREATE/USAGE) 점검"
-REASON_LINE="${EVIDENCE}"
-DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="aclexplode 기반 PUBLIC(grantee=0) 스키마 권한(CREATE/USAGE) 점검"
 TARGET_FILE="pg_namespace(nspacl),aclexplode(),schema(public 및 비시스템 스키마)"
 
-escape_json_str() {
-  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\"/\\\\"/g; s/"/\\"/g'
-}
-
+# 요구사항에 맞춘 RAW_EVIDENCE 구조화 및 이스케이프 적용
 RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "command":"$(escape_json_str "$CHECK_COMMAND")",
-  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
-  "target_file":"$(escape_json_str "$TARGET_FILE")"
+  "command": "$(escape_json_str "$CHECK_COMMAND")",
+  "detail": "$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "guide": "$(escape_json_str "$GUIDE_LINE")",
+  "target_file": "$(escape_json_str "$TARGET_FILE")"
 }
 EOF
 )
 
 RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
 
+# 최종 JSON 출력
 echo ""
 cat <<EOF
 {

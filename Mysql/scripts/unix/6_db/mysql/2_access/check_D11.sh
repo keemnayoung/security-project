@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 한은결
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-11
@@ -20,17 +20,14 @@ STATUS="FAIL"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="information_schema"
-EVIDENCE="N/A"
 
-# timeout 미사용(원본 로직 유지)
-TIMEOUT_BIN=""
 MYSQL_TIMEOUT=5
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 export MYSQL_PWD="${MYSQL_PASSWORD}"
 MYSQL_CMD="mysql --protocol=TCP -u${MYSQL_USER} -N -s -B -e"
 
-# 시스템 스키마 권한(스키마/테이블/전역) 조회
+# 시스템 스키마 권한(스키마/테이블/전역)을 조회하기 위한 SQL 쿼리 정의
 QUERY="
 SELECT GRANTEE, 'SCHEMA' AS SCOPE, TABLE_SCHEMA AS OBJ, PRIVILEGE_TYPE
 FROM information_schema.schema_privileges
@@ -45,15 +42,13 @@ FROM information_schema.user_privileges
 WHERE PRIVILEGE_TYPE <> 'USAGE';
 "
 
-if [[ -n "$TIMEOUT_BIN" ]]; then
-    LIST=$($TIMEOUT_BIN ${MYSQL_TIMEOUT}s $MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR_TIMEOUT")
-else
-    LIST=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
-fi
+# 쿼리 실행 결과 수집
+LIST=$($MYSQL_CMD "$QUERY" 2>/dev/null || echo "ERROR")
 
-# 허용 계정 목록(기본 DBA/시스템 계정)
+# 점검에서 제외할 관리자용 허용 계정 목록 설정
 ALLOWED_USERS_CSV="${ALLOWED_USERS_CSV:-root,mysql.sys,mysql.session,mysql.infoschema,mysqlxsys,mariadb.sys}"
 
+# 특정 계정이 허용 목록에 포함되어 있는지 확인하는 함수
 is_allowed_user() {
     local user="$1"
     IFS=',' read -r -a arr <<< "$ALLOWED_USERS_CSV"
@@ -63,78 +58,81 @@ is_allowed_user() {
     return 1
 }
 
-# GRANTEE 문자열에서 user 추출
+# GRANTEE 형태('user'@'host')에서 순수 사용자명만 추출하는 함수
 extract_user_from_grantee() {
     echo "$1" | sed -E "s/^'([^']+)'.*$/\1/"
 }
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+# 자동 조치 시 발생할 수 있는 운영 위험성과 수동 조치 방법 정의
+GUIDE_LINE="이 항목에 대해서 일반 사용자 계정의 권한을 자동 회수할 경우, 해당 계정을 사용하는 애플리케이션의 메타데이터 조회 기능이나 특정 관리 쿼리가 차단되어 서비스 오류가 발생할 수 있는 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 권한이 불필요한 일반 계정에 대해 REVOKE <권한명> ON <시스템DB>.* FROM '<계정명>'@'<호스트>' 명령을 사용하여 시스템 테이블 접근 권한을 회수하시기 바랍니다."
 
-if [[ "$LIST" == "ERROR_TIMEOUT" ]]; then
+# 데이터베이스 접속 및 쿼리 실행 결과에 따른 분기점
+if [[ "$LIST" == "ERROR" ]]; then
     STATUS="FAIL"
-    REASON_LINE="시스템 테이블 접근 권한을 조회하는 과정이 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 수행하지 못했습니다.\n조치 방법은 DB 응답 지연 또는 접속 설정을 확인하신 후 재시도해주시기 바랍니다."
-    DETAIL_CONTENT="제한 시간은 ${MYSQL_TIMEOUT}초로 설정되어 있습니다(timeout_sec=${MYSQL_TIMEOUT})."
-elif [[ "$LIST" == "ERROR" ]]; then
-    STATUS="FAIL"
-    REASON_LINE="MySQL 접속 실패로 인해 시스템 테이블 접근 권한 점검을 수행할 수 없습니다.\n조치 방법은 진단 계정 권한 및 접속 정보를 확인해주시기 바랍니다."
-    DETAIL_CONTENT="MySQL 접속 상태가 확인되지 않았습니다(mysql_access=FAILED)."
+    REASON_LINE="데이터베이스 접속 정보가 올바르지 않거나 권한이 부족하여 점검을 수행할 수 없습니다."
+    DETAIL_CONTENT="connection_error(mysql_access=FAILED)"
 else
+    # 권한 데이터 분석 및 위반 사항 식별 분기점
     if [[ -z "$LIST" ]]; then
         STATUS="PASS"
-        REASON_LINE="시스템 스키마(mysql/performance_schema/sys/information_schema) 관련 권한이 일반 사용자에게 부여되어 있지 않으므로 이 항목에 대한 보안 위협이 없습니다."
-        DETAIL_CONTENT="시스템 스키마 관련 권한 조회 결과가 없습니다(no_privileges_found=1)."
+        REASON_LINE="시스템 스키마 관련 권한이 일반 사용자에게 부여되어 있지 않아 이 항목에 대해 양호합니다."
+        DETAIL_CONTENT="시스템 스키마(mysql, sys 등)에 대한 일반 사용자 권한 설정값이 존재하지 않습니다."
     else
         VIOLATION_COUNT=0
-        SAMPLE="N/A"
+        VULN_SAMPLES=""
+        CURRENT_SETTINGS=""
 
+        # 수집된 권한 리스트를 순회하며 위반 계정 확인
         while IFS=$'\t' read -r grantee scope obj priv; do
             [[ -z "$grantee" ]] && continue
+            
             user="$(extract_user_from_grantee "$grantee")"
+            CURRENT_SETTINGS="${CURRENT_SETTINGS}${grantee} -> [${scope}] ${obj} (${priv})\n"
+
             if is_allowed_user "$user"; then
                 continue
             fi
 
             VIOLATION_COUNT=$((VIOLATION_COUNT + 1))
-            if [[ "$SAMPLE" == "N/A" ]]; then
-                SAMPLE="${grantee} (${scope}:${obj}, ${priv})"
-            fi
+            VULN_SAMPLES="${VULN_SAMPLES}${grantee}(${priv}), "
         done <<< "$LIST"
 
+        # 최종 양호/취약 판정 및 사유 생성 분기점
         if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
             STATUS="PASS"
-            REASON_LINE="시스템 스키마(mysql/performance_schema/sys/information_schema) 관련 권한이 허용 계정으로만 제한되어 있으므로 이 항목에 대한 보안 위협이 없습니다."
-            DETAIL_CONTENT="허용 계정 외 위반 항목이 확인되지 않았습니다(allowed_only=1). 허용 계정 목록은 ${ALLOWED_USERS_CSV} 입니다."
+            REASON_LINE="시스템 스키마 권한이 허용된 관리 계정(${ALLOWED_USERS_CSV})으로만 제한되어 있어 이 항목에 대해 양호합니다."
         else
             STATUS="FAIL"
-            REASON_LINE="DBA 외 계정에 시스템 스키마 접근 권한이 부여되어 정보 노출 또는 권한 오남용 위험이 있습니다.\n조치 방법은 일반 계정에 부여된 전역/스키마/테이블 권한을 REVOKE로 회수해주시기 바라며, 업무 DB에 필요한 권한만 최소 범위로 재부여해주시기 바랍니다. 또한 시스템 스키마 권한은 허용 계정(ALLOWED_USERS_CSV)으로만 제한해주시기 바랍니다."
-            DETAIL_CONTENT="위반 항목은 ${VIOLATION_COUNT}건이며, 예시는 ${SAMPLE} 입니다. 허용 계정 목록은 ${ALLOWED_USERS_CSV} 입니다."
+            CLEAN_SAMPLES=$(echo "$VULN_SAMPLES" | sed 's/, $//')
+            REASON_LINE="${CLEAN_SAMPLES} 계정에 시스템 테이블 접근 권한이 부여되어 있어 이 항목에 대해 취약합니다."
         fi
+        
+        DETAIL_CONTENT="[현재 시스템 테이블 권한 설정 현황]\n${CURRENT_SETTINGS}"
     fi
 fi
 
-FILE_HASH="N/A(SCHEMA_CHECK)"
+# 증적용 실행 명령어 정리
+CHECK_COMMAND="mysql -e \"SELECT GRANTEE, TABLE_SCHEMA, PRIVILEGE_TYPE FROM information_schema.schema_privileges...\""
 
-IMPACT_LEVEL="LOW"
-ACTION_IMPACT="이 조치를 적용하면 일반 사용자 계정은 시스템 테이블에 접근할 수 없게 되지만, 지정된 데이터베이스 및 테이블에 대한 권한은 그대로 유지됩니다. 따라서 일반적인 시스템 운영 및 애플리케이션 동작에는 영향이 없으며, 권한 범위를 벗어난 작업 시에만 접근이 제한됩니다."
-
-GUIDE="시스템 스키마(mysql/performance_schema/sys/information_schema) 접근 권한은 허용 계정(ALLOWED_USERS_CSV)으로만 제한하십시오. 일반 계정에 부여된 전역/스키마/테이블 권한은 REVOKE로 회수하고, 업무 DB에 필요한 권한만 최소 범위로 부여하십시오."
-
-CHECK_COMMAND="mysql -N -s -B -e \"${QUERY//$'\n'/ }\""
-
+# RAW_EVIDENCE JSON 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
+# JSON 데이터의 파이썬/DB 호환을 위한 이스케이프 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
+# 최종 JSON 출력
 echo ""
 cat << EOF_JSON
 {

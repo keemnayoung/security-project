@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-22
@@ -15,6 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
+# 기본 변수 초기화 분기점
 ID="U-22"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -27,7 +28,7 @@ TARGET_FILE=""
 TARGET_FILE="/etc/services"
 CHECK_COMMAND="[ -f /etc/services ] && stat -c '%U %G %a %n' /etc/services 2>/dev/null || echo 'services_not_found_or_stat_failed'"
 
-# 조치 프로세스
+# 파일 존재 여부 확인 및 정보 수집 분기점
 if [ -f "$TARGET_FILE" ]; then
   MODIFIED=0
 
@@ -35,53 +36,49 @@ if [ -f "$TARGET_FILE" ]; then
   GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
   PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-  # stat 실패/값 누락 시: 조치 불가로 판단
+  # 파일 정보 수집 실패 시 처리 분기점
   if [ -z "$OWNER" ] || [ -z "$GROUP" ] || [ -z "$PERM" ]; then
     IS_SUCCESS=0
-    REASON_LINE="/etc/services 파일의 소유자/그룹/권한 정보를 확인할 수 없어(stat 실패 등) 조치를 정상적으로 수행할 수 없습니다. 파일 상태 및 접근 권한을 확인한 뒤 소유자를 root(또는 bin/sys), 권한을 644 이하로 설정해야 합니다."
+    REASON_LINE="파일 정보를 확인할 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     DETAIL_CONTENT="stat_failed_or_no_output"
   else
-    # 소유자 조치: root/bin/sys 허용이므로 그 외에만 변경
+    # 소유자 및 권한 조치 수행 분기점
     if [[ ! "$OWNER" =~ ^(root|bin|sys)$ ]]; then
       chown root "$TARGET_FILE" 2>/dev/null
       MODIFIED=1
     fi
 
-    # 권한 조치: 644 초과 시 644로 변경
     if [ -n "$PERM" ] && [ "$PERM" -gt 644 ]; then
       chmod 644 "$TARGET_FILE" 2>/dev/null
       MODIFIED=1
     fi
 
+    # 조치 후 최종 상태 값 수집 분기점
     AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    # 조치 후(after) 또는 현재 상태만 기록 (before 제거)
     DETAIL_CONTENT="owner=$AFTER_OWNER
 group=$AFTER_GROUP
-perm=$AFTER_PERM
-modified=$MODIFIED"
+perm=$AFTER_PERM"
 
+    # 조치 결과에 따른 판정 및 REASON_LINE 생성 분기점
     if [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -le 644 ]; then
       IS_SUCCESS=1
-      if [ "$MODIFIED" -eq 1 ]; then
-        REASON_LINE="/etc/services 파일의 소유자/권한이 기준에 맞게 적용되어 조치가 완료되었습니다."
-      else
-        REASON_LINE="/etc/services 파일의 소유자/권한이 이미 기준에 부합하여 변경 없이 조치가 완료되었습니다."
-      fi
+      REASON_LINE="소유자를 root(또는 관리 계정)로 변경하고 권한을 644 이하로 설정하여 조치를 완료하여 이 항목에 대해 양호합니다."
     else
       IS_SUCCESS=0
-      REASON_LINE="조치를 수행했으나 /etc/services 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+      REASON_LINE="관리자 외 쓰기 권한이 있거나 소유자가 허용된 계정이 아닌 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     fi
   fi
 else
+  # 대상 파일이 없을 경우 처리 분기점
   IS_SUCCESS=0
-  REASON_LINE="조치 대상 파일(/etc/services)이 존재하지 않아 조치가 완료되지 않았습니다."
+  REASON_LINE="대상 파일이 존재하지 않는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
   DETAIL_CONTENT="file_not_found"
 fi
 
-# raw_evidence 구성
+# RAW_EVIDENCE 작성을 위한 JSON 구조 생성 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -91,12 +88,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON 데이터 이스케이프 처리 분기점
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 JSON 결과 출력 분기점
 echo ""
 cat << EOF
 {

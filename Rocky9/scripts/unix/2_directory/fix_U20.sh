@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-14
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-20
@@ -15,7 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 설정
 ID="U-20"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -32,8 +32,6 @@ FILES=(
 )
 
 DIR="/etc/systemd"
-
-# [추가] xinetd.d 디렉터리(가이드 Step 2)
 XINETD_DIR="/etc/xinetd.d"
 
 CHECK_COMMAND="for f in /etc/inetd.conf /etc/xinetd.conf /etc/systemd/system.conf; do [ -f \"\$f\" ] && stat -c '%U %G %a %n' \"\$f\"; done; [ -d /etc/systemd ] && find /etc/systemd -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null; [ -d /etc/xinetd.d ] && find /etc/xinetd.d -type f -exec stat -c '%U %G %a %n' {} \\; 2>/dev/null"
@@ -43,7 +41,6 @@ if [ -d "$DIR" ]; then
   TARGET_FILE="${TARGET_FILE}
 $DIR/*"
 fi
-# [추가] xinetd.d 타겟 포함
 if [ -d "$XINETD_DIR" ]; then
   TARGET_FILE="${TARGET_FILE}
 $XINETD_DIR/*"
@@ -53,7 +50,7 @@ FAIL_FLAG=0
 MODIFIED=0
 DETAIL_CONTENT=""
 
-# 개별 파일 조치
+# 주요 설정 파일들에 대한 소유자 및 권한 조치 분기점
 for FILE in "${FILES[@]}"; do
   if [ ! -f "$FILE" ]; then
     continue
@@ -74,7 +71,7 @@ for FILE in "${FILES[@]}"; do
   fi
 done
 
-# systemd 디렉터리 내 파일 조치
+# systemd 디렉터리 내 하위 파일들에 대한 조치 분기점
 if [ -d "$DIR" ]; then
   while IFS= read -r FILE; do
     [ -f "$FILE" ] || continue
@@ -95,7 +92,7 @@ if [ -d "$DIR" ]; then
   done < <(find "$DIR" -type f 2>/dev/null)
 fi
 
-# [추가] xinetd.d 디렉터리 내 파일 조치(가이드 Step 2)
+# xinetd.d 디렉터리 내 하위 파일들에 대한 조치 분기점
 if [ -d "$XINETD_DIR" ]; then
   while IFS= read -r FILE; do
     [ -f "$FILE" ] || continue
@@ -116,21 +113,17 @@ if [ -d "$XINETD_DIR" ]; then
   done < <(find "$XINETD_DIR" -type f 2>/dev/null)
 fi
 
-# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+# 조치 결과에 대한 최종 상태 값 수집 및 검증 분기점
 for FILE in "${FILES[@]}"; do
   if [ -f "$FILE" ]; then
     AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
-group=$AFTER_GROUP
-perm=$AFTER_PERM
-file=$FILE
-
+    DETAIL_CONTENT="${DETAIL_CONTENT}file=$FILE, owner=$AFTER_OWNER, group=$AFTER_GROUP, perm=$AFTER_PERM
 "
 
-    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || { [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; }; then
       FAIL_FLAG=1
     fi
   fi
@@ -139,57 +132,42 @@ done
 if [ -d "$DIR" ]; then
   while IFS= read -r FILE; do
     [ -f "$FILE" ] || continue
-
     AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
-group=$AFTER_GROUP
-perm=$AFTER_PERM
-file=$FILE
-
+    DETAIL_CONTENT="${DETAIL_CONTENT}file=$FILE, owner=$AFTER_OWNER, group=$AFTER_GROUP, perm=$AFTER_PERM
 "
 
-    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || { [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; }; then
       FAIL_FLAG=1
     fi
   done < <(find "$DIR" -type f 2>/dev/null)
 fi
 
-# [추가] xinetd.d 조치 후 상태 수집/검증
 if [ -d "$XINETD_DIR" ]; then
   while IFS= read -r FILE; do
     [ -f "$FILE" ] || continue
-
     AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-    DETAIL_CONTENT="${DETAIL_CONTENT}owner=$AFTER_OWNER
-group=$AFTER_GROUP
-perm=$AFTER_PERM
-file=$FILE
-
+    DETAIL_CONTENT="${DETAIL_CONTENT}file=$FILE, owner=$AFTER_OWNER, group=$AFTER_GROUP, perm=$AFTER_PERM
 "
 
-    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; then
+    if [ "$AFTER_OWNER" != "root" ] || [ "$AFTER_GROUP" != "root" ] || { [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 600 ]; }; then
       FAIL_FLAG=1
     fi
   done < <(find "$XINETD_DIR" -type f 2>/dev/null)
 fi
 
-# 최종 판정
+# 수집된 데이터를 바탕으로 최종 성공 여부 판정 분기점
 if [ "$FAIL_FLAG" -eq 0 ]; then
   IS_SUCCESS=1
-  if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="대상 파일의 소유자와 그룹이 root로 설정되고 권한이 600 이하로 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  else
-    REASON_LINE="대상 파일의 소유자와 그룹이 root이고 권한이 600 이하로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  fi
+  REASON_LINE="파일들의 소유자와 그룹을 root로 변경하고 권한을 600 이하로 조치를 완료하여 이 항목에 대해 양호합니다."
 else
   IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 일부 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  REASON_LINE="소유자 권한이 root가 아니거나 파일 모드가 600을 초과하는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
 fi
 
 # raw_evidence 구성
@@ -202,12 +180,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON 데이터 이스케이프 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 결과물 출력
 echo ""
 cat << EOF
 {

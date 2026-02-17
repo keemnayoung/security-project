@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 한은결
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-03
@@ -32,7 +32,6 @@ is_integer() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 run_mysql_query() {
   local query="$1"
-  # 무한 대기 방지(timeout 있으면 적용)
   if [[ -n "$TIMEOUT_BIN" ]]; then
     $TIMEOUT_BIN "${MYSQL_TIMEOUT}s" $MYSQL_CMD_BASE "$query" 2>/dev/null || echo "ERROR_TIMEOUT"
   else
@@ -40,7 +39,7 @@ run_mysql_query() {
   fi
 }
 
-# SQL 비밀번호 만료(default_password_lifetime) + validate_password(컴포넌트/플러그인) 관련 변수 조회
+# 비밀번호 정책 관련 시스템 변수 및 컴포넌트 설정 조회
 QUERY="
 SHOW VARIABLES
 WHERE Variable_name IN (
@@ -62,23 +61,25 @@ RESULT="$(run_mysql_query "$QUERY")"
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+GUIDE_LINE="비밀번호 정책을 일괄 변경할 경우 기존 계정의 접속 차단이나 서비스 애플리케이션의 인증 실패 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 validate_password 설정 및 default_password_lifetime 변수값을 기관 보안 정책(최소 8자 이상, 3종류 조합 등)에 맞게 수동으로 조치해 주시기 바랍니다."
 
-# 실행 실패 분기(타임아웃/접속 오류)
+# 접속 에러 및 결과 부재 시 예외 처리
 if [[ "$RESULT" == "ERROR_TIMEOUT" ]]; then
   STATUS="FAIL"
-  REASON_LINE="비밀번호 정책 변수 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 D-03 점검을 완료하지 못했습니다.\n조치 방법은 DB 상태/부하 및 접속 옵션을 확인한 뒤 재시도하는 것입니다."
-  DETAIL_CONTENT="result=ERROR_TIMEOUT"
+  REASON_LINE="MySQL 계정 목록 조회가 제한 시간(${MYSQL_TIMEOUT}초)을 초과하여 점검을 완료하지 못했습니다."
+  DETAIL_CONTENT="error=TIMEOUT"
 elif [[ "$RESULT" == "ERROR" ]]; then
   STATUS="FAIL"
-  REASON_LINE="MySQL 접속 실패 또는 권한 부족으로 D-03(비밀번호 기간/복잡도) 점검을 수행할 수 없습니다.\n조치 방법은 진단 계정의 권한과 인증 정보를 확인하는 것입니다."
-  DETAIL_CONTENT="result=ERROR"
+  REASON_LINE="데이터베이스 접속 권한 부족 또는 연결 실패로 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="error=CONNECT_FAILED"
 else
   get_var() {
     local name="$1"
     echo "$RESULT" | awk -v k="$name" '$1==k{print $2; exit}'
   }
 
-  PASSWORD_LIFETIME="$(get_var "default_password_lifetime")"
+  # 버전별 변수명 차이를 고려한 데이터 추출
+  LIFETIME="$(get_var "default_password_lifetime")"
   POLICY="$(get_var "validate_password.policy")"
   [[ -z "$POLICY" ]] && POLICY="$(get_var "validate_password_policy")"
   LENGTH="$(get_var "validate_password.length")"
@@ -90,68 +91,54 @@ else
   SPECIAL="$(get_var "validate_password.special_char_count")"
   [[ -z "$SPECIAL" ]] && SPECIAL="$(get_var "validate_password_special_char_count")"
 
-  REASONS=()
+  # 전체 설정 상태 기록
+  DETAIL_CONTENT="default_password_lifetime=${LIFETIME:-N/A}\nvalidate_password.policy=${POLICY:-N/A}\nvalidate_password.length=${LENGTH:-N/A}\nvalidate_password.mixed_case_count=${MIXED:-N/A}\nvalidate_password.number_count=${NUMBER:-N/A}\nvalidate_password.special_char_count=${SPECIAL:-N/A}"
 
-  # 만료 정책 점검(default_password_lifetime)
-  if ! is_integer "$PASSWORD_LIFETIME"; then
-    REASONS+=("default_password_lifetime 값을 확인할 수 없습니다.")
-  elif [[ "$PASSWORD_LIFETIME" -le 0 ]]; then
-    REASONS+=("default_password_lifetime=${PASSWORD_LIFETIME}(0 이하)로 만료 정책이 사실상 미적용 상태입니다.")
+  # 위반 항목 추출 (취약한 부분의 값만 수집)
+  FAIL_ITEMS=()
+  if [[ -z "$LIFETIME" ]] || [[ "$LIFETIME" -eq 0 ]] || [[ "$LIFETIME" -gt 90 ]]; then
+    FAIL_ITEMS+=("default_password_lifetime=${LIFETIME:-0}")
+  fi
+  if [[ -z "$POLICY" ]] || [[ "$(echo "$POLICY" | tr '[:lower:]' '[:upper:]')" == "LOW" ]]; then
+    FAIL_ITEMS+=("validate_password.policy=${POLICY:-LOW}")
+  fi
+  if [[ -z "$LENGTH" ]] || [[ "$LENGTH" -lt 8 ]]; then
+    FAIL_ITEMS+=("validate_password.length=${LENGTH:-0}")
+  fi
+  if [[ "$MIXED" -lt 1 ]] || [[ "$NUMBER" -lt 1 ]] || [[ "$SPECIAL" -lt 1 ]]; then
+    FAIL_ITEMS+=("complexity_rules(mixed=$MIXED, num=$NUMBER, spec=$SPECIAL)")
   fi
 
-  # validate_password 정책 점검(LOW면 기준 미달)
-  if [[ -z "$POLICY" ]]; then
-    REASONS+=("validate_password 정책 변수를 확인할 수 없습니다(컴포넌트/플러그인 미적용 가능).")
-  else
-    POLICY_UPPER="$(echo "$POLICY" | tr '[:lower:]' '[:upper:]')"
-    [[ "$POLICY_UPPER" == "LOW" ]] && REASONS+=("validate_password policy=LOW 입니다.")
-  fi
-
-  # 최소 길이 점검(기준: 8 이상)
-  if ! is_integer "$LENGTH"; then
-    REASONS+=("validate_password length 값을 확인할 수 없습니다.")
-  elif [[ "$LENGTH" -lt 8 ]]; then
-    REASONS+=("validate_password length=${LENGTH}(8 미만) 입니다.")
-  fi
-
-  # 조합 규칙 점검(기준: 각 1 이상)
-  for rule in "대소문자:$MIXED" "숫자:$NUMBER" "특수문자:$SPECIAL"; do
-    label="${rule%%:*}"
-    value="${rule#*:}"
-    if ! is_integer "$value"; then
-      REASONS+=("${label} 최소 개수 값을 확인할 수 없습니다.")
-      continue
-    fi
-    [[ "$value" -lt 1 ]] && REASONS+=("${label} 최소 개수=${value}(1 미만) 입니다.")
-  done
-
-  # 판정 분기(PASS/FAIL)
-  if [[ "${#REASONS[@]}" -eq 0 ]]; then
+  # 최종 점검 결과 및 사유 생성
+  if [[ "${#FAIL_ITEMS[@]}" -eq 0 ]]; then
     STATUS="PASS"
-    REASON_LINE="비밀번호 사용 기간 및 복잡도 정책이 적용되어 있어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="default_password_lifetime=${LIFETIME}, validate_password.policy=${POLICY}, length=${LENGTH}로 설정되어 이 항목에 대해 양호합니다."
   else
     STATUS="FAIL"
-    REASON_LINE="${REASONS[*]}\n조치 방법은 validate_password 컴포넌트/플러그인 적용 여부를 확인하고, default_password_lifetime 및 정책/길이/조합 규칙 값을 기준에 맞게 조정한 뒤 재점검하는 것입니다."
+    # 취약한 항목들만 쉼표로 연결하여 간략하게 표시
+    REASON_STR=$(IFS=', '; echo "${FAIL_ITEMS[*]}")
+    REASON_LINE="${REASON_STR}로 설정되어 이 항목에 대해 취약합니다."
   fi
-
-  DETAIL_CONTENT="default_password_lifetime=${PASSWORD_LIFETIME}, policy=${POLICY}, length=${LENGTH}, mixed=${MIXED}, number=${NUMBER}, special=${SPECIAL}"
-  [[ "${#REASONS[@]}" -gt 0 ]] && DETAIL_CONTENT="${DETAIL_CONTENT}\nnon_compliance=${REASONS[*]}"
 fi
 
+# 증적 데이터 JSON 구조화
 CHECK_COMMAND="$MYSQL_CMD_BASE \"$QUERY\""
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
+# DB 저장 및 파이썬 파싱을 위한 이스케이프 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
+# 최종 JSON 결과값 출력
 echo ""
 cat << EOF
 {

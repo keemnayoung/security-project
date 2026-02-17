@@ -1,16 +1,16 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
-# @Last Updated: 2026-02-13
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID : U-02
 # @Category : 계정관리
 # @Platform : Rocky Linux
 # @Importance : 상
-# @Title : 패스워드 복잡성 설정
+# @Title : 비밀번호 관리정책 설정
 # @Description : 패스워드 복잡성 및 유효기간 설정을 KISA 권고 수준으로 강화
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
@@ -75,9 +75,7 @@ ensure_token_line() {
   return 0
 }
 
-# 조치 수행(백업 없음)
-
-# 1) pwquality.conf (필수: minlen + credit 4종 + enforce_for_root)
+# 조치 수행
 if [ -f "$PW_CONF" ]; then
   set_param "$PW_CONF" "minlen" "8" "="
   set_param "$PW_CONF" "minclass" "3" "="
@@ -88,20 +86,18 @@ if [ -f "$PW_CONF" ]; then
   ensure_token_line "$PW_CONF" "enforce_for_root"
 fi
 
-# 2) pwhistory.conf (필수: remember + file + enforce_for_root)
 if [ -f "$PWH_CONF" ]; then
   set_param "$PWH_CONF" "remember" "4" "="
   set_param "$PWH_CONF" "file" "/etc/security/opasswd" "="
   ensure_token_line "$PWH_CONF" "enforce_for_root"
 fi
 
-# 3) login.defs (필수: PASS_MAX_DAYS + PASS_MIN_DAYS)
 if [ -f "$LOGIN_DEFS" ]; then
   set_param "$LOGIN_DEFS" "PASS_MAX_DAYS" "90" "space"
   set_param "$LOGIN_DEFS" "PASS_MIN_DAYS" "1" "space"
 fi
 
-# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+# 조치 후 상태 수집
 PW_MINLEN=""
 PW_MINCLASS=""
 PW_DCREDIT=""
@@ -138,20 +134,9 @@ if [ -f "$LOGIN_DEFS" ]; then
   PASS_MIN_DAYS=$(grep -iE '^[[:space:]]*PASS_MIN_DAYS[[:space:]]+' "$LOGIN_DEFS" 2>/dev/null | tail -n 1 | awk '{print $2}')
 fi
 
-DETAIL_CONTENT="minlen=$PW_MINLEN
-minclass=$PW_MINCLASS
-dcredit=$PW_DCREDIT
-ucredit=$PW_UCREDIT
-lcredit=$PW_LCREDIT
-ocredit=$PW_OCREDIT
-pwquality_enforce_for_root=$PW_ENFORCE
-remember=$PWH_REMEMBER
-pwhistory_file=$PWH_FILE
-pwhistory_enforce_for_root=$PWH_ENFORCE
-pass_max_days=$PASS_MAX_DAYS
-pass_min_days=$PASS_MIN_DAYS"
+DETAIL_CONTENT="minlen=$PW_MINLEN, minclass=$PW_MINCLASS, dcredit=$PW_DCREDIT, ucredit=$PW_UCREDIT, lcredit=$PW_LCREDIT, ocredit=$PW_OCREDIT, pwquality_enforce_for_root=$PW_ENFORCE, remember=$PWH_REMEMBER, pwhistory_file=$PWH_FILE, pwhistory_enforce_for_root=$PWH_ENFORCE, pass_max_days=$PASS_MAX_DAYS, pass_min_days=$PASS_MIN_DAYS"
 
-# 최종 판정(필수 기준)
+# 결과 판정 및 REASON_LINE 구성
 if [ -f "$PW_CONF" ] && [ -f "$PWH_CONF" ] && [ -f "$LOGIN_DEFS" ] \
    && [ "$PW_MINLEN" = "8" ] \
    && [ "$PW_DCREDIT" = "-1" ] && [ "$PW_UCREDIT" = "-1" ] && [ "$PW_LCREDIT" = "-1" ] && [ "$PW_OCREDIT" = "-1" ] \
@@ -162,13 +147,15 @@ if [ -f "$PW_CONF" ] && [ -f "$PWH_CONF" ] && [ -f "$LOGIN_DEFS" ] \
    && [ -n "$PASS_MAX_DAYS" ] && [ "$PASS_MAX_DAYS" -le 90 ] 2>/dev/null \
    && [ -n "$PASS_MIN_DAYS" ] && [ "$PASS_MIN_DAYS" -ge 1 ] 2>/dev/null; then
   IS_SUCCESS=1
-  REASON_LINE="비밀번호 복잡성(minlen 및 credit 4종)과 root 강제(enforce_for_root), 재사용 제한(remember/file), 유효기간(PASS_MAX_DAYS/PASS_MIN_DAYS)이 가이드 기준으로 적용되어 조치가 완료되었습니다."
+  # 양호 시: 어떻게 바꿨는지 자연스럽게 연결
+  REASON_LINE="패스워드 최소 길이 8자 이상, 4종류 문자 조합 사용, 루트 계정 강제 적용, 이전 패스워드 4개 기억 및 유효기간 90일 이하로 설정을 완료하여 이 항목에 대해 양호합니다."
 else
   IS_SUCCESS=0
+  # 취약 시: 실패 원인 명시
   if [ ! -f "$PW_CONF" ] || [ ! -f "$PWH_CONF" ] || [ ! -f "$LOGIN_DEFS" ]; then
-    REASON_LINE="조치 대상 파일 중 일부가 존재하지 않아 조치가 완료되지 않았습니다."
+    REASON_LINE="패스워드 정책 관련 설정 파일이 시스템에 존재하지 않는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
   else
-    REASON_LINE="조치를 수행했으나 비밀번호 복잡성/재사용 제한/유효기간 설정 값이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    REASON_LINE="필수 파라미터(minlen, dcredit, remember 등)의 설정 값이 가이드 기준에 미달하는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
   fi
 fi
 
@@ -182,12 +169,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 출력
 echo ""
 cat << EOF
 {

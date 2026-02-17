@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 김나영
-# @Last Updated: 2026-02-13
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID : U-12
@@ -15,7 +15,7 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 설정
 ID="U-12"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -31,28 +31,22 @@ CHECK_COMMAND="grep -nE '^[[:space:]]*TMOUT=' /etc/profile /etc/profile.d/*.sh /
 MODIFIED=0
 OVERRIDE_REMOVED=0
 
-# 조치 수행(백업 없음)
+# 조치 수행 및 타 파일의 우선 순위 설정 제거 분기점
 if [ -f "$TARGET_FILE" ]; then
-  # 1) /etc/profile.d, /etc/bashrc에 TMOUT override가 있으면 제거(필수)
-  #    - 조치 후에도 override가 남으면 /etc/profile 설정이 무력화될 수 있음
   for f in /etc/profile.d/*.sh /etc/bashrc; do
     [ -e "$f" ] || continue
     if grep -qE '^[[:space:]]*TMOUT[[:space:]]*=' "$f" 2>/dev/null; then
-      # TMOUT 라인만 제거(주석 여부와 무관하게 제거)
       sed -i '/^[[:space:]]*TMOUT[[:space:]]*=/Id' "$f" 2>/dev/null
       OVERRIDE_REMOVED=1
       MODIFIED=1
     fi
-    # export TMOUT만 있는 파일도 의미는 있으나, 여기서는 TMOUT override 제거가 목적
-    # export만 남겨도 /etc/profile에서 export를 넣으므로 문제 없음
   done
 
-  # 2) /etc/profile: 기존 TMOUT 관련 라인 제거 후 표준 설정 추가
+  # /etc/profile 내 기존 설정 삭제 및 신규 값 주입 분기점
   if grep -qE 'TMOUT' "$TARGET_FILE" 2>/dev/null; then
     MODIFIED=1
   fi
 
-  # TMOUT= / export TMOUT / typeset -x TMOUT 등 관련 라인 제거
   sed -i '/^[[:space:]]*TMOUT[[:space:]]*=/Id' "$TARGET_FILE" 2>/dev/null
   sed -i '/^[[:space:]]*export[[:space:]]\+TMOUT\b/Id' "$TARGET_FILE" 2>/dev/null
   sed -i '/^[[:space:]]*typeset[[:space:]]\+-x[[:space:]]\+TMOUT\b/Id' "$TARGET_FILE" 2>/dev/null
@@ -63,43 +57,38 @@ if [ -f "$TARGET_FILE" ]; then
     echo "export TMOUT"
   } >> "$TARGET_FILE" 2>/dev/null
 
-  # 3) 조치 후 상태 수집
+  # 조치 후 최종 상태 값 수집 분기점
   AFTER_TMOUT_LINES=$(grep -nEi '^[[:space:]]*TMOUT[[:space:]]*=' /etc/profile /etc/profile.d/*.sh /etc/bashrc 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n 10)
   AFTER_EXPORT_LINES=$(grep -nE '^[[:space:]]*(export[[:space:]]+TMOUT|typeset[[:space:]]+-x[[:space:]]+TMOUT)\b' /etc/profile /etc/profile.d/*.sh /etc/bashrc 2>/dev/null | grep -vE '^[[:space:]]*#' | tail -n 10)
 
   AFTER_VAL=$(grep -iE '^[[:space:]]*TMOUT[[:space:]]*=' /etc/profile /etc/profile.d/*.sh /etc/bashrc 2>/dev/null | grep -vE '^[[:space:]]*#' | tail -n 1 | sed 's/.*=[[:space:]]*//; s/[^0-9].*$//')
   [ -z "$AFTER_VAL" ] && AFTER_VAL="not_set"
 
-  # detail에 핵심만 표시(필수 요약)
-  DETAIL_CONTENT="tmout_lines=$AFTER_TMOUT_LINES"$'\n'"export_lines=$AFTER_EXPORT_LINES"
+  # 현재 설정된 값들만 명시하는 DETAIL_CONTENT 구성
+  DETAIL_CONTENT="tmout_value=$AFTER_VAL
+tmout_lines=$AFTER_TMOUT_LINES
+export_status=$([ -n "$AFTER_EXPORT_LINES" ] && echo "exported" || echo "not_exported")
+override_removed=$([ "$OVERRIDE_REMOVED" -eq 1 ] && echo "yes" || echo "no")"
 
-  # 4) 성공 판정: TMOUT=600 + export TMOUT 존재(필수)
+  # 최종 성공 여부 판정 및 REASON_LINE 구성 분기점
   if [ "$AFTER_VAL" = "600" ] && [ -n "$AFTER_EXPORT_LINES" ]; then
     IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ]; then
-      if [ "$OVERRIDE_REMOVED" -eq 1 ]; then
-        REASON_LINE="세션 종료 시간이 600초로 설정되었고(export TMOUT 포함), 기존 override 설정을 제거하여 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      else
-        REASON_LINE="세션 종료 시간이 600초로 설정되었고(export TMOUT 포함) 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      fi
-    else
-      REASON_LINE="세션 종료 시간이 600초로 유지되고 있고(export TMOUT 포함) 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
+    REASON_LINE="세션 종료 시간을 600초로 설정하고 환경변수 export를 적용하여 조치를 완료하여 이 항목에 대해 양호합니다."
   else
     IS_SUCCESS=0
     if [ "$AFTER_VAL" != "600" ]; then
-      REASON_LINE="세션 종료 시간 설정을 수행했으나 TMOUT가 600초로 반영되지 않아 조치가 완료되지 않았습니다."
+      REASON_LINE="TMOUT 설정값이 600초로 반영되지 않은 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     else
-      REASON_LINE="TMOUT 값은 600초로 설정되었으나 export TMOUT 적용이 확인되지 않아 조치가 완료되지 않았습니다."
+      REASON_LINE="export 설정이 정상적으로 적용되지 않은 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     fi
   fi
 else
   IS_SUCCESS=0
-  REASON_LINE="조치 대상 파일(/etc/profile)이 존재하지 않아 조치가 완료되지 않았습니다."
-  DETAIL_CONTENT=""
+  REASON_LINE="/etc/profile 파일이 존재하지 않는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="target_file_missing"
 fi
 
-# raw_evidence 구성
+# RAW_EVIDENCE 구성 및 JSON 이스케이프 (기존 방식 유지)
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -109,12 +98,11 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 결과 JSON 출력
 echo ""
 cat << EOF
 {

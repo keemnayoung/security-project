@@ -1,8 +1,8 @@
 #!/bin/bash
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 윤영아
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-11
@@ -14,7 +14,6 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
 COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
 # shellcheck disable=SC1090
 . "$COMMON_FILE"
@@ -22,14 +21,11 @@ load_pg_env
 
 ID="D-11"
 STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE_MSG="N/A"
 
-# _pg_common.sh에 escape_json / run_psql이 이미 있다고 가정(기존 스크립트 흐름 유지)
-# 다만, 출력에서만 JSON 안전 처리가 필요하므로 별도 escape 함수는 아래에서 사용
-
+# 허용된 DBA 계정 목록 구성
 ALLOWED_DBA_RAW="${D11_ALLOWED_DBA:-},postgres,${POSTGRES_USER},${PG_SUPERUSER}"
 
+# 계정의 DBA 권한 허용 여부 확인 함수 (기존 로직 유지)
 is_allowed_dba() {
   local acct="$1"
   local one=""
@@ -42,7 +38,12 @@ is_allowed_dba() {
   return 1
 }
 
-# 위험 권한 후보 조회(위험 내장 롤 멤버십 + 시스템 스키마 테이블 권한)
+# 파이썬 대시보드 및 DB 저장 시 줄바꿈(\n) 처리를 위한 이스케이프 함수
+escape_json_str() {
+  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# 시스템 스키마 접근 위험 권한 후보 조회 (기존 쿼리 로직 유지)
 RISK_CANDIDATES=$(run_psql "
 WITH risk_role_member AS (
   SELECT DISTINCT m.rolname AS account
@@ -84,11 +85,18 @@ ORDER BY account;
 ")
 RC=$?
 
+REASON_LINE=""
+DETAIL_CONTENT=""
+# 자동 조치 시 권한 부족으로 인한 애플리케이션 장애 위험과 수동 조치 가이드
+GUIDE_LINE="이 항목에 대해서 시스템 테이블 접근 권한을 자동으로 회수할 경우, 해당 계정을 사용하는 운영 애플리케이션이나 모니터링 도구가 메타데이터를 조회하지 못해 서비스 장애가 발생할 수 있는 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 미인가 계정에 대해 REVOKE 명령어를 사용하여 pg_catalog 및 information_schema 스키마에 대한 접근 권한을 회수하거나, pg_read_all_data와 같은 위험 내장 롤 멤버십을 제거하여 조치해 주시기 바랍니다."
+
+# 쿼리 실행 성공 여부에 따른 점검 분기점
 if [ $RC -ne 0 ]; then
   STATUS="FAIL"
-  EVIDENCE="시스템 스키마 권한 위험 후보를 조회하지 못하여 미인가 계정 점검을 수행할 수 없습니다.\n조치 방법은 PostgreSQL 접속 정보와 점검 계정 권한을 확인해주시기 바랍니다."
-  GUIDE_MSG="접속 정보 및 점검 계정 권한을 점검해주시기 바랍니다."
+  REASON_LINE="데이터베이스 시스템 권한 정보를 조회할 수 없어 미인가 계정 점검을 수행하지 못했습니다."
+  DETAIL_CONTENT="database_query_error(access_denied_or_connection_fail)"
 else
+  # 허용된 DBA를 제외한 실제 미인가 위험 계정 필터링
   FILTERED=""
   while IFS= read -r acct; do
     [ -z "$acct" ] && continue
@@ -100,43 +108,39 @@ else
 
   FILTERED_CSV="$(echo "$FILTERED" | sed '/^$/d' | tr '\n' ',' | sed 's/,$//')"
 
+  # 점검 결과 판정 및 문장 구성 분기점
   if [ -z "$FILTERED_CSV" ]; then
     STATUS="PASS"
-    EVIDENCE="허용되지 않은 일반 계정에 시스템 스키마 관련 위험 권한이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
-    GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
+    REASON_LINE="허용되지 않은 일반 계정 중 시스템 스키마 접근 권한을 가진 계정이 존재하지 않아 이 항목에 대해 양호합니다."
   else
     STATUS="FAIL"
-    EVIDENCE="허용되지 않은 일반 계정에 시스템 스키마 관련 위험 권한이 확인되어 정보 노출 및 권한 오남용 위험이 있습니다.\n조치 방법은 해당 계정의 위험 내장 롤 멤버십을 제거하고, pg_catalog 또는 information_schema에 부여된 불필요 권한을 회수해주시기 바랍니다."
-    GUIDE_MSG="미인가로 판단된 계정은 ${FILTERED_CSV} 입니다. 해당 계정의 위험 내장 롤(pg_read_all_data 등) 멤버십 제거 및 시스템 스키마 권한(REVOKE)을 적용해주시기 바랍니다."
+    # 취약한 설정 값(계정 목록)을 포함하여 사유 구성
+    REASON_LINE="${FILTERED_CSV} 계정이 인가되지 않은 시스템 테이블 접근 권한을 보유하고 있어 이 항목에 대해 취약합니다."
   fi
 
-  # ⚠️ 원본에 남아있던 미정의 변수(cnt) 기반 분기 블록은
-  # 문법 오류/실행 오류를 유발하므로, '로직 변경'이 아니라 '깨진 잔여 코드 제거'로 정리합니다.
-  # (cnt는 어디에서도 정의되지 않아 실행 시 즉시 실패합니다.)
+  # 양호/취약 관계 없이 현재 설정값(조회된 모든 위험 후보 계정) 명시
+  RAW_CANDIDATES_CSV="$(echo "$RISK_CANDIDATES" | sed '/^$/d' | tr '\n' ',' | sed 's/,$//')"
+  DETAIL_CONTENT="[현재 시스템 테이블 접근 가능 위험 후보 계정 목록]\n${RAW_CANDIDATES_CSV:-없음}"
 fi
 
-# ===== 표준 출력(scan_history) =====
-CHECK_COMMAND="run_psql: 시스템 스키마 권한 위험 후보(role membership/table grants) 조회"
-REASON_LINE="${EVIDENCE}"
-DETAIL_CONTENT="${GUIDE_MSG}"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+CHECK_COMMAND="시스템 스키마 권한 위험 후보(role membership/table grants) 조회"
 TARGET_FILE="pg_auth_members,information_schema.table_privileges"
 
-escape_json_str() {
-  echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\"/\\\\"/g; s/"/\\"/g'
-}
-
+# 요구사항을 반영한 RAW_EVIDENCE JSON 구성
 RAW_EVIDENCE_JSON=$(cat <<EOF
 {
-  "command":"$(escape_json_str "$CHECK_COMMAND")",
-  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
-  "target_file":"$(escape_json_str "$TARGET_FILE")"
+  "command": "$(escape_json_str "$CHECK_COMMAND")",
+  "detail": "$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
+  "guide": "$(escape_json_str "$GUIDE_LINE")",
+  "target_file": "$(escape_json_str "$TARGET_FILE")"
 }
 EOF
 )
 
 RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
 
+# 최종 결과 출력
 echo ""
 cat <<EOF
 {

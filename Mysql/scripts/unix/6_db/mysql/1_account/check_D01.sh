@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 한은결
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-17
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-01
@@ -14,6 +14,7 @@
 # @Description : 기본 계정의 초기 비밀번호 사용 또는 사용 제한 미적용 상태를 점검
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
+
 
 ID="D-01"
 STATUS="FAIL"
@@ -52,15 +53,16 @@ if [[ "$ACCOUNT_INFO" == "ERROR" ]]; then ACCOUNT_INFO="$(run_mysql_query "$QUER
 
 REASON_LINE=""
 DETAIL_CONTENT=""
+GUIDE_LINE="자동 조치 시 비밀번호 설정 미비 및 권한 설정 오류가 발생할 위험이 존재하여 수동 조치가 필요합니다. 관리자가 직접 확인 후 root 계정의 비밀번호 설정 및 원격 접속 제한을 적용해 주시기 바랍니다."
 
 # 2) 실행 실패 분기(타임아웃/접속 오류)
 if [[ "$ACCOUNT_INFO" == "ERROR_TIMEOUT" ]]; then
   STATUS="FAIL"
-  REASON_LINE="MySQL 조회가 ${MYSQL_TIMEOUT_SEC}초를 초과하여 점검을 완료하지 못했습니다.\n조치 방법은 DB 상태/부하 및 접속 설정을 확인한 뒤 재시도하고, 필요 시 timeout 값을 조정하는 것입니다."
+  REASON_LINE="MySQL 조회가 ${MYSQL_TIMEOUT_SEC}초를 초과하여 점검을 완료하지 못했습니다."
   DETAIL_CONTENT="result=ERROR_TIMEOUT"
 elif [[ "$ACCOUNT_INFO" == "ERROR" ]]; then
   STATUS="FAIL"
-  REASON_LINE="MySQL 접속 실패 또는 mysql.user 조회 권한 부족으로 점검을 수행할 수 없습니다.\n조치 방법은 접속 계정 권한(mysql.user 조회) 및 인증 정보를 확인하는 것입니다."
+  REASON_LINE="MySQL 접속 실패 또는 mysql.user 조회 권한 부족으로 점검을 수행할 수 없습니다."
   DETAIL_CONTENT="result=ERROR"
 else
   VULN_COUNT=0
@@ -77,7 +79,7 @@ else
     # 익명 계정 존재 자체가 취약 후보(활성 상태)
     if [[ -z "$user" ]]; then
       VULN_COUNT=$((VULN_COUNT + 1))
-      REASONS+=("anonymous@${host} 익명 계정 활성")
+      REASONS+=("익명 계정 활성화: ${host}")
       continue
     fi
 
@@ -88,33 +90,33 @@ else
       # 비밀번호 미설정(해시 공란)
       if [[ -z "$auth" ]]; then
         VULN_COUNT=$((VULN_COUNT + 1))
-        REASONS+=("root@${host} 비밀번호 미설정")
+        REASONS+=("root 계정 비밀번호 미설정: ${host}")
         continue
       fi
 
-      # 원격 root 활성 여부(로컬만 허용 권장)
-      case "$host" in
-        "localhost"|"127.0.0.1"|"::1") : ;;
-        *) VULN_COUNT=$((VULN_COUNT + 1)); REASONS+=("root@${host} 원격 root 활성") ;;
-      esac
+      # 계정 잠금 여부 확인
+      if [[ "$locked" == "N" ]]; then
+        VULN_COUNT=$((VULN_COUNT + 1))
+        REASONS+=("root 계정 잠금 미설정: ${host}")
+      fi
     fi
   done <<< "$ACCOUNT_INFO"
 
   # 4) root 자체 미존재/미조회 분기(판정 불가로 FAIL)
   if [[ "$ROOT_COUNT" -eq 0 ]]; then
     STATUS="FAIL"
-    REASON_LINE="root 기본 계정 정보를 확인할 수 없어 점검을 완료하지 못했습니다.\n조치 방법은 mysql.user에 root 계정 존재 및 조회 결과를 확인하는 것입니다."
+    REASON_LINE="root 계정이 존재하지 않거나 조회할 수 없어서 점검을 완료할 수 없기에 취약합니다."
     DETAIL_CONTENT="root_found=0"
   else
     # 5) 취약 항목 0건이면 PASS, 1건 이상이면 FAIL
     if [[ "$VULN_COUNT" -eq 0 ]]; then
       STATUS="PASS"
-      REASON_LINE="기본 계정(root/익명)의 위험 설정이 확인되지 않아 이 항목에 대한 보안 위협이 없습니다."
+      REASON_LINE="기본 계정에 대한 초기 비밀번호 및 권한 정책을 변경하여 이 항목에 대하여 양호합니다."
       DETAIL_CONTENT="vuln_count=0"
     else
       STATUS="FAIL"
-      REASON_LINE="취약 항목: ${REASONS[*]}.\n조치 방법은 익명 계정 삭제/잠금, root 비밀번호 설정, 원격 root(host) 제거 또는 잠금 후 재점검하는 것입니다."
-      DETAIL_CONTENT="vuln_count=${VULN_COUNT}"
+      REASON_LINE="$VULN_COUNT개의 취약점이 발견되어 이 항목에 대하여 취약합니다."
+      DETAIL_CONTENT="vuln_count=${VULN_COUNT}\n${REASONS[*]}"
     fi
   fi
 fi
@@ -128,7 +130,8 @@ RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
   "detail": "$REASON_LINE\n$DETAIL_CONTENT",
-  "target_file": "$TARGET_FILE"
+  "target_file": "$TARGET_FILE",
+  "guide": "$GUIDE_LINE"
 }
 EOF
 )

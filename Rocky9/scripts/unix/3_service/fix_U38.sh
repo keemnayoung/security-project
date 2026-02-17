@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
-# @Last Updated: 2026-02-14
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [보완 항목 상세]
 # @Check_ID : U-38
@@ -15,9 +15,7 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-38 DoS 공격에 취약한 서비스 비활성화
-
-# 기본 변수
+# 기본 변수 설정 분기점
 ID="U-38"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -42,6 +40,7 @@ ACTION_ERR_LOG=""
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 MODIFIED=0
 
+# 유틸리티 함수 정의 분기점
 append_err() {
   if [ -n "$ACTION_ERR_LOG" ]; then
     ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1"
@@ -58,26 +57,25 @@ append_detail() {
   fi
 }
 
-# root 권한 안내(중단은 하지 않되 로그에 남김)
+# root 권한 안내 분기점
 if [ "$(id -u)" -ne 0 ]; then
   append_err "(주의) root 권한이 아니면 sed/systemctl 조치가 실패할 수 있습니다."
 fi
 
-# inetd restart(있을 때만)
+# 서비스 재시작 함수 정의 분기점
 restart_inetd_if_exists() {
   command -v systemctl >/dev/null 2>&1 || return 0
   systemctl list-unit-files 2>/dev/null | grep -qE "^inetd\.service" || return 0
   systemctl restart inetd 2>/dev/null || append_err "systemctl restart inetd 실패"
 }
 
-# xinetd restart(있을 때만)
 restart_xinetd_if_exists() {
   command -v systemctl >/dev/null 2>&1 || return 0
   systemctl list-unit-files 2>/dev/null | grep -qE "^xinetd\.service" || return 0
   systemctl restart xinetd 2>/dev/null || append_err "systemctl restart xinetd 실패"
 }
 
-# systemd 조치(있을 때만): stop/disable/mask
+# systemd 유닛 비활성화 처리 분기점
 disable_systemd_unit_if_exists() {
   local unit="$1"
   command -v systemctl >/dev/null 2>&1 || return 0
@@ -89,7 +87,7 @@ disable_systemd_unit_if_exists() {
   MODIFIED=1
 }
 
-# (추가) unit/binary 존재 감지
+# 서비스 존재 여부 확인 분기점
 unit_exists() {
   local unit="$1"
   command -v systemctl >/dev/null 2>&1 || return 1
@@ -97,7 +95,6 @@ unit_exists() {
 }
 
 any_service_present() {
-  # args: unit1 unit2 ... -- bin1 bin2 ...
   local seen_sep=0
   for x in "$@"; do
     if [ "$x" = "--" ]; then
@@ -113,12 +110,9 @@ any_service_present() {
   return 1
 }
 
-########################################
-# 1) inetd: /etc/inetd.conf DoS 서비스 활성 라인 주석 처리
-#    파일이 없으면 해당 없음(실패 처리 금지)
-########################################
+# 1) inetd 서비스 조치 분기점
 if [ -f "/etc/inetd.conf" ]; then
-  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*(echo|discard|daytime|chargen)([[:space:]]|$)"; then
+  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*(echo|discard|daytime|chargen)([[:space:]]|$)" ; then
     cp -a /etc/inetd.conf "/etc/inetd.conf.bak_${TIMESTAMP}" 2>/dev/null || append_err "inetd.conf 백업 실패"
     for s in "${DOS_SERVICES[@]}"; do
       sed -i "s/^\([[:space:]]*${s}\([[:space:]]\|$\)\)/#\1/g" /etc/inetd.conf 2>/dev/null || true
@@ -128,9 +122,7 @@ if [ -f "/etc/inetd.conf" ]; then
   fi
 fi
 
-########################################
-# 2) xinetd: disable=no -> disable=yes (대소문자/형식 다양성 대응)
-########################################
+# 2) xinetd 서비스 조치 분기점
 XINETD_CHANGED=0
 for s in "${DOS_SERVICES[@]}"; do
   f="/etc/xinetd.d/$s"
@@ -148,10 +140,7 @@ if [ "$XINETD_CHANGED" -eq 1 ]; then
   restart_xinetd_if_exists
 fi
 
-########################################
-# 3) systemd: DoS 서비스 유닛 비활성화(있을 때만)
-#    -dgram/-stream 변형 포함
-########################################
+# 3) systemd 유닛 조치 분기점
 for base in echo discard daytime chargen; do
   for suf in "" "-dgram" "-stream"; do
     disable_systemd_unit_if_exists "${base}${suf}.service"
@@ -159,12 +148,9 @@ for base in echo discard daytime chargen; do
   done
 done
 
-########################################
-# 4) 조치 후 검증 + detail(조치 후 상태만)
-########################################
+# 4) 조치 결과 검증 및 상세 정보 수집 분기점
 FAIL_FLAG=0
 
-# inetd: 파일이 없으면 해당 없음(양호)
 INETD_POST="inetd_conf_not_found(na)"
 if [ -f "/etc/inetd.conf" ]; then
   INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*(echo|discard|daytime|chargen)([[:space:]]|$)' | head -n 5)"
@@ -172,7 +158,6 @@ if [ -f "/etc/inetd.conf" ]; then
   [ "$INETD_POST" != "no_active_dos_services" ] && FAIL_FLAG=1
 fi
 
-# xinetd: disable=no 남아있으면 실패
 XINETD_POST_SUMMARY=""
 for s in "${DOS_SERVICES[@]}"; do
   f="/etc/xinetd.d/$s"
@@ -188,7 +173,6 @@ for s in "${DOS_SERVICES[@]}"; do
 done
 [ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_xinetd_dos_service_files"
 
-# systemd: enabled/active면 실패
 SYSTEMD_UNITS_AFTER="systemd_units_not_found"
 SYSTEMD_BAD=0
 if command -v systemctl >/dev/null 2>&1; then
@@ -200,8 +184,7 @@ if command -v systemctl >/dev/null 2>&1; then
         if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
           en="$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
           ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
-          append_detail "${u}_is_enabled(after)=${en}"
-          append_detail "${u}_is_active(after)=${ac}"
+          append_detail "${u}_status: enabled=${en}, active=${ac}"
           echo "$en" | grep -qiE "^enabled" && SYSTEMD_BAD=1
           echo "$ac" | grep -qiE "^active" && SYSTEMD_BAD=1
         fi
@@ -211,45 +194,37 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 [ "$SYSTEMD_BAD" -eq 1 ] && FAIL_FLAG=1
 
-# detail(조치 후 상태만)
-append_detail "inetd_active_dos_services(after)=$INETD_POST"
-append_detail "xinetd_disable_settings(after)=$XINETD_POST_SUMMARY"
-append_detail "systemd_units(after)=$SYSTEMD_UNITS_AFTER"
+append_detail "inetd_status: $INETD_POST"
+append_detail "xinetd_status: $XINETD_POST_SUMMARY"
+append_detail "systemd_status: $SYSTEMD_UNITS_AFTER"
 
-# (요구사항) ntp/dns/snmp 서비스가 "보일 때만" 수동 조치 안내 추가
-# NTP: Rocky 9/10은 chronyd가 일반적이지만 ntpd도 고려
+# 추가 수동 조치 필요 서비스 확인 분기점
 if any_service_present chronyd.service ntpd.service systemd-timesyncd.service -- chronyd ntpd; then
-  append_detail "manual_action_note(ntp)=NTP/시간동기화 서비스가 확인되었습니다. 서버에서 미사용인 경우에만 운영 정책에 따라 수동으로 중지/비활성화(또는 제거)해 주세요."
+  append_detail "manual_note: NTP 관련 서비스가 활성화되어 있습니다. 미사용 시 수동 조치가 필요합니다."
 fi
 
-# DNS: named/unbound/dnsmasq/systemd-resolved 등
 if any_service_present named.service unbound.service dnsmasq.service systemd-resolved.service -- named unbound dnsmasq resolvectl; then
-  append_detail "manual_action_note(dns)=DNS 관련 서비스가 확인되었습니다. 서버 역할상 미사용인 경우에만 운영 정책에 따라 수동으로 중지/비활성화(또는 제거)해 주세요."
+  append_detail "manual_note: DNS 관련 서비스가 활성화되어 있습니다. 서버 역할에 따라 수동 조치가 필요합니다."
 fi
 
-# SNMP: snmpd/snmptrapd
 if any_service_present snmpd.service snmptrapd.service -- snmpd snmptrapd; then
-  append_detail "manual_action_note(snmp)=SNMP 서비스가 확인되었습니다. 서버에서 미사용인 경우에만 운영 정책에 따라 수동으로 중지/비활성화(또는 제거)해 주세요."
+  append_detail "manual_note: SNMP 서비스가 활성화되어 있습니다. 미사용 시 수동 조치가 필요합니다."
 fi
 
-# 최종 판정
+# 최종 판정 및 REASON_LINE 구성 분기점
 if [ "$FAIL_FLAG" -eq 0 ]; then
   IS_SUCCESS=1
-  if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="DoS 공격에 취약한 서비스(echo, discard, daytime, chargen)가 비활성화되도록 설정이 적용되어 조치가 완료되었습니다."
-  else
-    REASON_LINE="DoS 공격에 취약한 서비스(echo, discard, daytime, chargen)가 이미 비활성화 상태로 확인되어 변경 없이도 조치가 완료되었습니다."
-  fi
+  REASON_LINE="DoS 공격에 취약한 서비스(echo, discard, daytime, chargen)를 중지하고 비활성화하여 조치를 완료하여 이 항목에 대해 양호합니다."
 else
   IS_SUCCESS=0
-  REASON_LINE="조치를 수행했으나 DoS 공격에 취약한 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  REASON_LINE="일부 DoS 공격에 취약한 서비스가 여전히 활성화되어 있거나 중지되지 않은 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
 fi
 
 if [ -n "$ACTION_ERR_LOG" ]; then
-  DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+  DETAIL_CONTENT="$DETAIL_CONTENT\n[Error_Log]\n$ACTION_ERR_LOG"
 fi
 
-# raw_evidence 구성 (after/current만 포함)
+# 결과 데이터 구성 및 출력 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -259,12 +234,8 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
 echo ""
 cat << EOF
 {

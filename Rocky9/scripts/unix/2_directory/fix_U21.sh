@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-14
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-21
@@ -15,7 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 초기화
 ID="U-21"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -33,11 +33,9 @@ FOUND=0
 FAIL_FLAG=0
 MODIFIED=0
 DETAIL_CONTENT=""
-
-# evidence에 넣을 실제 존재 파일 목록
 TARGET_FILES_EXIST=""
 
-# 조치 수행
+# 시스템 내 존재하는 syslog 설정 파일을 확인하고 소유자 및 권한 조치를 수행하는 분기점
 for FILE in "${LOG_FILES[@]}"; do
   if [ -f "$FILE" ]; then
     FOUND=1
@@ -47,13 +45,11 @@ for FILE in "${LOG_FILES[@]}"; do
     GROUP=$(stat -c "%G" "$FILE" 2>/dev/null)
     PERM=$(stat -c "%a" "$FILE" 2>/dev/null)
 
-    # [필수] 소유자 기준: root|bin|sys 허용 → 그 외만 root로 변경
     if ! [[ "$OWNER" =~ ^(root|bin|sys)$ ]]; then
       chown root "$FILE" 2>/dev/null
       MODIFIED=1
     fi
 
-    # 권한 기준: 640 초과면 640으로 변경
     if [ -n "$PERM" ] && [ "$PERM" -gt 640 ]; then
       chmod 640 "$FILE" 2>/dev/null
       MODIFIED=1
@@ -61,7 +57,7 @@ for FILE in "${LOG_FILES[@]}"; do
   fi
 done
 
-# 조치 후 상태 수집(조치 후 상태만 detail에 표시)
+# 조치 결과 확인을 위해 현재 파일의 설정 상태를 수집하고 성공 여부를 검증하는 분기점
 for FILE in "${LOG_FILES[@]}"; do
   if [ -f "$FILE" ]; then
     AFTER_OWNER=$(stat -c "%U" "$FILE" 2>/dev/null)
@@ -75,40 +71,35 @@ file=$FILE
 
 "
 
-    # [필수] 논리식 모호성 제거(오탐/미탐 방지)
     if { ! [[ "$AFTER_OWNER" =~ ^(root|bin|sys)$ ]]; } || { [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -gt 640 ]; }; then
       FAIL_FLAG=1
     fi
   fi
 done
 
-# target_file 구성: 실제 존재 파일만 (없으면 원래 리스트 출력)
+# 실제 존재하는 파일 목록을 기반으로 타겟 파일 변수를 구성하는 분기점
 if [ -n "$TARGET_FILES_EXIST" ]; then
   TARGET_FILE="$(printf "%s" "$TARGET_FILES_EXIST" | sed 's/[[:space:]]*$//')"
 else
   TARGET_FILE=$(printf "%s\n" "${LOG_FILES[@]}")
 fi
 
-# 최종 판정
+# 수집된 데이터를 바탕으로 최종 판정 및 REASON_LINE 문구를 생성하는 분기점
 if [ "$FOUND" -eq 0 ]; then
   IS_SUCCESS=1
-  REASON_LINE="syslog 설정 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT=""
+  REASON_LINE="대상 파일이 존재하지 않아 조치를 완료하여 이 항목에 대해 양호합니다."
+  DETAIL_CONTENT="상태: 파일 없음"
 else
   if [ "$FAIL_FLAG" -eq 0 ]; then
     IS_SUCCESS=1
-    if [ "$MODIFIED" -eq 1 ]; then
-      REASON_LINE="syslog 설정 파일의 소유자와 권한이 기준에 맞게 적용되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    else
-      REASON_LINE="syslog 설정 파일의 소유자와 권한이 기준에 맞게 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-    fi
+    REASON_LINE="소유자를 root(또는 관리 계정)로 변경하고 권한을 640 이하로 설정하여 조치를 완료하여 이 항목에 대해 양호합니다."
   else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 syslog 설정 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    REASON_LINE="관리자 외 쓰기 권한이 있거나 소유자가 허용된 계정이 아닌 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
   fi
 fi
 
-# raw_evidence 구성
+# RAW_EVIDENCE 작성을 위해 JSON 데이터 구조를 생성하는 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -118,12 +109,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON 특수 문자 및 줄바꿈을 이스케이프 처리하는 분기점
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 결과 데이터를 JSON 형식으로 출력하는 분기점
 echo ""
 cat << EOF
 {

@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-27
@@ -15,8 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-
-# 기본 변수
+# 기본 변수 및 환경 설정 분기점
 ID="U-27"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -32,7 +31,7 @@ FOUND=0
 
 CHECK_COMMAND="( [ -f /etc/hosts.equiv ] && stat -c '%U %G %a %n' /etc/hosts.equiv && grep -nE '^[[:space:]]*\\+' /etc/hosts.equiv 2>/dev/null ) ; find /home -name .rhosts -type f -print -exec stat -c '%U %G %a %n' {} \\; -exec grep -nE '^[[:space:]]*\\+' {} \\; 2>/dev/null"
 
-# 대상 파일 수집
+# 시스템 내의 대상 파일(/etc/hosts.equiv 및 각 사용자 홈 디렉토리의 .rhosts)을 수집하는 분기점
 TARGET_LIST=()
 
 if [ -f "/etc/hosts.equiv" ]; then
@@ -49,44 +48,37 @@ fi
 
 TARGET_FILE=$(printf "%s\n" "${TARGET_LIST[@]}")
 
-# 조치 수행
+# 수집된 파일들에 대해 소유자 변경, 권한 축소(600), 설정 내 '+' 문자 제거를 수행하는 분기점
 if [ "$FOUND" -eq 1 ]; then
   for file in "${TARGET_LIST[@]}"; do
     [ -f "$file" ] || continue
 
-    # 소유자 조치
     if [ "$file" = "/etc/hosts.equiv" ]; then
       OWNER=$(stat -c "%U" "$file" 2>/dev/null)
       if [ "$OWNER" != "root" ]; then
         chown root:root "$file" 2>/dev/null || FAIL_FLAG=1
       fi
     else
-      # (필수 보강) .rhosts는 "해당 계정" 소유로 맞춰야 함
-      # 기존처럼 현재 파일 소유자를 다시 chown 하면 오조치 가능
       EXPECT_USER=$(basename "$(dirname "$file")")
       if [ -n "$EXPECT_USER" ] && id "$EXPECT_USER" >/dev/null 2>&1; then
         chown "$EXPECT_USER":"$EXPECT_USER" "$file" 2>/dev/null || FAIL_FLAG=1
       else
-        # 계정 확인이 안 되면 조치 불가로 처리
         FAIL_FLAG=1
       fi
     fi
 
-    # 권한 조치
     chmod 600 "$file" 2>/dev/null || FAIL_FLAG=1
-
-    # '+' 제거 (라인 시작 '+' 형태)
     sed -i '/^[[:space:]]*\+/d' "$file" 2>/dev/null || FAIL_FLAG=1
   done
 fi
 
-# 조치 후 상태 수집(조치 후 상태만 detail에 표시) - detail은 쉼표 구분
+# 조치 후 각 파일의 최종 상태를 확인하고 상세 내용을 구성하는 분기점
 DETAIL_ITEMS=()
 
 if [ "$FOUND" -eq 0 ]; then
   IS_SUCCESS=1
-  REASON_LINE="조치 대상 파일이 존재하지 않아 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  DETAIL_CONTENT=""
+  REASON_LINE="대상 파일이 존재하지 않아 조치를 완료하여 이 항목에 대해 양호합니다."
+  DETAIL_CONTENT="상태: 파일 없음"
 else
   for file in "${TARGET_LIST[@]}"; do
     [ -f "$file" ] || continue
@@ -94,17 +86,17 @@ else
     AFTER_OWNER=$(stat -c "%U" "$file" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$file" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$file" 2>/dev/null)
-
     PLUS_AFTER=$(grep -nE '^[[:space:]]*\+' "$file" 2>/dev/null | head -n 1)
 
-    # detail 항목: 파일별 1줄(쉼표 구분)
-    if [ -n "$PLUS_AFTER" ]; then
-      DETAIL_ITEMS+=("file=$file,owner=$AFTER_OWNER,group=$AFTER_GROUP,perm=$AFTER_PERM,plus_found=yes(${PLUS_AFTER})")
-    else
-      DETAIL_ITEMS+=("file=$file,owner=$AFTER_OWNER,group=$AFTER_GROUP,perm=$AFTER_PERM,plus_found=no")
-    fi
+    # 개별 파일 상태 정보 생성
+    DETAIL_ITEMS+=("file=$file
+owner=$AFTER_OWNER
+group=$AFTER_GROUP
+perm=$AFTER_PERM
+plus_setting=$( [ -n "$PLUS_AFTER" ] && echo "found($PLUS_AFTER)" || echo "not_found" )
+")
 
-    # 기준 검증: owner( /etc/hosts.equiv= root, .rhosts= 해당계정 ), perm<=600, '+' 없음
+    # 가이드 기준 준수 여부 최종 검증 분기점
     if [ "$file" = "/etc/hosts.equiv" ]; then
       [ "$AFTER_OWNER" != "root" ] && FAIL_FLAG=1
     else
@@ -116,47 +108,39 @@ else
       fi
     fi
 
-    if [ -n "$AFTER_PERM" ] && [[ "$AFTER_PERM" =~ ^[0-9]+$ ]] && [ "$AFTER_PERM" -gt 600 ]; then
-      FAIL_FLAG=1
-    fi
-
-    if [ -n "$PLUS_AFTER" ]; then
+    if [ -z "$AFTER_PERM" ] || [ "$AFTER_PERM" -gt 600 ] || [ -n "$PLUS_AFTER" ]; then
       FAIL_FLAG=1
     fi
   done
 
-  # DETAIL_CONTENT 조립(쉼표로 파일 항목 연결)
-  if [ "${#DETAIL_ITEMS[@]}" -gt 0 ]; then
-    DETAIL_CONTENT=$(IFS=' , '; echo "${DETAIL_ITEMS[*]}")
-  else
-    DETAIL_CONTENT=""
-  fi
+  # DETAIL_CONTENT 줄바꿈 조립
+  DETAIL_CONTENT=$(printf "%s\n" "${DETAIL_ITEMS[@]}")
 
+  # 조치 성공 및 실패에 따른 REASON_LINE 확정 분기점
   if [ "$FAIL_FLAG" -eq 0 ]; then
     IS_SUCCESS=1
-    REASON_LINE="/etc/hosts.equiv 및 .rhosts 파일의 권한이 600 이하로 설정되고 '+' 패턴이 제거되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
+    REASON_LINE="소유자를 해당 계정으로 변경하고 권한을 600 이하로 설정하며 '+' 설정을 제거하여 조치를 완료하여 이 항목에 대해 양호합니다."
   else
     IS_SUCCESS=0
-    REASON_LINE="조치를 수행했으나 /etc/hosts.equiv 또는 .rhosts 파일의 소유자/권한 또는 '+' 패턴 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+    REASON_LINE="허용되지 않은 소유자나 권한이 설정되어 있거나 '+' 설정이 존재하는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
   fi
 fi
 
-# raw_evidence 구성 (detail은 쉼표 기반)
+# JSON 출력을 위한 데이터 구조화 및 이스케이프 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
-  "detail": "$REASON_LINE, $DETAIL_CONTENT",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
   "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 결과 JSON 출력 분기점
 echo ""
 cat << EOF
 {

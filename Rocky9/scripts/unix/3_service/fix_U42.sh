@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.0
+# @Version: 2.1.0
 # @Author: 이가영
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [보완 항목 상세]
 # @Check_ID : U-42
@@ -15,9 +15,7 @@
 # @Reference : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# [보완] U-42 불필요한 RPC 서비스 비활성화
-
-# 기본 변수
+# 기본 변수 설정 분기점
 ID="U-42"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -26,14 +24,12 @@ TARGET_FILE="/etc/inetd.conf
 /etc/xinetd.d/*
 systemd(rpc related services)"
 
-# 가이드 기반 불필요 RPC 서비스(핵심 목록)
 UNNEEDED_RPC_SERVICES=(
   "rpc.cmsd" "rpc.ttdbserverd" "sadmind" "rusersd" "walld" "sprayd" "rstatd"
   "rpc.nisd" "rexd" "rpc.pcnfsd" "rpc.statd" "rpc.ypupdated" "rpc.rquotad"
   "kcms_server" "cachefsd"
 )
 
-# systemd 후보(환경 의존)
 RPC_UNITS_CANDIDATES=(
   "rpcbind.service"
   "rpcbind.socket"
@@ -75,6 +71,7 @@ ACTION_ERR_LOG=""
 MODIFIED=0
 FAIL_FLAG=0
 
+# 유틸리티 함수 정의 분기점
 append_err() {
   [ -n "$ACTION_ERR_LOG" ] && ACTION_ERR_LOG="${ACTION_ERR_LOG}\n$1" || ACTION_ERR_LOG="$1"
 }
@@ -106,24 +103,18 @@ disable_systemd_unit_if_exists() {
   MODIFIED=1
 }
 
-########################################
-# 0) (필수) 기존에 남아있는 /etc/xinetd.d 백업파일을 점검에 걸리지 않게 이동
-########################################
+# 기존 백업 파일 정리 및 권한 체크 분기점
 if [ "$(id -u)" -eq 0 ] && [ -d /etc/xinetd.d ]; then
-  # 이전 실행에서 생성된 백업 파일들이 남아있으면 check에서 FAIL 유발 가능
   mv -f /etc/xinetd.d/*.bak_* "$BACKUP_DIR"/ 2>/dev/null || true
 fi
 
-# root 권한 체크
 if [ "$(id -u)" -ne 0 ]; then
   FAIL_FLAG=1
-  REASON_LINE="root 권한이 아니어서 서비스 설정 변경(sed/systemctl 등)을 수행할 수 없어 조치가 완료되지 않았습니다."
-  append_detail "현재 실행 UID=$(id -u) (root 권한으로 재실행이 필요합니다.)"
+  REASON_LINE="root 권한이 아니어서 서비스 설정 변경을 수행할 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+  append_detail "current_uid: $(id -u)"
 else
 
-  ########################################
-  # 1) inetd: 불필요 서비스 라인만 주석 처리
-  ########################################
+  # 1) inetd 기반 RPC 서비스 조치 분기점
   if [ -f "/etc/inetd.conf" ]; then
     INETD_NEED_RESTART=0
     for svc in "${UNNEEDED_RPC_SERVICES[@]}"; do
@@ -137,14 +128,11 @@ else
     [ "$INETD_NEED_RESTART" -eq 1 ] && restart_inetd_if_exists
   fi
 
-  ########################################
-  # 2) xinetd: 불필요 서비스는 disable=yes 강제(없으면 삽입)
-  ########################################
+  # 2) xinetd 기반 RPC 서비스 조치 분기점
   XINETD_CHANGED=0
   if [ -d "/etc/xinetd.d" ]; then
     for conf in /etc/xinetd.d/*; do
       [ -f "$conf" ] || continue
-      # 백업/임시 파일은 조치 대상에서 제외
       echo "$conf" | grep -qE "\.bak_|\.orig$|~$" && continue
 
       MATCHED_SVC=""
@@ -190,33 +178,27 @@ else
   fi
   [ "$XINETD_CHANGED" -eq 1 ] && restart_xinetd_if_exists
 
-  ########################################
-  # 3) systemd: 존재할 때만 stop/disable/mask
-  ########################################
+  # 3) systemd 기반 RPC 서비스 조치 분기점
   for u in "${RPC_UNITS_CANDIDATES[@]}"; do
     disable_systemd_unit_if_exists "$u"
   done
 fi
 
-########################################
-# 4) 조치 후 검증(조치 후/현재 설정만)
-########################################
+# 4) 조치 후 결과 검증 및 상태 수집 분기점
 INETD_POST="inetd_conf_not_found"
 if [ -f "/etc/inetd.conf" ]; then
   INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | egrep -n "^[[:space:]]*(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" | head -n 10)"
   [ -z "$INETD_POST" ] && INETD_POST="no_active_unneeded_rpc_lines"
 fi
 [ "$INETD_POST" != "no_active_unneeded_rpc_lines" ] && [ "$INETD_POST" != "inetd_conf_not_found" ] && FAIL_FLAG=1
-append_detail "inetd_unneeded_rpc_lines(after)=$INETD_POST"
+append_detail "inetd_status: $INETD_POST"
 
 XINETD_BAD=0
 XINETD_POST_SUMMARY=""
 if [ -d "/etc/xinetd.d" ]; then
   for conf in /etc/xinetd.d/*; do
     [ -f "$conf" ] || continue
-    # 백업파일은 검증에서도 제외(점검과 동일한 기준으로 맞춤)
     echo "$conf" | grep -qE "\.bak_|\.orig$|~$" && continue
-
     egrep -qi "^[[:space:]]*service[[:space:]]+(rpc\.cmsd|rpc\.ttdbserverd|sadmind|rusersd|walld|sprayd|rstatd|rpc\.nisd|rexd|rpc\.pcnfsd|rpc\.statd|rpc\.ypupdated|rpc\.rquotad|kcms_server|cachefsd)([[:space:]]|$)" "$conf" 2>/dev/null || continue
 
     dis_line="$(grep -nEv '^[[:space:]]*#' "$conf" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
@@ -230,7 +212,7 @@ else
   XINETD_POST_SUMMARY="xinetd_dir_not_found"
 fi
 [ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_unneeded_rpc_xinetd_files"
-append_detail "xinetd_unneeded_rpc_disable_settings(after)=$XINETD_POST_SUMMARY"
+append_detail "xinetd_status: $XINETD_POST_SUMMARY"
 [ "$XINETD_BAD" -eq 1 ] && FAIL_FLAG=1
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -238,28 +220,28 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl list-unit-files 2>/dev/null | awk '{print $1}' | grep -qx "$u" || continue
     en="$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
     ac="$(systemctl is-active "$u" 2>/dev/null || echo unknown)"
-    append_detail "${u}(after) enabled=$en active=$ac"
+    append_detail "${u}_status: enabled=$en, active=$ac"
     [ "$en" = "enabled" ] && FAIL_FLAG=1
     [ "$ac" = "active" ] && FAIL_FLAG=1
   done
 else
-  append_detail "systemctl_not_found (systemd 기반 조치/검증은 수행하지 않았습니다.)"
+  append_detail "systemctl_not_found"
 fi
 
+# 최종 판정 및 REASON_LINE 확정 분기점
 if [ "$FAIL_FLAG" -eq 0 ]; then
   IS_SUCCESS=1
-  if [ "$MODIFIED" -eq 1 ]; then
-    REASON_LINE="불필요한 RPC 서비스가 비활성화되도록 설정이 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  else
-    REASON_LINE="불필요한 RPC 서비스가 이미 비활성화 상태로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-  fi
+  REASON_LINE="불필요한 RPC 서비스를 주석 처리하거나 중지 및 비활성화하여 조치를 완료하여 이 항목에 대해 양호합니다."
 else
   IS_SUCCESS=0
-  [ -z "$REASON_LINE" ] && REASON_LINE="조치를 수행했으나 불필요한 RPC 서비스 관련 설정이 여전히 활성화 상태이거나 검증 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+  [ -z "$REASON_LINE" ] && REASON_LINE="불필요한 RPC 서비스 관련 설정이 여전히 활성화 상태이거나 중지되지 않은 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
 fi
 
-[ -n "$ACTION_ERR_LOG" ] && DETAIL_CONTENT="$DETAIL_CONTENT\n$ACTION_ERR_LOG"
+if [ -n "$ACTION_ERR_LOG" ]; then
+  DETAIL_CONTENT="$DETAIL_CONTENT\n[Error_Log]\n$ACTION_ERR_LOG"
+fi
 
+# 결과 데이터 구성 및 출력 분기점
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -269,9 +251,7 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
-  | sed 's/"/\\"/g' \
-  | sed ':a;N;$!ba;s/\n/\\n/g')
+RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
 echo ""
 cat << EOF

@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 권순형
-# @Last Updated: 2026-02-14
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [조치 항목 상세]
 # @Check_ID    : U-19
@@ -15,7 +15,7 @@
 # @Reference   : 2026 KISA 주요정보통신기반시설 기술적 취약점 분석·평가 상세 가이드
 # ============================================================================
 
-# 기본 변수
+# 기본 변수 설정
 ID="U-19"
 ACTION_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 IS_SUCCESS=0
@@ -28,67 +28,58 @@ TARGET_FILE=""
 TARGET_FILE="/etc/hosts"
 CHECK_COMMAND="stat -c '%U %G %a %n' /etc/hosts 2>/dev/null"
 
-# 조치 프로세스
+# 대상 파일 존재 여부 확인 분기점
 if [ -f "$TARGET_FILE" ]; then
   MODIFIED=0
 
-  # 조치 전 상태 수집
+  # 조치 전 파일 정보 수집
   BEFORE_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
   BEFORE_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
   BEFORE_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-  # stat 결과 수집 실패 처리(필수)
+  # 파일 정보 수집 실패 시 예외 처리 분기점
   if [ -z "$BEFORE_OWNER" ] || [ -z "$BEFORE_GROUP" ] || [ -z "$BEFORE_PERM" ]; then
     IS_SUCCESS=0
-    REASON_LINE="/etc/hosts 파일의 소유자/그룹/권한 정보를 수집하지 못해 조치 수행 및 검증이 불가능하므로 조치가 완료되지 않았습니다."
-    DETAIL_CONTENT="before_owner=${BEFORE_OWNER:-unknown}
-before_group=${BEFORE_GROUP:-unknown}
-before_perm=${BEFORE_PERM:-unknown}"
+    REASON_LINE="파일 정보를 읽을 수 없는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+    DETAIL_CONTENT="owner=${BEFORE_OWNER:-unknown}, group=${BEFORE_GROUP:-unknown}, perm=${BEFORE_PERM:-unknown}"
   else
-    # 1) 소유자/그룹 조치 (그룹은 기준에는 없지만 root:root로 통일)
+    # 파일 소유자 및 그룹 변경 수행 분기점
     if [ "$BEFORE_OWNER" != "root" ] || [ "$BEFORE_GROUP" != "root" ]; then
       chown root:root "$TARGET_FILE" 2>/dev/null
       MODIFIED=1
     fi
 
-    # 2) 권한 조치 (기준은 644 이하이지만, 조치 방식은 644로 표준화)
+    # 파일 권한 644 변경 수행 분기점
     if [ "$BEFORE_PERM" != "644" ]; then
       chmod 644 "$TARGET_FILE" 2>/dev/null
       MODIFIED=1
     fi
 
-    # 조치 후 상태 수집
+    # 조치 완료 후 최종 상태 정보 수집
     AFTER_OWNER=$(stat -c "%U" "$TARGET_FILE" 2>/dev/null)
     AFTER_GROUP=$(stat -c "%G" "$TARGET_FILE" 2>/dev/null)
     AFTER_PERM=$(stat -c "%a" "$TARGET_FILE" 2>/dev/null)
 
-    DETAIL_CONTENT="before_owner=$BEFORE_OWNER
-before_group=$BEFORE_GROUP
-before_perm=$BEFORE_PERM
-after_owner=$AFTER_OWNER
-after_group=$AFTER_GROUP
-after_perm=$AFTER_PERM"
+    # 현재 설정된 최종 상태 값 구성
+    DETAIL_CONTENT="owner=$AFTER_OWNER, group=$AFTER_GROUP, perm=$AFTER_PERM"
 
-    # 최종 검증
-    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ -n "$AFTER_PERM" ] && [ "$AFTER_PERM" -eq 644 ]; then
+    # 최종 조치 결과 판정 및 메시지 생성 분기점
+    if [ "$AFTER_OWNER" = "root" ] && [ "$AFTER_GROUP" = "root" ] && [ "$AFTER_PERM" = "644" ]; then
       IS_SUCCESS=1
-      if [ "$MODIFIED" -eq 1 ]; then
-        REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root로 설정되고 권한이 644로 변경되어 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      else
-        REASON_LINE="/etc/hosts 파일의 소유자/그룹이 root이고 권한이 644로 유지되어 변경 없이도 조치가 완료되어 이 항목에 대한 보안 위협이 없습니다."
-      fi
+      REASON_LINE="파일 소유자를 root로 변경하고 권한을 644로 조치를 완료하여 이 항목에 대해 양호합니다."
     else
       IS_SUCCESS=0
-      REASON_LINE="조치를 수행했으나 /etc/hosts 파일의 소유자 또는 권한이 기준을 충족하지 못해 조치가 완료되지 않았습니다."
+      REASON_LINE="소유자 권한 또는 파일 모드가 기준을 초과하는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
     fi
   fi
 else
+  # 파일이 존재하지 않는 경우 처리 분기점
   IS_SUCCESS=0
-  REASON_LINE="조치 대상 파일(/etc/hosts)이 존재하지 않아 조치가 완료되지 않았습니다."
-  DETAIL_CONTENT="file_not_found"
+  REASON_LINE="대상 파일이 존재하지 않는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+  DETAIL_CONTENT="상태: 파일 없음"
 fi
 
-# raw_evidence 구성
+# raw_evidence 데이터 구조화
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",
@@ -98,12 +89,12 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON 데이터 내 특수문자 이스케이프 처리
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# DB 저장용 JSON 출력
+# 최종 결과 JSON 출력
 echo ""
 cat << EOF
 {

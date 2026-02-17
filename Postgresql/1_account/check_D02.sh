@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.0.1
+# @Version: 2.1.0
 # @Author: 윤영아
-# @Last Updated: 2026-02-16
+# @Last Updated: 2026-02-18
 # ============================================================================
 # [점검 항목 상세]
 # @ID          : D-02
@@ -20,12 +20,11 @@ COMMON_FILE="$(cd "$(dirname "$0")/.." && pwd)/_pg_common.sh"
 . "$COMMON_FILE"
 load_pg_env
 
-# D-02: 불필요 계정 제거/잠금
 ID="D-02"
 STATUS="FAIL"
-EVIDENCE="N/A"
-GUIDE_MSG="N/A"
+SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
+# psql 접속 및 쿼리 실행을 위한 공통 함수
 run_psql() {
   local sql="$1"
   if PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -q -c "$sql" 2>/dev/null; then
@@ -38,51 +37,66 @@ run_psql() {
   return 1
 }
 
+# 파이썬 대시보드 및 DB에서 줄바꿈이 깨지지 않도록 JSON 문자열을 이스케이프 처리하는 함수
 escape_json_str() {
-  # JSON 문자열 안전 처리(\, ", 줄바꿈)
   echo "$1" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-CANDIDATES=$(run_psql "
+# 현재 로그인 가능한 모든 ROLE 목록을 조회하여 변수에 저장
+ALL_ROLES=$(run_psql "
 SELECT rolname
 FROM pg_roles
 WHERE rolcanlogin = true
-  AND rolname NOT IN ('admin01')
-  AND rolname NOT LIKE 'pg_%'
 ORDER BY rolname;
 ")
 
-if [ $? -ne 0 ]; then
+# 관리자 계정(admin01) 및 시스템 계정(pg_%)을 제외한 의심 계정을 추출
+CANDIDATES=$(echo "$ALL_ROLES" | grep -vE "^(admin01|pg_.*)$")
+RC=$?
+
+REASON_LINE=""
+DETAIL_CONTENT=""
+# 자동 조치 시 애플리케이션 접속 차단 위험과 수동 조치 가이드를 변수로 정의
+GUIDE_LINE="이 항목에 대해서 의심 계정을 자동으로 삭제하거나 잠금 처리할 경우, 해당 계정을 사용 중인 애플리케이션 접속이 즉시 차단되어 서비스가 중단될 수 있는 위험이 존재하여 수동 조치가 필요합니다.\n관리자가 직접 확인 후 사용하지 않는 계정에 대해 DROP ROLE <계정명>; 명령으로 삭제하거나 ALTER ROLE <계정명> NOLOGIN; 명령으로 접속을 차단하여 조치해 주시기 바랍니다."
+
+# 쿼리 실행 성공 여부에 따른 점검 수행 분기점
+if [ $RC -ne 0 ] && [ -z "$ALL_ROLES" ]; then
   STATUS="FAIL"
-  EVIDENCE="ROLE 목록을 조회하지 못하여 불필요 계정 여부를 점검할 수 없습니다.\n조치 방법은 postgres 계정 접근 권한과 접속 정보를 확인해주시기 바랍니다."
-  GUIDE_MSG="pg_roles 조회 권한 및 접속 설정을 확인해주시기 바랍니다."
-elif [ -z "$CANDIDATES" ]; then
-  STATUS="PASS"
-  EVIDENCE="rolcanlogin=true 계정 중 pg_% 계정과 admin01을 제외한 불필요 계정 후보가 확인되지 않으므로 이 항목에 대한 보안 위협이 없습니다."
-  GUIDE_MSG="현재 기준에서 추가 조치가 필요하지 않습니다."
+  REASON_LINE="데이터베이스 ROLE 정보를 조회할 수 없어 불필요 계정 존재 여부를 점검하지 못했습니다."
+  DETAIL_CONTENT="connection_error(database_access=FAILED)"
 else
-  STATUS="FAIL"
-  EVIDENCE="로그인 가능한 계정 중 불필요 계정으로 의심되는 후보가 확인되어 계정 오남용 및 무단 접근 위험이 있습니다.\n조치 방법은 불필요한 후보 계정을 삭제하거나 로그인 불가로 전환해주시기 바랍니다."
-  GUIDE_MSG="불필요 계정 후보는 $(echo "$CANDIDATES" | tr '\n' ',' | sed 's/,$//') 입니다. DROP ROLE <계정명>; 또는 ALTER ROLE <계정명> NOLOGIN;으로 정리해주시기 바랍니다."
+  # 의심 계정 존재 여부에 따른 양호/취약 결과 판정 분기점
+  if [ -z "$CANDIDATES" ]; then
+    STATUS="PASS"
+    REASON_LINE="로그인 가능한 계정이 허용된 관리자 및 시스템 계정으로만 구성되어 있어 이 항목에 대해 양호합니다."
+  else
+    STATUS="FAIL"
+    # 취약 계정 목록을 쉼표로 구분하여 자연스러운 한 문장으로 구성
+    CLEAN_CANDIDATES=$(echo "$CANDIDATES" | tr '\n' ',' | sed 's/,$//')
+    REASON_LINE="${CLEAN_CANDIDATES} 계정이 로그인 가능한 상태로 설정되어 있어 이 항목에 대해 취약합니다."
+  fi
+  
+  # 양호/취약 관계 없이 현재의 전체 설정 값을 상세 내용으로 구성
+  DETAIL_CONTENT="[현재 로그인 가능 계정 설정 현황]\n$(echo "$ALL_ROLES" | sed 's/^/- /')"
 fi
 
-SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-CHECK_COMMAND="(psql 접속) pg_roles에서 rolcanlogin=true 이면서 pg_% 제외 및 admin01 제외한 계정 후보 조회"
+# 증적을 위한 상세 정보 설정
+CHECK_COMMAND="psql -c \"SELECT rolname FROM pg_roles WHERE rolcanlogin = true;\""
 TARGET_FILE="pg_roles"
 
-REASON_LINE="$EVIDENCE"
-DETAIL_CONTENT="$GUIDE_MSG"
-
-RAW_EVIDENCE_JSON=$(cat <<EOF
+# 요구사항에 맞춘 RAW_EVIDENCE 데이터 구조화
+RAW_EVIDENCE=$(cat <<EOF
 {
-  "command":"$(escape_json_str "$CHECK_COMMAND")",
-  "detail":"$(escape_json_str "${REASON_LINE}\n${DETAIL_CONTENT}")",
-  "target_file":"$(escape_json_str "$TARGET_FILE")"
+  "command": "$CHECK_COMMAND",
+  "detail": "$REASON_LINE\n$DETAIL_CONTENT",
+  "guide": "$GUIDE_LINE",
+  "target_file": "$TARGET_FILE"
 }
 EOF
 )
 
-RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE_JSON")"
+# JSON 데이터 최종 이스케이프 및 출력
+RAW_EVIDENCE_ESCAPED="$(escape_json_str "$RAW_EVIDENCE")"
 
 echo ""
 cat <<EOF
