@@ -112,7 +112,7 @@ if [ "$RSYSLOG_RUNNING" != "Y" ]; then STATUS="FAIL"; BAD_RUNTIME+="rsyslog_runn
 if [ "$RSYSLOG_CONF_OK" != "Y" ]; then STATUS="FAIL"; BAD_RUNTIME+="rsyslog_conf_ok=N\n"; fi
 
 # 현재 설정값(항상 출력)
-DETAIL_CONTENT="$(cat <<EOF로 설정되어 있어
+DETAIL_CONTENT="$(cat <<EOF
 rsyslog_running=$RSYSLOG_RUNNING
 rsyslog_conf_ok=$RSYSLOG_CONF_OK
 $POLICY_STATE$(printf "%b" "$LOG_STATE" | sed 's/[[:space:]]*$//')
