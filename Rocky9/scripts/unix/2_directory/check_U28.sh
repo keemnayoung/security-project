@@ -203,7 +203,7 @@ DETAIL_CONTENT="$(printf "%b\n%b\n%b\n%b" "$TCPW_CUR" "$IPT_CUR" "$FWD_CUR" "$UF
 TARGET_FILE="$(echo "$TARGET_FILE" | tr -s ' ' | sed 's/[[:space:]]*$//')"
 [ -z "$TARGET_FILE" ] && TARGET_FILE="N/A"
 
-# raw_evidence 구성 (detail: 1줄 평가 문장 + 다음 줄부터 DETAIL_CONTENT)
+# raw_evidence 구성
 RAW_EVIDENCE=$(cat <<EOF
 {
   "command": "$CHECK_COMMAND",

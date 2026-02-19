@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.1.0
+# @Version: 2.1.1
 # @Author: 이가영
-# @Last Updated: 2026-02-18
+# @Last Updated: 2026-02-19
 # ============================================================================
 # [보완 항목 상세]
 # @Check_ID : U-36
@@ -23,9 +23,9 @@ IS_SUCCESS=0
 R_SERVICES=("rsh" "rlogin" "rexec" "shell" "login" "exec")
 
 CHECK_COMMAND='
-( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" ) || echo "inetd_no_active_r_services";
+( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | sed "s/\r$//" | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" ) || echo "inetd_no_active_r_services";
 for s in rsh rlogin rexec shell login exec; do
-  [ -f "/etc/xinetd.d/$s" ] && echo "xinetd_file:$s" && grep -nEv "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1 || true;
+  [ -f "/etc/xinetd.d/$s" ] && echo "xinetd_file:$s" && grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | sed "s/\r$//" | grep -niE "^[[:space:]]*disable[[:space:]]*=" | head -n 1 || true;
 done;
 (command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -Ei "^(rsh|rlogin|rexec|shell|login|exec)\.(service|socket)[[:space:]]") || echo "systemd_units_not_found";
 ( [ -f /etc/hosts.equiv ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/hosts.equiv ) || echo "hosts_equiv_not_found_or_empty";
@@ -106,12 +106,7 @@ neutralize_trust_file() {
 
 # 1) inetd 설정 조치 분기점
 if [ -f "/etc/inetd.conf" ]; then
-  INETD_ACTIVE=0
-  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | grep -qE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" ; then
-    INETD_ACTIVE=1
-  fi
-
-  if [ "$INETD_ACTIVE" -eq 1 ]; then
+  if grep -nEv "^[[:space:]]*#" /etc/inetd.conf 2>/dev/null | sed 's/\r$//' | grep -qE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" ; then
     cp -a /etc/inetd.conf "/etc/inetd.conf.bak_${TIMESTAMP}" 2>/dev/null || append_err "inetd.conf 백업 실패"
     for s in "${R_SERVICES[@]}"; do
       sed -i "s/^\([[:space:]]*${s}\([[:space:]]\|$\)\)/#\1/g" /etc/inetd.conf 2>/dev/null || true
@@ -125,7 +120,7 @@ fi
 XINETD_CHANGED=0
 for s in "${R_SERVICES[@]}"; do
   if [ -f "/etc/xinetd.d/$s" ]; then
-    if grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+    if grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | sed 's/\r$//' | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
       cp -a "/etc/xinetd.d/$s" "/etc/xinetd.d/${s}.bak_${TIMESTAMP}" 2>/dev/null || append_err "/etc/xinetd.d/$s 백업 실패"
       sed -Ei 's/^([[:space:]]*disable[[:space:]]*=[[:space:]]*)[Nn][Oo]([[:space:]]*(#.*)?)?$/\1yes\2/' "/etc/xinetd.d/$s" 2>/dev/null \
         || append_err "/etc/xinetd.d/$s disable=yes 변경 실패"
@@ -160,7 +155,7 @@ FAIL_FLAG=0
 
 INETD_POST="inetd_conf_not_found"
 if [ -f "/etc/inetd.conf" ]; then
-  INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)' | head -n 5)"
+  INETD_POST="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | sed 's/\r$//' | grep -nE '^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)' | head -n 5)"
   [ -z "$INETD_POST" ] && INETD_POST="no_active_r_services"
 fi
 [ "$INETD_POST" != "no_active_r_services" ] && FAIL_FLAG=1
@@ -168,7 +163,7 @@ fi
 XINETD_BAD=0
 for s in "${R_SERVICES[@]}"; do
   if [ -f "/etc/xinetd.d/$s" ]; then
-    if grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
+    if grep -Ev "^[[:space:]]*#" "/etc/xinetd.d/$s" 2>/dev/null | sed 's/\r$//' | grep -qiE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)"; then
       XINETD_BAD=1
     fi
   fi
@@ -180,7 +175,10 @@ if command -v systemctl >/dev/null 2>&1; then
   for base in rsh rlogin rexec shell login exec; do
     for u in "${base}.service" "${base}.socket"; do
       if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-        if systemctl is-enabled "$u" 2>/dev/null | grep -qiE "enabled" || systemctl is-active "$u" 2>/dev/null | grep -qiE "active"; then
+        ENA="$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
+        ACT="$(systemctl is-active  "$u" 2>/dev/null || echo 'unknown')"
+        # ✅ 중요: inactive가 "active"에 매칭되지 않도록 정확히 판정
+        if echo "$ENA" | grep -qiE '^(enabled|enabled-runtime)$' || echo "$ACT" | grep -qiE '^active$'; then
           SYSTEMD_BAD=1
         fi
       fi
@@ -214,41 +212,46 @@ else
 fi
 [ "$TRUST_BAD" -eq 1 ] && FAIL_FLAG=1
 
-# 상세 근거 수집 분기점
-append_detail "inetd_status: $INETD_POST"
+# 상세 근거 수집 분기점 (조치 후 상태만)
+append_detail "inetd_status(after): $INETD_POST"
+
 XINETD_POST_SUMMARY=""
 for s in "${R_SERVICES[@]}"; do
   if [ -f "/etc/xinetd.d/$s" ]; then
-    line="$(grep -nEv '^[[:space:]]*#' "/etc/xinetd.d/$s" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
+    line="$(grep -Ev '^[[:space:]]*#' "/etc/xinetd.d/$s" 2>/dev/null | sed 's/\r$//' | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
     [ -z "$line" ] && line="disable_not_found"
     XINETD_POST_SUMMARY="${XINETD_POST_SUMMARY}${s}:${line}; "
   fi
 done
 [ -z "$XINETD_POST_SUMMARY" ] && XINETD_POST_SUMMARY="no_files"
-append_detail "xinetd_status: $XINETD_POST_SUMMARY"
+append_detail "xinetd_status(after): $XINETD_POST_SUMMARY"
 
 if command -v systemctl >/dev/null 2>&1; then
   for base in rsh rlogin rexec shell login exec; do
     for u in "${base}.service" "${base}.socket"; do
       if systemctl list-unit-files 2>/dev/null | grep -qiE "^${u}[[:space:]]"; then
-        S_EN=$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')
-        S_AC=$(systemctl is-active "$u" 2>/dev/null || echo 'unknown')
-        append_detail "${u}: enabled=${S_EN}, active=${S_AC}"
+        S_EN="$(systemctl is-enabled "$u" 2>/dev/null || echo 'unknown')"
+        S_AC="$(systemctl is-active  "$u" 2>/dev/null || echo 'unknown')"
+        append_detail "${u}(after): enabled=${S_EN}, active=${S_AC}"
       fi
     done
   done
 fi
 
-append_detail "hosts_equiv_status: $HOSTS_EQ_AFTER"
-append_detail "rhosts_status: $RHOSTS_AFTER_SUMMARY"
+append_detail "hosts_equiv_status(after): $HOSTS_EQ_AFTER"
+append_detail "rhosts_status(after): $RHOSTS_AFTER_SUMMARY"
 
 # 최종 판정 및 REASON_LINE 구성 분기점
 if [ "$FAIL_FLAG" -eq 0 ]; then
   IS_SUCCESS=1
-  REASON_LINE="r 계열 서비스를 중지 및 비활성화하고 신뢰 기반 접속 설정 파일의 유효 라인을 모두 주석 처리하여 조치를 완료하여 이 항목에 대해 양호합니다."
+  if [ "$MODIFIED" -eq 1 ]; then
+    REASON_LINE="r 계열 서비스를 중지 및 비활성화하고 신뢰 기반 접속 설정 파일의 유효 라인을 모두 주석 처리하여 조치를 완료하여 이 항목에 대해 양호합니다."
+  else
+    REASON_LINE="r 계열 서비스가 이미 비활성화 상태로 유지되고 신뢰 기반 접속 설정도 유효 라인이 없어 변경 없이 조치를 완료하여 이 항목에 대해 양호합니다."
+  fi
 else
   IS_SUCCESS=0
-  REASON_LINE="일부 r 계열 서비스가 여전히 활성화되어 있거나 신뢰 기반 접속 설정 파일 내에 인증 없는 접근 허용 옵션이 남아 있는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
+  REASON_LINE="일부 r 계열 서비스가 여전히 활성화되어 있거나 신뢰 기반 접속 설정 파일 내에 유효 라인이 남아 있는 이유로 조치에 실패하여 여전히 이 항목에 대해 취약합니다."
 fi
 
 if [ -n "$ACTION_ERR_LOG" ]; then
@@ -265,8 +268,9 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON 데이터 이스케이프 처리 분기점
+# JSON 데이터 이스케이프 처리 분기점 (백슬래시 -> 따옴표 -> 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/\\/\\\\/g' \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 

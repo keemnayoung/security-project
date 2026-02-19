@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # @Project: 시스템 보안 자동화 프로젝트
-# @Version: 2.1.0
+# @Version: 2.1.1
 # @Author: 이가영
-# @Last Updated: 2026-02-15
+# @Last Updated: 2026-02-19
 # ============================================================================
 # [점검 항목 상세]
 # @Check_ID : U-36
@@ -23,7 +23,7 @@ STATUS="PASS"
 SCAN_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 
 TARGET_FILE="/etc/inetd.conf /etc/xinetd.d/(rsh|rlogin|rexec|shell|login|exec) systemd(unit/service/socket) /etc/hosts.equiv /home/*/.rhosts"
-CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" || echo "inetd_conf_not_found_or_no_r_services" ); ( for f in /etc/xinetd.d/rsh /etc/xinetd.d/rlogin /etc/xinetd.d/rexec /etc/xinetd.d/shell /etc/xinetd.d/login /etc/xinetd.d/exec; do [ -f "$f" ] && grep -nEv "^[[:space:]]*#" "$f" | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" && echo "xinetd_disable_no:$f"; done ); ( systemctl list-units --type=service --all 2>/dev/null | grep -E "(rlogin|rsh|rexec|shell|login|exec)\.service" | awk "{print \$1}" ); ( systemctl list-units --type=socket --all 2>/dev/null | grep -E "(rlogin|rsh|rexec|shell|login|exec)\.socket" | awk "{print \$1}" ); ( systemctl list-unit-files 2>/dev/null | grep -E "^(rlogin|rsh|rexec|shell|login|exec)\.(service|socket)[[:space:]]+" || echo "no_r_unit_files" ); ( [ -f /etc/hosts.equiv ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/hosts.equiv || echo "hosts_equiv_not_found_or_empty" ); ( find /home -maxdepth 3 -type f -name .rhosts 2>/dev/null -print -exec sh -c '"'"'grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$1" >/dev/null 2>&1 && echo "rhosts_has_entries:$1" || echo "rhosts_empty_or_commented:$1"'"'"' _ {} \; 2>/dev/null || echo "no_rhosts_found" )'
+CHECK_COMMAND='( [ -f /etc/inetd.conf ] && grep -nEv "^[[:space:]]*#" /etc/inetd.conf | sed "s/\r$//" | grep -nE "^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)" || echo "inetd_conf_not_found_or_no_r_services" ); ( for f in /etc/xinetd.d/rsh /etc/xinetd.d/rlogin /etc/xinetd.d/rexec /etc/xinetd.d/shell /etc/xinetd.d/login /etc/xinetd.d/exec; do [ -f "$f" ] && grep -Ev "^[[:space:]]*#" "$f" | sed "s/\r$//" | grep -niE "^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)" && echo "xinetd_disable_no:$f"; done ); ( systemctl list-units --type=service --all 2>/dev/null | grep -E "(rlogin|rsh|rexec|shell|login|exec)\.service" | awk "{print \$1}" ); ( systemctl list-units --type=socket --all 2>/dev/null | grep -E "(rlogin|rsh|rexec|shell|login|exec)\.socket" | awk "{print \$1}" ); ( systemctl list-unit-files 2>/dev/null | grep -E "^(rlogin|rsh|rexec|shell|login|exec)\.(service|socket)[[:space:]]+" || echo "no_r_unit_files" ); ( [ -f /etc/hosts.equiv ] && grep -nEv "^[[:space:]]*#|^[[:space:]]*$" /etc/hosts.equiv || echo "hosts_equiv_not_found_or_empty" ); ( find /home -maxdepth 3 -type f -name .rhosts 2>/dev/null -print -exec sh -c '"'"'grep -nEv "^[[:space:]]*#|^[[:space:]]*$" "$1" >/dev/null 2>&1 && echo "rhosts_has_entries:$1" || echo "rhosts_empty_or_commented:$1"'"'"' _ {} \; 2>/dev/null || echo "no_rhosts_found" )'
 
 DETAIL_CONTENT=""
 REASON_LINE=""
@@ -54,7 +54,7 @@ append_detail_line() {
 INETD_POST="inetd_conf_missing"
 INETD_HITS=""
 if [ -f "/etc/inetd.conf" ]; then
-  INETD_HITS="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | grep -nE '^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)' | head -n 20)"
+  INETD_HITS="$(grep -nEv '^[[:space:]]*#' /etc/inetd.conf 2>/dev/null | sed 's/\r$//' | grep -nE '^[[:space:]]*(rsh|rlogin|rexec|shell|login|exec)([[:space:]]|$)' | head -n 20)"
   if [ -n "$INETD_HITS" ]; then
     INETD_POST="$INETD_HITS"
     VULNERABLE=1
@@ -66,17 +66,18 @@ fi
 append_detail_line "inetd_active_lines=$INETD_POST"
 
 # [xinetd] /etc/xinetd.d/<svc>: disable 설정 수집 및 disable=no 여부 확인
-XINETD_DISABLE_NO_FOUND=0
 for svc in "${R_SERVICES[@]}"; do
   XFILE="/etc/xinetd.d/${svc}"
   if [ -f "$XFILE" ]; then
-    DISABLE_LINE="$(grep -nEv '^[[:space:]]*#' "$XFILE" 2>/dev/null | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
+    # 주석 제거 시 라인번호(-n)를 붙이면 '^disable' 매칭이 깨지므로 -n 사용 금지
+    DISABLE_LINE="$(grep -Ev '^[[:space:]]*#' "$XFILE" 2>/dev/null | sed 's/\r$//' | grep -niE '^[[:space:]]*disable[[:space:]]*=' | head -n 1)"
     [ -z "$DISABLE_LINE" ] && DISABLE_LINE="disable_setting_not_found"
-    if grep -nEv '^[[:space:]]*#' "$XFILE" 2>/dev/null | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)'; then
-      XINETD_DISABLE_NO_FOUND=1
+
+    if grep -Ev '^[[:space:]]*#' "$XFILE" 2>/dev/null | sed 's/\r$//' | grep -qiE '^[[:space:]]*disable[[:space:]]*=[[:space:]]*no([[:space:]]|$)'; then
       VULNERABLE=1
       append_reason "${XFILE}에 disable=no 설정이 존재(${DISABLE_LINE})"
     fi
+
     append_detail_line "xinetd_${svc}_disable_line=$DISABLE_LINE"
   else
     append_detail_line "xinetd_${svc}_disable_line=file_missing"
@@ -84,10 +85,8 @@ for svc in "${R_SERVICES[@]}"; do
 done
 
 # [systemd] unit-files/active/enabled 상태 수집(존재하는 것만)
-SYSTEMD_BAD=0
 SYSTEMD_UNITS="$(systemctl list-unit-files 2>/dev/null | awk '$1 ~ /^(rsh|rlogin|rexec|shell|login|exec)\.(service|socket)$/ {print $1" "$2}' | head -n 100)"
 [ -z "$SYSTEMD_UNITS" ] && SYSTEMD_UNITS="systemd_units_not_found"
-
 append_detail_line "systemd_unit_files=$SYSTEMD_UNITS"
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -99,7 +98,6 @@ if command -v systemctl >/dev/null 2>&1; then
         append_detail_line "systemd_${u}_is_enabled=$ENA"
         append_detail_line "systemd_${u}_is_active=$ACT"
         if echo "$ENA" | grep -qiE '^enabled' || echo "$ACT" | grep -qiE '^active'; then
-          SYSTEMD_BAD=1
           VULNERABLE=1
           append_reason "systemd에서 ${u} 상태가 enabled/active(${ENA}/${ACT})"
         fi
@@ -188,8 +186,9 @@ RAW_EVIDENCE=$(cat <<EOF
 EOF
 )
 
-# JSON escape 처리 (따옴표, 줄바꿈)
+# JSON escape 처리 (백슬래시 -> 따옴표 -> 줄바꿈)
 RAW_EVIDENCE_ESCAPED=$(echo "$RAW_EVIDENCE" \
+  | sed 's/\\/\\\\/g' \
   | sed 's/"/\\"/g' \
   | sed ':a;N;$!ba;s/\n/\\n/g')
 
